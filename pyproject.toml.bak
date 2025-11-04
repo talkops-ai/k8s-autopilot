@@ -1,0 +1,100 @@
+[project]
+name = "k8s-autopilot"
+version = "0.1.0"
+description = "Multi Agents responsible for complete Kubernetes deployment automation (generation → deployment → monitoring)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "a2a-sdk>=0.2.9",
+    "colorama>=0.4.6",
+    "langchain>=0.3.26",
+    "langchain-community>=0.3.26",
+    "langchain-core>=0.3.66",
+    "langchain-openai>=0.3.27",
+    "langchain-perplexity>=0.1.1",
+    "langgraph>=0.5.0",
+    "langgraph-supervisor>=0.0.28",
+    "loguru>=0.7.3",
+    "pydantic>=2.11.7",
+    "uvicorn>=0.35.0",
+    "websockets>=15.0.1",
+    "click>=8.0.0",
+    "httpx>=0.24.0",
+    "asyncclick>=8.1.8",
+    "langchain-mcp-adapters>=0.1.9",
+    "langgraph-swarm>=0.0.13",
+]
+
+license = {text = "Apache-2.0"}
+license-files = ["LICENSE"]
+authors = [
+    {name = "talkops"},
+]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+homepage = "https://github.com/talkops-ai/k8s-autopilot"
+repository = "https://github.com/talkops-ai/k8s-autopilot.git"
+documentation = "https://github.com/talkops-ai/k-autopilot/blob/main/README.md"
+
+[project.scripts]
+helm-autopilot = "k8s_autopilot.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.9.7",
+    "mypy>=1.0.0",
+    "ipykernel>=6.29.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["helm_autopilot"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90", "I", "N", "UP", "YTT", "S", "BLE", "FBT", "B", "A", "COM", "C4", "DTZ", "T10", "EM", "EXE", "FA", "ISC", "ICN", "G", "INP", "PIE", "T20", "PYI", "PT", "Q", "RSE", "RET", "SLF", "SIM", "TID", "TCH", "ARG", "PTH", "ERA", "PD", "PGH", "PL", "TRY", "FLY", "NPY", "AIR", "PERF", "FURB", "LOG", "RUF"]
+ignore = ["S101", "PLR0913", "PLR2004", "C901", "W191"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["k8s_autopilot"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
