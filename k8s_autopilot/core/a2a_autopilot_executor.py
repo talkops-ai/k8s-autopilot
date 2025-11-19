@@ -1,6 +1,7 @@
 from k8s_autopilot.utils.logger import AgentLogger
 import inspect
 import abc
+import json
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -20,7 +21,8 @@ from a2a.types import (
 from a2a.utils import new_agent_text_message, new_task
 from a2a.utils.errors import ServerError
 from k8s_autopilot.core.agents.types import BaseAgent
-from typing import cast
+from typing import cast, Any
+from langgraph.types import Command
 
 
 logger = AgentLogger("K8S_AUTO_PILOT_EXECUTOR")
@@ -45,8 +47,29 @@ class ExecutorValidationMixin(abc.ABC):
         pass
 
 
-class GenericAgentExecutor(AgentExecutor, ExecutorValidationMixin):
+class A2AAutoPilotExecutor(AgentExecutor, ExecutorValidationMixin):
     """AgentExecutor used by the tragel agents with JSON-RPC 2.0 validation support."""
+    
+    def _content_to_string(self, content: Any) -> str:
+        """
+        Convert content to string, handling dicts (e.g., interrupt responses).
+        
+        Args:
+            content: Content that may be a string, dict, or other type
+            
+        Returns:
+            String representation of the content
+        """
+        if isinstance(content, dict):
+            # For interrupt responses, prefer the 'question' field if available
+            if 'question' in content:
+                return content['question']
+            else:
+                # Otherwise serialize the entire dict to JSON
+                return json.dumps(content, indent=2)
+        else:
+            # Already a string or other type - convert to string
+            return str(content)
 
     def __init__(self, agent: BaseAgent) -> None:
         self.agent: BaseAgent = agent
@@ -79,6 +102,22 @@ class GenericAgentExecutor(AgentExecutor, ExecutorValidationMixin):
 
         task = context.current_task
 
+        # Check if task exists and is in input_required state - convert to resume command
+        if task and hasattr(task, 'status') and hasattr(task.status, 'state'):
+            if task.status.state == TaskState.input_required:
+                logger.log_structured(
+                    level="INFO",
+                    message='Task is in input_required state, converting message to Command(resume=...)',
+                    extra={
+                        "agent_name": self.agent.name,
+                        "task_id": task.id,
+                        "context_id": task.context_id,
+                        "user_input_preview": str(query)[:100] if query else "None"
+                    }
+                )
+                # Convert the user input to a Command for resuming the interrupted graph
+                query = Command(resume=query)
+
         if not task:
             logger.log_structured(
                 level="INFO",
@@ -95,30 +134,29 @@ class GenericAgentExecutor(AgentExecutor, ExecutorValidationMixin):
             task = new_task(context.message)
             logger.log_structured(
                 level="INFO",
-                message=f'Created new task with id: {task.id}, contextId: {task.contextId}',
-                extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.contextId}
+                message=f'Created new task with id: {task.id}, context_id: {task.context_id}',
+                extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
             )
             await event_queue.enqueue_event(task)
             logger.log_structured(
                 level="DEBUG",
                 message=f'Enqueued new task: {task}',
-                extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.contextId}
+                extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
             )
 
-        updater = TaskUpdater(event_queue, task.id, task.contextId)
+        updater = TaskUpdater(event_queue, task.id, task.context_id)
         logger.log_structured(
             level="INFO",
             message=f'Starting agent stream',
-            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.contextId}
+            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
         )
 
         try:
             # Ensure self.agent.stream is an async generator, or await if it's a coroutine returning one
-            agent_stream = self.agent.stream(query, task.contextId, task.id)
+            agent_stream = self.agent.stream(query, task.context_id, task.id)
             if not inspect.isasyncgen(agent_stream):
                 agent_stream = await agent_stream  # type: ignore
             async for item in agent_stream:  # type: ignore
-                # logger.debug(f'Received item from agent stream: {item}')
                 # Forward agent-to-agent events directly to the event queue
                 root = getattr(item, 'root', None)
                 if root is not None and isinstance(root, SendStreamingMessageSuccessResponse):
@@ -130,14 +168,28 @@ class GenericAgentExecutor(AgentExecutor, ExecutorValidationMixin):
                         logger.log_structured(
                             level="INFO",
                             message=f'Enqueuing event from agent: {event}',
-                            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.contextId}
+                            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
                         )
                         await event_queue.enqueue_event(event)
                     continue
                 
-                is_task_complete = item.is_task_complete
-                require_user_input = item.require_user_input
-                # logger.debug(f'is_task_complete={is_task_complete}, require_user_input={require_user_input}')
+                # Safely access AgentResponse fields with defaults
+                is_task_complete = getattr(item, 'is_task_complete', False)
+                require_user_input = getattr(item, 'require_user_input', False)
+                
+                logger.log_structured(
+                    level="DEBUG",
+                    message='Processing agent response item',
+                    extra={
+                        "agent_name": self.agent.name,
+                        "task_id": task.id,
+                        "context_id": task.context_id,
+                        "is_task_complete": is_task_complete,
+                        "require_user_input": require_user_input,
+                        "response_type": getattr(item, 'response_type', 'unknown'),
+                        "has_content": hasattr(item, 'content')
+                    }
+                )
                 
                 # Map custom status to A2A TaskState enum
                 custom_status = getattr(item, 'metadata', {}).get('status', 'working')
@@ -148,17 +200,17 @@ class GenericAgentExecutor(AgentExecutor, ExecutorValidationMixin):
                     logger.log_structured(
                         level="INFO",
                         message='Task is marked as complete by agent',
-                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.contextId}
+                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
                     )
                     if item.response_type == 'data':
                         data_part: Part = cast(Part, DataPart(data=item.content))
                     else:
-                        text_part: Part = cast(Part, TextPart(text=item.content))
+                        text_part: Part = cast(Part, TextPart(text=self._content_to_string(item.content)))
 
                     logger.log_structured(
                         level="INFO",
                         message='Adding artifact to updater',
-                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.contextId}
+                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
                     )
                     if item.response_type == 'data':
                         await updater.add_artifact(
@@ -173,13 +225,13 @@ class GenericAgentExecutor(AgentExecutor, ExecutorValidationMixin):
                     logger.log_structured(
                         level="INFO",
                         message='Sending final status update: TaskState.completed',
-                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.contextId}
+                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
                     )
                     await updater.update_status(
                         TaskState.completed,
                         new_agent_text_message(
                             "Task completed successfully.",
-                            task.contextId,
+                            task.context_id,
                             task.id,
                         ),
                         final=True,
@@ -187,46 +239,47 @@ class GenericAgentExecutor(AgentExecutor, ExecutorValidationMixin):
                     logger.log_structured(
                         level="INFO",
                         message='Calling updater.complete()',
-                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.contextId}
+                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
                     )
                     await updater.complete()
                     logger.log_structured(
                         level="INFO",
                         message='Updater.complete() finished, breaking stream loop',
-                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.contextId}
+                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
                     )
                     break
                 if require_user_input:
                     logger.log_structured(
                         level="INFO",
                         message='Agent requires user input, updating status to input_required',
-                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.contextId}
+                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
                     )
                     await updater.update_status(
                         TaskState.input_required,
                         new_agent_text_message(
-                            item.content,
-                            task.contextId,
+                            self._content_to_string(item.content),
+                            task.context_id,
                             task.id,
                         ),
-                        final=True,
+                        final=True,  # Match reference executor - final=True for input_required
                     )
                     logger.log_structured(
                         level="INFO",
                         message='Status updated to input_required, breaking stream loop',
-                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.contextId}
+                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
                     )
+                    # Match reference executor - break the loop when input is required
                     break
                 logger.log_structured(
                     level="INFO",
                     message=f'Updating status to {task_state}',
-                    extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.contextId}
+                    extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
                 )
                 await updater.update_status(
                     task_state,
                     new_agent_text_message(
-                        item.content,
-                        task.contextId,
+                        self._content_to_string(item.content),
+                        task.context_id,
                         task.id,
                     ),
                 )

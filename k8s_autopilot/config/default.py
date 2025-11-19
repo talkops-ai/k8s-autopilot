@@ -28,9 +28,9 @@ class DefaultConfig:
     LOG_STRUCTURED_JSON: bool = False
     
     # MCP Server Configuration
-    TERRAFORM_MCP_SERVER_HOST: str = "localhost"
-    TERRAFORM_MCP_SERVER_PORT: int = 8000
-    TERRAFORM_MCP_SERVER_TRANSPORT: str = "sse"
-    TERRAFORM_MCP_SERVER_DISABLED: bool = False
+    ARGOCD_MCP_SERVER_HOST: str = "localhost"
+    ARGOCD_MCP_SERVER_PORT: int = 8000
+    ARGOCD_MCP_SERVER_TRANSPORT: str = "sse"
+    ARGOCD_MCP_SERVER_DISABLED: bool = False
     AGENTS_MCP_SERVER_AUTO_APPROVE: list = []
     

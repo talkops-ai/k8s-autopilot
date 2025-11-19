@@ -1,0 +1,40 @@
+{
+    "name": "k8s_autopilot",
+    "description": "k8s_autopilot agent for Kubernetes deployment automation",
+    "url": "http://localhost:10102",
+    "provider": null,
+    "version": "1.0.0",
+    "documentationUrl": null,
+    "capabilities": {
+        "streaming": "True",
+        "pushNotifications": "True",
+        "stateTransitionHistory": "False"
+    },
+    "authentication": {
+        "credentials": null,
+        "schemes": [
+            "public"
+        ]
+    },
+    "defaultInputModes": [
+        "text",
+        "text/plain"
+    ],
+    "defaultOutputModes": [
+        "text",
+        "text/plain"
+    ],
+    "skills": [
+        {
+            "id": "helm_writer",
+            "name": "Helm Writer",
+            "description": "Writes a Helm chart for a given application",
+            "tags": [
+                "helm_writer"
+            ],
+            "examples": [
+                "Can you help me write a Helm chart for a new application"
+            ]
+        }
+    ]
+}
