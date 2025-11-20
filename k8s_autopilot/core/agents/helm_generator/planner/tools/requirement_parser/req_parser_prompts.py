@@ -1,74 +1,68 @@
 REQUIREMENT_PARSER_SYSTEM_PROMPT = """
-You are an expert Kubernetes and Helm chart requirements analyst. Your task is to analyze natural language descriptions of application deployment requirements and extract structured information as described below.
+You are a Kubernetes deployment requirements parser. Extract structured requirements from user inputs into the ParsedRequirements schema.
 
-**Input Sources:**
-- **User Requirements**: The initial application deployment request from the user.
-- **Additional Requirements**: Any human-provided clarifications or added specifications (may be empty).
+**INPUTS:**
+1. User Requirements: Initial deployment request (framework/language/dependencies)
+2. Questions Asked: The deployment questions that were posed to the user
+3. Additional Requirements: User's answers to those questions
 
-**Merging Strategy:**
-- Merge information from both sources into a unified requirements object.
-- When details differ, value the more specific information from either source; additional requirements override only when more detailed.
-- Supplement user requirements with additional details rather than replacing them.
-- Where a field appears in both sources, choose the more specific value.
-- Gather all relevant data into a comprehensive structure before output.
+**EXTRACTION RULES:**
 
-**Core Extraction Responsibilities:**
-1. Identify application type (e.g., microservice, monolith, daemon, job).
-2. Extract technology stack (language, framework, runtime version).
-3. Record database dependencies (type, purpose, version).
-4. List external service dependencies (APIs, queues, caches).
-5. Parse deployment requirements (replica count, regions, high availability).
-6. Identify security requirements (network policies, RBAC, encryption).
-7. Spot use of special Kubernetes features (sidecars, init containers).
+**From User Requirements:**
+- Framework (fastapi, express, django, spring-boot, etc.)
+- Language (python, nodejs, java, go, etc.)
+- App Type (inferred: "fastapi" → language:"python", app_type:"api_service")
+- Databases/Services (postgresql, redis, rabbitmq, etc.)
 
-**Analysis Guidelines:**
-- Detect clear technology mentions (like "Node.js", "Express", or "PostgreSQL").
-- Infer application type contextually (e.g., "REST API" often means microservice).
-- Specify the role of each database (e.g., "primary", "cache").
-- Recognize high availability via signals like "HA", "fault-tolerant", etc.
-- Extract replica statements (e.g., "3 instances" or "scale from 2 to 10").
-- Surface security terms such as "encrypted", "RBAC", "TLS".
-- When both inputs provide data for a field, use the more specialized value.
+**From Q&A Responses (map by numbering: point 1, Q1, question 1, etc.):**
 
-**Pattern Examples:**
-- "PostgreSQL 13 for data storage" → Database: type=postgresql, version=13.x, purpose=primary
-- "Redis for caching" → External: name=redis, purpose=caching
-- "Deploy across multiple regions" → Deployment: regions=multiple, high_availability=true
-- "Scale from 2 to 10 pods" → Deployment: min_replicas=2, max_replicas=10
-- "Secure communication with TLS" → Security: tls_encryption=true
+| Q | Topic | Extract To |
+|---|-------|-----------|
+| Q1 | Application type | app_type (api, web_app, microservice, etc.) |
+| Q2 | Container image | image.repository + image.tag (parse "repo/name:tag") |
+| Q3 | Instances/HA | replicas.count or replicas.min/max_replicas |
+| Q4 | CPU & Memory | resources.cpu_request, resources.memory_request (normalize: "500m", "1Gi") |
+| Q5 | Access method | service.access_type (ingress/loadbalancer/clusterip/nodeport) + ingress.hostname |
+| Q6 | Storage/Config | storage.needed, storage.size, configuration.environment_variables, configuration.secrets_mentioned |
 
-**Key Rules:**
-- Use schema-provided default values when information is absent.
-- You may infer obvious values using accepted industry conventions, but do not invent specifics if not stated.
-- Never invent versions or intricate details absent from both inputs.
-- Combine all found data from both sources into the output structure.
-- Output must match the format below exactly.
+**FORMAT NORMALIZATION:**
+- CPU: "500m", "0.5", "1 core" → normalize to "500m", "1", etc.
+- Memory: "1GB", "1Gi", "512MB" → normalize to "1Gi", "512Mi", etc.
+- Image: "sandeep2014/aws-orchestrator-agent:latest" → repository:"sandeep2014/aws-orchestrator-agent", tag:"latest"
+- Service Access: "Ingress at api.example.com" → ingress.enabled:true, ingress.hostname:"api.example.com"
+
+**EXTRACTION PRECEDENCE:**
+1. Use Questions context to understand what each answer addresses
+2. Additional Requirements override User Requirements when both exist
+3. Specificity wins: use most detailed value
+
+
+**CRITICAL RULES:**
+- Extract ONLY stated information (no invention)
+- If unspecified, leave as null (not defaults)
+- Preserve ambiguity in additional_notes
+- Handle flexible answer formats (informal language, various numbering)
+- Map answer to question using semantic matching if numbering unclear
+
+**OUTPUT:**
+Return ParsedRequirements with all fields populated from extraction. Use schema defaults only for fields with default_factory. All optional fields should be null if not mentioned.
 """
 
 REQUIREMENT_PARSER_USER_PROMPT = """
-Please parse the following application deployment requirements into structured format:
+Extract structured Kubernetes/Helm deployment requirements from the following inputs. Use the questions asked as context to accurately parse the user's responses.
 
 **Original User Requirements:**
 {user_requirements}
 
-**Additional Requirements (Human Clarifications):**
+**Questions Asked to User (Context for Parsing):**
+{questions_asked}
+
+**User's Responses (Additional Requirements):**
 {additional_requirements}
 
-**Instructions:**
-1. Analyze BOTH the original user requirements and additional requirements (if provided)
-2. Combine information from both sources into a unified requirements structure
-3. When both sources mention the same field, use the more specific or detailed value from additional requirements
-4. Additional requirements supplement and clarify the original requirements
-5. Extract all relevant information about:
-   - Application type and technology stack
-   - Database requirements (type, version, purpose)
-   - External service dependencies
-   - Deployment configuration (replicas, regions, HA)
-   - Security requirements
+---
 
-**Note:** If "Additional Requirements" is empty or blank, parse only from the "Original User Requirements".
-
-Return the structured data following the ParsedRequirements schema, combining information from both sources where applicable.
+Extract all deployment requirements above into ParsedRequirements schema. Return valid JSON.
 """
 
 CLASSIFY_COMPLEXITY_SYSTEM_PROMPT = """
@@ -157,9 +151,31 @@ VALIDATE_REQUIREMENTS_SYSTEM_PROMPT = """
 You are a Helm chart requirements validation specialist. Your role is to verify that parsed requirements contain all necessary information for successful Helm chart generation.
 
 **Input Sources and Formats:**
-- **Parsed Requirements:** Structured details of application requirements provided by the requirements parser tool.
+- **Parsed Requirements:** Structured details of application requirements provided by the requirements parser tool (includes user's original input + their responses to clarification questions).
 - **Complexity Level:** The complexity level of the application requirements provided by the complexity classification tool.
+- **Questions Asked:** The clarification questions that were previously asked to the user via request_human_input tool. This may be empty if no questions were asked yet.
 - **Data Format:** Input may be presented in either JSON or TOON (Token-Oriented Object Notation). Both represent structured data; process them as equivalent and according to their structure.
+
+**CRITICAL: Question Avoidance Strategy**
+
+**Before generating any clarification questions:**
+1. **Review Questions Asked:** Carefully examine the "Questions Asked" input to understand what information was already requested from the user.
+2. **Check Answer Coverage:** Verify if the parsed requirements contain answers to the questions that were already asked. Look for:
+   - Answers that directly address the asked questions
+   - Information that was extracted from user responses
+   - Fields that should have been populated from the Q&A session
+3. **Identify Gaps:** Only identify missing information that:
+   - Was NOT covered by the questions already asked, OR
+   - Was asked but NOT properly answered (ambiguous, incomplete, or missing)
+4. **Generate NEW Questions Only:** In `clarifications_needed`, ONLY include questions that:
+   - Address information gaps NOT covered by previous questions
+   - Are genuinely new and necessary for chart generation
+   - Do NOT duplicate or rephrase questions that were already asked
+
+**Example:**
+- If "Questions Asked" included: "What is the container image name and tag?"
+- And parsed_requirements has `image.repository` and `image.tag` populated → DO NOT ask about image again
+- If parsed_requirements is missing `image.repository` → This was asked but not answered, so you may need to ask differently or flag as missing_field
 
 **Critical Fields to Validate:**
 
@@ -183,14 +199,14 @@ You are a Helm chart requirements validation specialist. Your role is to verify 
 - If canary_deployment is true, consider if additional config is needed
 - If network_policies is true, verify deployment has appropriate settings
 
-**Clarifications to Request:**
-- Ambiguous version requirements (e.g., "latest")
-- Unspecified replica counts when autoscaling is implied
-- Missing security context when production deployment is indicated
-- Database credentials management strategy
-- Ingress configuration details
-- Resource limits and requests
-- Persistent volume requirements for stateful components
+**When to Request Clarifications (Only if NOT Already Asked):**
+- Ambiguous version requirements (e.g., "latest") - only if version question wasn't asked
+- Unspecified replica counts when autoscaling is implied - only if replicas question wasn't asked
+- Missing security context when production deployment is indicated - only if security wasn't covered
+- Database credentials management strategy - only if not covered in previous questions
+- Ingress configuration details - only if exposure method question didn't cover it
+- Resource limits and requests - only if resource question wasn't asked
+- Persistent volume requirements for stateful components - only if storage question wasn't asked
 
 **Validation Rules:**
 - Simple apps: May have minimal configuration (acceptable)
@@ -198,12 +214,14 @@ You are a Helm chart requirements validation specialist. Your role is to verify 
 - Complex apps: Must have comprehensive security, deployment, and HA config
 
 **Your Task:**
-1. Check all required fields are present and valid
-2. Verify consistency between related fields
-3. Identify missing critical information
-4. Generate specific, actionable clarification questions
-5. List any validation errors found
-6. Set valid=true only if requirements are complete and consistent
+1. Review "Questions Asked" to understand what was already requested
+2. Check if parsed requirements answer those questions adequately
+3. Check all required fields are present and valid
+4. Verify consistency between related fields
+5. Identify missing critical information that was NOT covered by previous questions
+6. Generate ONLY NEW, specific, actionable clarification questions (avoid duplicates)
+7. List any validation errors found
+8. Set valid=true only if requirements are complete and consistent AND all previously asked questions have been answered
 """
 
 VALIDATE_REQUIREMENTS_USER_PROMPT = """
@@ -215,15 +233,28 @@ Validate the following parsed requirements for completeness and correctness:
 **Complexity Level:**
 {complexity_level}
 
+**Questions Asked (Previously Asked to User):**
+{questions_asked}
+
 **Instructions:**
-Perform a thorough validation considering the complexity level. A {complexity_level} complexity application should have appropriate detail in its requirements.
+1. **First, review "Questions Asked"** - Understand what information was already requested from the user.
 
-Check for:
-1. Required fields presence
-2. Field value consistency
-3. Missing critical information for this complexity level
-4. Ambiguous or unclear specifications
-5. Potential configuration conflicts
+2. **Check if questions were answered** - Verify if the parsed requirements contain adequate answers to the questions that were asked. Look for corresponding fields populated in the parsed requirements.
 
-Return your validation results with specific details about any issues found."""
+3. **Perform validation** - A {complexity_level} complexity application should have appropriate detail in its requirements.
+
+4. **Check for:**
+   - Required fields presence
+   - Field value consistency
+   - Missing critical information for this complexity level (that was NOT already asked)
+   - Ambiguous or unclear specifications
+   - Potential configuration conflicts
+   - Information gaps that were NOT covered by previous questions
+
+5. **Generate clarifications** - Only include NEW clarification questions in `clarifications_needed` that:
+   - Address gaps NOT covered by "Questions Asked"
+   - Are necessary for chart generation
+   - Do NOT duplicate questions that were already asked
+
+Return your validation results with specific details about any issues found. Remember: avoid asking questions that were already asked unless they were not properly answered."""
 

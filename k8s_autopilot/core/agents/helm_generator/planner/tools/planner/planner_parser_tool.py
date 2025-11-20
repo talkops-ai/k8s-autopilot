@@ -1,11 +1,13 @@
 from pydantic import BaseModel, Field
-from typing import Dict, Optional, Literal, List
-from langchain.tools import tool, InjectedToolCallId
-from langgraph.prebuilt import InjectedState
+from typing import Dict, Optional, Literal, List, Any
+from langchain.tools import tool, InjectedToolCallId, ToolRuntime
+from langgraph.types import Command
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import ToolMessage
 from k8s_autopilot.core.state.base import PlanningSwarmState
 from typing_extensions import Annotated
+from toon import encode
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.config.config import Config
 from k8s_autopilot.core.llm.llm_provider import LLMProvider
@@ -56,7 +58,20 @@ class FrameworkAnalysis(BaseModel):
         ge=5,
         le=120
     )
-
+    liveness_probe_path: str = Field(
+        default="/health",
+        description="Endpoint for liveness probe"
+    )
+    readiness_probe_path: str = Field(
+        default="/ready",
+        description="Endpoint for readiness probe"
+    )
+    initial_delay_seconds: int = Field(
+        default=30,
+        description="Initial delay before probes start",
+        ge=0,
+        le=300
+    )
 
 class ScalabilityAnalysis(BaseModel):
     """Scalability characteristics of the application."""
@@ -77,7 +92,23 @@ class ScalabilityAnalysis(BaseModel):
         ...,
         description="Recommended load balancing algorithm based on application characteristics"
     )
-
+    # NEW: Autoscaling configuration
+    hpa_enabled: bool = Field(
+        ...,
+        description="Whether HPA should be configured"
+    )
+    target_cpu_utilization: Optional[int] = Field(
+        None,
+        ge=30,
+        le=90,
+        description="Target CPU % for autoscaling"
+    )
+    target_memory_utilization: Optional[int] = Field(
+        None,
+        ge=30,
+        le=90,
+        description="Target memory % for autoscaling"
+    )
 
 class StorageAnalysis(BaseModel):
     """Storage requirements analysis."""
@@ -129,7 +160,15 @@ class CoreResource(BaseModel):
         min_length=10,
         max_length=500
     )
-
+    alternatives_considered: List[str] = Field(
+        default_factory=list,
+        description="Other resource types considered and why they were rejected",
+        max_items=3
+    )
+    key_configuration_parameters: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Critical configuration parameters for this resource (replicas, update strategy, etc.)"
+    )
 
 class AuxiliaryResource(BaseModel):
     """Auxiliary Kubernetes resource definition."""
@@ -157,7 +196,32 @@ class AuxiliaryResource(BaseModel):
         min_length=10,
         max_length=300
     )
-
+    criticality: Literal["essential", "production-critical", "recommended", "optional"] = Field(
+        ...,
+        description="How critical this resource is for the deployment"
+    )
+    
+    configuration_hints: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Key configuration parameters or values for this resource"
+    )
+    
+    dependencies: List[str] = Field(
+        default_factory=list,
+        description="Other resources this depends on",
+        max_items=5
+    )
+    
+    environment_specific: Optional[str] = Field(
+        default=None,
+        description="If this resource is specific to certain environments (prod/staging/dev)"
+    )
+    
+    tradeoffs: Optional[str] = Field(
+        default=None,
+        description="Any tradeoffs or considerations when using this resource",
+        max_length=300
+    )
 
 class ResourcesArchitecture(BaseModel):
     """Complete Kubernetes resources architecture."""
@@ -171,6 +235,92 @@ class ResourcesArchitecture(BaseModel):
         description="List of auxiliary resources needed to support the application",
         min_items=1,
         max_items=15
+    )
+    architecture_pattern: Literal[
+        "stateless_microservice",
+        "stateful_application",
+        "batch_processing",
+        "system_daemon",
+        "custom"
+    ] = Field(
+        ...,
+        description="The overall architecture pattern this design follows"
+    )
+    
+    estimated_complexity: Literal["low", "medium", "high"] = Field(
+        ...,
+        description="Operational complexity of managing this architecture"
+    )
+
+class DesignDecision(BaseModel):
+    """Individual architectural decision with context."""
+    
+    category: Literal[
+        "workload_selection",
+        "scalability",
+        "high_availability",
+        "security",
+        "networking",
+        "storage",
+        "observability",
+        "cost_optimization",
+        "operational_excellence"
+    ] = Field(
+        ...,
+        description="Category of this design decision"
+    )
+    
+    decision: str = Field(
+        ...,
+        description="The specific decision made",
+        min_length=20,
+        max_length=200
+    )
+    
+    rationale: str = Field(
+        ...,
+        description="Why this decision was made, with specific references to requirements",
+        min_length=50,
+        max_length=500
+    )
+    
+    alternatives: Optional[str] = Field(
+        default=None,
+        description="Alternative approaches considered and why they were not chosen",
+        max_length=300
+    )
+    
+    risk_mitigation: Optional[str] = Field(
+        default=None,
+        description="How risks associated with this decision are mitigated",
+        max_length=300
+    )
+
+class ConfigurationAnalysis(BaseModel):
+    """Configuration management requirements."""
+    
+    config_maps_needed: bool
+    secrets_needed: bool
+    env_vars_count_estimate: int = Field(..., ge=0, le=100)
+
+class SecurityAnalysis(BaseModel):
+    """Security context and requirements."""
+    
+    run_as_non_root: bool = Field(
+        default=True,
+        description="Whether to enforce non-root user"
+    )
+    read_only_root_filesystem: bool = Field(
+        default=False,
+        description="Whether root filesystem should be read-only"
+    )
+    capabilities_to_drop: list[str] = Field(
+        default=["ALL"],
+        description="Linux capabilities to drop"
+    )
+    service_account_needed: bool = Field(
+        ...,
+        description="Whether custom ServiceAccount is required"
     )
 
 class ResourceSpec(BaseModel):
@@ -351,7 +501,14 @@ class ApplicationAnalysisOutput(BaseModel):
         ...,
         description="Networking configuration and requirements"
     )
-
+    configuration: ConfigurationAnalysis = Field(
+        ...,
+        description="Configuration management requirements"
+    )
+    security: SecurityAnalysis = Field(
+        ...,
+        description="Security context and requirements"
+    )
 
 class KubernetesArchitectureOutput(BaseModel):
     """Complete output of Kubernetes architecture design."""
@@ -360,11 +517,11 @@ class KubernetesArchitectureOutput(BaseModel):
         ...,
         description="Complete set of Kubernetes resources to be created"
     )
-    design_decisions: List[str] = Field(
+    design_decisions: List[DesignDecision] = Field(
         ...,
-        description="List of key architectural decisions and their rationale",
-        min_items=3,
-        max_items=20
+        description="Structured list of key architectural decisions with rationale",
+        min_items=5,
+        max_items=15
     )
 
 
@@ -415,26 +572,30 @@ class ScalingStrategyOutput(BaseModel):
 
 @tool
 async def analyze_application_requirements(
-    requirements: Dict,
-    state: Annotated[PlanningSwarmState, InjectedState],
+    runtime: ToolRuntime[None, PlanningSwarmState],
     tool_call_id: Annotated[str, InjectedToolCallId],
-    ) -> ApplicationAnalysisOutput:
+    ) -> Command:
     """
     Analyze application requirements and provide detailed technical specifications.
     Args:
-        requirements: Dictionary containing parsed application requirements
-        state: Injected state from the planning swarm
+        runtime: Tool runtime from the planning swarm
         tool_call_id: Injected tool call ID
     Returns:
-        ApplicationAnalysisOutput: Structured output from application requirements analysis
+        Command: Command to update state with application analysis
     """
     try:
+        handoff_data = runtime.state.get('handoff_data', {})
+        additional_requirements = runtime.state.get('updated_user_requirements', '') or ''
+        parsed_requirements = handoff_data.get('parsed_requirements', {})
+        parsed_requirements_encoded = encode(parsed_requirements)
+
         def escape_json_for_template(json_str):
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
 
         formatted_user_query = ANALYZE_APPLICATION_REQUIREMENTS_HUMAN_PROMPT.format(
-            requirements=escape_json_for_template(requirements)
+            requirements=escape_json_for_template(parsed_requirements_encoded),
+            user_clarification=escape_json_for_template(additional_requirements)
         )
         parser = PydanticOutputParser(pydantic_object=ApplicationAnalysisOutput)
         escaped_system_prompt = ANALYZE_APPLICATION_REQUIREMENTS_SYSTEM_PROMPT.replace('{', '{{').replace('}', '}}')
@@ -467,11 +628,29 @@ async def analyze_application_requirements(
             level="INFO",
             message="Application requirements analysis completed successfully",
             extra={
-                "response": response.content.strip(),
+                "response": response.model_dump(),
                 "tool_call_id": tool_call_id
             }
         )
-        return response
+        
+        # Update handoff_data
+        existing_handoff_data = runtime.state.get('handoff_data', {})
+        handoff_data = {
+            **existing_handoff_data,
+            "application_analysis": response.model_dump(),
+        }
+        
+        tool_message = ToolMessage(
+            content="Application requirements analysis completed successfully. Proceed with design_kubernetes_architecture tool.",
+            tool_call_id=tool_call_id
+        )
+        
+        return Command(
+            update={
+                "handoff_data": handoff_data,
+                "messages": [tool_message],
+            },
+        )
     except Exception as e:
         planner_parser_logger.log_structured(
             level="ERROR",
@@ -481,33 +660,40 @@ async def analyze_application_requirements(
                 "tool_call_id": tool_call_id
             }
         )
-        return None
+        failed_tool_message = ToolMessage(
+            content=f"Failed to analyze application requirements: {e}. Please re-run the tool.",
+            tool_call_id=tool_call_id
+        )
+        return Command(update={"messages": [failed_tool_message]})
 
 @tool
 async def design_kubernetes_architecture(
-    requirements: Dict,
-    analysis: Dict,
-    state: Annotated[PlanningSwarmState, InjectedState],
+    runtime: ToolRuntime[None, PlanningSwarmState],
     tool_call_id: Annotated[str, InjectedToolCallId],
-    ) -> KubernetesArchitectureOutput:
+    ) -> Command:
     """
     Design a complete Kubernetes architecture for the application.
     Args:
-        requirements: Dictionary containing parsed application requirements
-        analysis: Dictionary containing technical analysis of the application
-        state: Injected state from the planning swarm
+        runtime: Tool runtime from the planning swarm
         tool_call_id: Injected tool call ID
     Returns:
-        KubernetesArchitectureOutput: Structured output from Kubernetes architecture design
+        Command: Command to update state with Kubernetes architecture
     """
     try:
+        handoff_data = runtime.state.get('handoff_data', {})
+        parsed_requirements = handoff_data.get('parsed_requirements', {})
+        application_analysis = handoff_data.get('application_analysis', {})
+        
+        parsed_requirements_encoded = encode(parsed_requirements)
+        application_analysis_encoded = encode(application_analysis)
+
         def escape_json_for_template(json_str):
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
 
         formatted_user_query = DESIGN_KUBERNETES_ARCHITECTURE_HUMAN_PROMPT.format(
-            requirements=escape_json_for_template(requirements),
-            analysis=escape_json_for_template(analysis)
+            requirements=escape_json_for_template(parsed_requirements_encoded),
+            analysis=escape_json_for_template(application_analysis_encoded)
         )
         parser = PydanticOutputParser(pydantic_object=KubernetesArchitectureOutput)
         escaped_system_prompt = DESIGN_KUBERNETES_ARCHITECTURE_SYSTEM_PROMPT.replace('{', '{{').replace('}', '}}')
@@ -540,11 +726,29 @@ async def design_kubernetes_architecture(
             level="INFO",
             message="Kubernetes architecture design completed successfully",
             extra={
-                "response": response.content.strip(),
+                "response": response.model_dump(),
                 "tool_call_id": tool_call_id
             }
         )
-        return response    
+        
+        # Update handoff_data
+        existing_handoff_data = runtime.state.get('handoff_data', {})
+        handoff_data = {
+            **existing_handoff_data,
+            "kubernetes_architecture": response.model_dump(),
+        }
+        
+        tool_message = ToolMessage(
+            content="Kubernetes architecture design completed successfully. Proceed with estimate_resources tool.",
+            tool_call_id=tool_call_id
+        )
+        
+        return Command(
+            update={
+                "handoff_data": handoff_data,
+                "messages": [tool_message],
+            },
+        )
     except Exception as e:
         planner_parser_logger.log_structured(
             level="ERROR",
@@ -554,34 +758,41 @@ async def design_kubernetes_architecture(
                 "tool_call_id": tool_call_id
             }
         )
-        return None
+        failed_tool_message = ToolMessage(
+            content=f"Failed to design Kubernetes architecture: {e}. Please re-run the tool.",
+            tool_call_id=tool_call_id
+        )
+        return Command(update={"messages": [failed_tool_message]})
 
 
 @tool
 async def estimate_resources(
-    requirements: Dict,
-    analysis: Dict,
-    state: Annotated[PlanningSwarmState, InjectedState],
+    runtime: ToolRuntime[None, PlanningSwarmState],
     tool_call_id: Annotated[str, InjectedToolCallId],
-    ) -> ResourceEstimationOutput:
+    ) -> Command:
     """
     Estimate Kubernetes resource requests and limits for the application across dev, staging, and production environments.
     Args:
-        requirements: Dictionary containing parsed application requirements
-        analysis: Dictionary containing technical analysis of the application
-        state: Injected state from the planning swarm
+        runtime: Tool runtime from the planning swarm
         tool_call_id: Injected tool call ID
     Returns:
-        ResourceEstimationOutput: Structured output from resource estimation
+        Command: Command to update state with resource estimation
     """
     try:
+        handoff_data = runtime.state.get('handoff_data', {})
+        parsed_requirements = handoff_data.get('parsed_requirements', {})
+        application_analysis = handoff_data.get('application_analysis', {})
+        
+        parsed_requirements_encoded = encode(parsed_requirements)
+        application_analysis_encoded = encode(application_analysis)
+
         def escape_json_for_template(json_str):
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
 
         formatted_user_query = ESTIMATE_RESOURCES_HUMAN_PROMPT.format(
-            requirements=escape_json_for_template(requirements),
-            analysis=escape_json_for_template(analysis)
+            requirements=escape_json_for_template(parsed_requirements_encoded),
+            analysis=escape_json_for_template(application_analysis_encoded)
         )
         parser = PydanticOutputParser(pydantic_object=ResourceEstimationOutput)
         escaped_system_prompt = ESTIMATE_RESOURCES_SYSTEM_PROMPT.replace('{', '{{').replace('}', '}}')
@@ -614,11 +825,29 @@ async def estimate_resources(
             level="INFO",
             message="Resource estimation completed successfully",
             extra={
-                "response": response.content.strip(),
+                "response": response.model_dump(),
                 "tool_call_id": tool_call_id
             }
         )
-        return response
+        
+        # Update handoff_data
+        existing_handoff_data = runtime.state.get('handoff_data', {})
+        handoff_data = {
+            **existing_handoff_data,
+            "resource_estimation": response.model_dump(),
+        }
+        
+        tool_message = ToolMessage(
+            content="Resource estimation completed successfully. Proceed with define_scaling_strategy tool.",
+            tool_call_id=tool_call_id
+        )
+        
+        return Command(
+            update={
+                "handoff_data": handoff_data,
+                "messages": [tool_message],
+            },
+        )
     except Exception as e:
         planner_parser_logger.log_structured(
             level="ERROR",
@@ -628,32 +857,36 @@ async def estimate_resources(
                 "tool_call_id": tool_call_id
             }
         )
-        return None
+        failed_tool_message = ToolMessage(
+            content=f"Failed to estimate resources: {e}. Please re-run the tool.",
+            tool_call_id=tool_call_id
+        )
+        return Command(update={"messages": [failed_tool_message]})
 
 @tool
 async def define_scaling_strategy(
-    requirements: Dict,
-    analysis: Dict,
-    state: Annotated[PlanningSwarmState, InjectedState],
+    runtime: ToolRuntime[None, PlanningSwarmState],
     tool_call_id: Annotated[str, InjectedToolCallId],
-    ) -> ScalingStrategyOutput:
+    ) -> Command:
     """
     Define a scaling strategy for the application across dev, staging, and production environments.
     Args:
-        requirements: Dictionary containing parsed application requirements
-        analysis: Dictionary containing technical analysis of the application
-        state: Injected state from the planning swarm
+        runtime: Tool runtime from the planning swarm
         tool_call_id: Injected tool call ID
     Returns:
-        ScalingStrategyOutput: Structured output from scaling strategy definition
+        Command: Command to update state with scaling strategy
     """
     try:
+        handoff_data = runtime.state.get('handoff_data', {})
+        parsed_requirements = handoff_data.get('parsed_requirements', {})
+        parsed_requirements_encoded = encode(parsed_requirements)
+
         def escape_json_for_template(json_str):
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
 
         formatted_user_query = DEFINE_SCALING_STRATEGY_HUMAN_PROMPT.format(
-            requirements=escape_json_for_template(requirements),
+            requirements=escape_json_for_template(parsed_requirements_encoded),
         )
         parser = PydanticOutputParser(pydantic_object=ScalingStrategyOutput)
         escaped_system_prompt = DEFINE_SCALING_STRATEGY_SYSTEM_PROMPT.replace('{', '{{').replace('}', '}}')
@@ -686,11 +919,29 @@ async def define_scaling_strategy(
             level="INFO",
             message="Scaling strategy definition completed successfully",
             extra={
-                "response": response.content.strip(),
+                "response": response.model_dump(),
                 "tool_call_id": tool_call_id
             }
         )
-        return response
+        
+        # Update handoff_data
+        existing_handoff_data = runtime.state.get('handoff_data', {})
+        handoff_data = {
+            **existing_handoff_data,
+            "scaling_strategy": response.model_dump(),
+        }
+        
+        tool_message = ToolMessage(
+            content="Scaling strategy definition completed successfully. Proceed with check_dependencies tool.",
+            tool_call_id=tool_call_id
+        )
+        
+        return Command(
+            update={
+                "handoff_data": handoff_data,
+                "messages": [tool_message],
+            },
+        )
     except Exception as e:
         planner_parser_logger.log_structured(
             level="ERROR",
@@ -700,30 +951,36 @@ async def define_scaling_strategy(
                 "tool_call_id": tool_call_id
             }
         )
-        return None
+        failed_tool_message = ToolMessage(
+            content=f"Failed to define scaling strategy: {e}. Please re-run the tool.",
+            tool_call_id=tool_call_id
+        )
+        return Command(update={"messages": [failed_tool_message]})
 
 @tool
 async def check_dependencies(
-    requirements: Dict,
-    state: Annotated[PlanningSwarmState, InjectedState],
+    runtime: ToolRuntime[None, PlanningSwarmState],
     tool_call_id: Annotated[str, InjectedToolCallId],
-    ) -> DependenciesOutput:
+    ) -> Command:
     """
     Check the dependencies for the application.
     Args:
-        requirements: Dictionary containing parsed application requirements
-        state: Injected state from the planning swarm
+        runtime: Tool runtime from the planning swarm
         tool_call_id: Injected tool call ID
     Returns:
-        DependenciesOutput: Structured output from dependency checking
+        Command: Command to update state with dependencies
     """
     try:
+        handoff_data = runtime.state.get('handoff_data', {})
+        parsed_requirements = handoff_data.get('parsed_requirements', {})
+        parsed_requirements_encoded = encode(parsed_requirements)
+
         def escape_json_for_template(json_str):
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
 
         formatted_user_query = CHECK_DEPENDENCIES_HUMAN_PROMPT.format(
-            requirements=escape_json_for_template(requirements)
+            requirements=escape_json_for_template(parsed_requirements_encoded)
         )
         parser = PydanticOutputParser(pydantic_object=DependenciesOutput)
         escaped_system_prompt = CHECK_DEPENDENCIES_SYSTEM_PROMPT.replace('{', '{{').replace('}', '}}')
@@ -756,11 +1013,29 @@ async def check_dependencies(
             level="INFO",
             message="Dependency checking completed successfully",
             extra={
-                "response": response.content.strip(),
+                "response": response.model_dump(),
                 "tool_call_id": tool_call_id
             }
         )
-        return response
+        
+        # Update handoff_data
+        existing_handoff_data = runtime.state.get('handoff_data', {})
+        handoff_data = {
+            **existing_handoff_data,
+            "dependencies": response.model_dump(),
+        }
+        
+        tool_message = ToolMessage(
+            content="Dependency checking completed successfully. All planning tools have finished.",
+            tool_call_id=tool_call_id
+        )
+        
+        return Command(
+            update={
+                "handoff_data": handoff_data,
+                "messages": [tool_message],
+            },
+        )
     except Exception as e:
         planner_parser_logger.log_structured(
             level="ERROR",
@@ -770,4 +1045,8 @@ async def check_dependencies(
                 "tool_call_id": tool_call_id
             }
         )
-        return None
+        failed_tool_message = ToolMessage(
+            content=f"Failed to check dependencies: {e}. Please re-run the tool.",
+            tool_call_id=tool_call_id
+        )
+        return Command(update={"messages": [failed_tool_message]})

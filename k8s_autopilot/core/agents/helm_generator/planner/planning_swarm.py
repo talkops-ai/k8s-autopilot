@@ -12,8 +12,10 @@ from langgraph.graph import StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 from deepagents import create_deep_agent, CompiledSubAgent
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
+from langchain.agents.middleware.types import ToolCallRequest
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from typing import Dict, Any, Optional, Annotated, Callable, Awaitable
 from k8s_autopilot.core.state.base import PlanningSwarmState
 from k8s_autopilot.utils.logger import AgentLogger, log_async, log_sync
 from k8s_autopilot.config.config import Config
@@ -59,6 +61,69 @@ class PlanningStateMiddleware(AgentMiddleware):
         define_scaling_strategy,
         check_dependencies
     ]
+
+class ValidateRequirementsHITLMiddleware(AgentMiddleware):
+    """
+    Middleware to intercept validate_requirements tool output and trigger HITL if clarifications are needed.
+    """
+    
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        # Execute the tool first
+        result = await handler(request)
+        
+        # Check if this is the validate_requirements tool
+        if request.tool_call["name"] == "validate_requirements":
+            # Check if result is a Command and has handoff_data
+            if isinstance(result, Command) and result.update and "handoff_data" in result.update:
+                handoff_data = result.update["handoff_data"]
+                validation_result = handoff_data.get("validation_result", {})
+                
+                # Check if clarifications are needed
+                clarifications = validation_result.get("clarifications_needed", [])
+                if clarifications:
+                    # Prepare interrupt payload
+                    interrupt_payload = {
+                        "pending_feedback_requests": {
+                            "status": "input_required",
+                            "session_id": request.runtime.state.get("session_id", "unknown"),
+                            "question": "\n".join(clarifications),
+                            "context": "Requirements validation identified missing information.",
+                            "active_phase": "planning",
+                            "tool_name": "validate_requirements",
+                            "timestamp": datetime.now(timezone.utc).isoformat()
+                        }
+                    }
+                    
+                    planning_deep_agent_logger.log_structured(
+                        level="INFO",
+                        message="Triggering HITL for validation clarifications",
+                        extra={"clarifications_count": len(clarifications)}
+                    )
+                    
+                    # Trigger interrupt and wait for user feedback
+                    user_feedback = interrupt(interrupt_payload)
+                    
+                    # Update the result with user feedback
+                    if user_feedback:
+                        # Append feedback to updated_user_requirements
+                        current_requirements = request.runtime.state.get("updated_user_requirements", "")
+                        new_requirements = f"{current_requirements}\n\nUser Feedback on Clarifications:\n{user_feedback}"
+                        
+                        # Update the Command to include the new requirements
+                        result.update["updated_user_requirements"] = new_requirements
+                        
+                        # Log the update
+                        planning_deep_agent_logger.log_structured(
+                            level="INFO",
+                            message="Updated requirements with user feedback",
+                            extra={"feedback_length": len(str(user_feedback))}
+                        )
+                        
+        return result
 
 class k8sAutopilotPlanningDeepAgent(BaseSubgraphAgent):
     """
@@ -150,7 +215,7 @@ class k8sAutopilotPlanningDeepAgent(BaseSubgraphAgent):
             message="Initializing subagents for planning deep agent",
             extra={"agent_name": self._name}
         )
-        
+
         # Subagent 1: Requirements Analyzer
         # Uses tools: parse_requirements, classify_complexity, validate_requirements
         self.requirement_analyzer_agent = create_agent(
@@ -158,6 +223,7 @@ class k8sAutopilotPlanningDeepAgent(BaseSubgraphAgent):
             system_prompt=REQUIREMENT_ANALYZER_SUBAGENT_PROMPT,
             tools=[parse_requirements, classify_complexity, validate_requirements],
             state_schema=PlanningSwarmState,
+            middleware=[ValidateRequirementsHITLMiddleware()],
         )
         self.requirements_analyzer_subagent = CompiledSubAgent(
             name="requirements_analyzer",
@@ -168,26 +234,6 @@ class k8sAutopilotPlanningDeepAgent(BaseSubgraphAgent):
             runnable=self.requirement_analyzer_agent,
         )
 
-        # self.requirements_analyzer_subagent = {
-        #     "name": "requirements_analyzer",
-        #     "description": (
-        #         "Specialized agent for parsing, classifying, and validating Helm chart requirements. "
-        #         "Use when you need to analyze user input and extract structured requirements. "
-        #         "This agent will parse natural language into structured format, assess complexity level, "
-        #         "and validate completeness of requirements."
-        #     ),
-        #     "system_prompt": REQUIREMENT_ANALYZER_SUBAGENT_PROMPT,
-        #     "tools": [
-        #         parse_requirements,
-        #         classify_complexity,
-        #         validate_requirements
-        #     ],
-        #     "model": self.model
-        # }
-        
-        # Subagent 2: Architecture Planner
-        # Uses tools: analyze_application_requirements, design_kubernetes_architecture, 
-        #             estimate_resources, define_scaling_strategy, check_dependencies
         self.architecture_planner_agent = create_agent(
             model=self.model,
             system_prompt=ARCHITECTURE_PLANNER_SUBAGENT_PROMPT,
@@ -202,26 +248,6 @@ class k8sAutopilotPlanningDeepAgent(BaseSubgraphAgent):
             "estimate CPU/memory sizing, define HPA configuration, and identify chart dependencies.",
             runnable=self.architecture_planner_agent,
         )
-        # self.architecture_planner_subagent = {
-        #     "name": "architecture_planner",
-        #     "description": (
-        #         "Specialized agent for designing Kubernetes architecture, estimating resources, "
-        #         "and defining scaling strategies. Use after requirements are validated. "
-        #         "This agent will analyze application characteristics, design K8s resource structure, "
-        #         "estimate CPU/memory sizing, define HPA configuration, and identify chart dependencies."
-        #     ),
-        #     "system_prompt": ARCHITECTURE_PLANNER_SUBAGENT_PROMPT,
-        #     "tools": [
-        #         analyze_application_requirements,
-        #         design_kubernetes_architecture,
-        #         estimate_resources,
-        #         define_scaling_strategy,
-        #         check_dependencies
-        #     ],
-        #     "model": self.model
-        # }
-        
-        # Store subagents list
         self._sub_agents = [
             self.requirements_analyzer_subagent,
             self.architecture_planner_subagent

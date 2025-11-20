@@ -167,10 +167,6 @@ class ServiceInfo(BaseModel):
         le=65535,
         description="Container port if specified"
     )
-    raw_text: Optional[str] = Field(
-        None,
-        description="Raw text about service access for reference"
-    )
 
 class EnvironmentVariableInfo(BaseModel):
     """Single environment variable."""
@@ -203,10 +199,6 @@ class ConfigurationInfo(BaseModel):
         default=[],
         description="Configuration files mentioned"
     )
-    raw_text: Optional[str] = Field(
-        None,
-        description="Raw text about configuration for reference"
-    )
 
 class ResourceInfo(BaseModel):
     """CPU and Memory requirements - only if user provides them."""
@@ -225,10 +217,6 @@ class ResourceInfo(BaseModel):
     memory_limit: Optional[str] = Field(
         None,
         description="Memory limit if specified"
-    )
-    raw_text: Optional[str] = Field(
-        None,
-        description="Raw text from user about resources for reference"
     )
 
 class ParsedRequirements(BaseModel):
@@ -336,6 +324,7 @@ async def parse_requirements(
     try:
         user_requirements = runtime.state.get('user_query', '')
         additional_requirements = runtime.state.get('updated_user_requirements', '') or ''
+        questions_asked = runtime.state.get('question_asked', '') or ''
         # additional_requirements_encoded = encode(additional_requirements)
         # Format user prompt with actual data, escaping curly braces in JSON
         def escape_json_for_template(json_str):
@@ -346,7 +335,8 @@ async def parse_requirements(
         
         formatted_user_query = REQUIREMENT_PARSER_USER_PROMPT.format(
             user_requirements=escape_json_for_template(user_requirements),
-            additional_requirements=escape_json_for_template(additional_requirements)
+            additional_requirements=escape_json_for_template(additional_requirements),
+            questions_asked=escape_json_for_template(questions_asked)
         )
         parser = PydanticOutputParser(pydantic_object=ParsedRequirements)
         escaped_system_prompt = REQUIREMENT_PARSER_SYSTEM_PROMPT.replace('{', '{{').replace('}', '}}')
@@ -358,6 +348,8 @@ async def parse_requirements(
 
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
+
         requirement_parser_logger.log_structured(
             level="INFO",
             message="Using LLM configuration for requirement parser",
@@ -367,12 +359,20 @@ async def parse_requirements(
                 "llm_temperature": llm_config.get('temperature'),
                 "llm_max_tokens": llm_config.get('max_tokens')
             }
-        )      
+        ) 
+
         model = LLMProvider.create_llm(
             provider=llm_config['provider'],
             model=llm_config['model'],
             temperature=llm_config['temperature'],
             max_tokens=llm_config['max_tokens']
+        )
+
+        higher_model = LLMProvider.create_llm(
+            provider=higher_llm_config['provider'],
+            model=higher_llm_config['model'],
+            temperature=higher_llm_config['temperature'],
+            max_tokens=higher_llm_config['max_tokens']
         )
 
         chain = prompt | model | parser
@@ -566,14 +566,16 @@ async def validate_requirements(
         complexity_json = handoff_data.get('complexity_classification')
         complexity_level = complexity_json.get('complexity_level')
         parsed_requirements_encoded = encode(parsed_requirements_json)
-        
+        questions_asked = runtime.state.get('question_asked', '') or ''
+
         def escape_json_for_template(json_str):
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
 
         formatted_user_query = VALIDATE_REQUIREMENTS_USER_PROMPT.format(
             parsed_requirements=escape_json_for_template(parsed_requirements_encoded),
-            complexity_level=complexity_level
+            complexity_level=complexity_level,
+            questions_asked=escape_json_for_template(questions_asked)
         )
         parser = PydanticOutputParser(pydantic_object=ValidationResult)
         escaped_system_prompt = VALIDATE_REQUIREMENTS_SYSTEM_PROMPT.replace('{', '{{').replace('}', '}}')
