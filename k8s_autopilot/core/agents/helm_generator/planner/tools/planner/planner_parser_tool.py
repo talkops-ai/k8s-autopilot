@@ -128,7 +128,6 @@ class StorageAnalysis(BaseModel):
         le=1000
     )
 
-
 class NetworkingAnalysis(BaseModel):
     """Networking configuration analysis."""
     
@@ -328,15 +327,14 @@ class ResourceSpec(BaseModel):
     
     cpu: str = Field(
         ...,
-        description="CPU resource specification (e.g., '100m', '1', '2000m')",
-        pattern=r"^\d+m?$"
+        description="CPU resource specification (e.g., '100m', '0.5', '1', '2000m')",
+        pattern=r"^\d+(\.\d+)?m?$"
     )
     memory: str = Field(
         ...,
-        description="Memory resource specification (e.g., '256Mi', '1Gi', '512Mi')",
-        pattern=r"^\d+(Mi|Gi)$"
+        description="Memory resource specification (e.g., '256Mi', '1.5Gi', '512Mi')",
+        pattern=r"^\d+(\.\d+)?(Mi|Gi)$"
     )
-
 
 class EnvironmentResourceSpec(BaseModel):
     """Complete resource specification for an environment."""
@@ -350,6 +348,84 @@ class EnvironmentResourceSpec(BaseModel):
         description="Maximum resources the container can use (should be higher than requests)"
     )
 
+    qos_class: Literal["Guaranteed", "Burstable", "BestEffort"] = Field(
+        ...,
+        description="Kubernetes Quality of Service class based on requests/limits configuration"
+    )
+    
+    expected_utilization: Dict[str, float] = Field(
+        ...,
+        description="Expected resource utilization percentages",
+        example={"cpu": 70.0, "memory": 75.0}
+    )
+    
+    scaling_headroom_percent: float = Field(
+        ...,
+        ge=10.0,
+        le=50.0,
+        description="Percentage of headroom for traffic spikes (10-50%)"
+    )
+
+class FrameworkSpecificConsiderations(BaseModel):
+    """Framework-specific factors that influenced the estimation."""
+    
+    startup_overhead_mb: int = Field(
+        ...,
+        description="Additional memory needed during startup phase"
+    )
+    
+    runtime_overhead_mb: int = Field(
+        ...,
+        description="Framework runtime memory overhead"
+    )
+    
+    concurrent_request_impact: str = Field(
+        ...,
+        description="How concurrent requests affect resource usage"
+    )
+    
+    garbage_collection_impact: Optional[str] = Field(
+        None,
+        description="GC impact for JVM/managed runtime languages"
+    )
+    
+    recommended_heap_size: Optional[str] = Field(
+        None,
+        description="Recommended heap size for JVM apps (e.g., '-Xmx1024m')"
+    )
+
+class ResourceEstimationMetadata(BaseModel):
+    """Metadata about the estimation process for auditing."""
+    
+    estimation_methodology: str = Field(
+        ...,
+        description="Brief description of the estimation approach used"
+    )
+    
+    confidence_level: Literal["low", "medium", "high"] = Field(
+        ...,
+        description="Confidence in the estimates based on available data"
+    )
+    
+    assumptions: List[str] = Field(
+        ...,
+        description="Key assumptions made during estimation",
+        min_length=1,
+        max_length=10
+    )
+    
+    risk_factors: List[str] = Field(
+        ...,
+        description="Identified risks that may affect resource accuracy",
+        max_length=5
+    )
+    
+    monitoring_recommendations: List[str] = Field(
+        ...,
+        description="Specific metrics to monitor post-deployment",
+        min_length=3,
+        max_length=8
+    )
 
 class HPAConfiguration(BaseModel):
     """Horizontal Pod Autoscaler configuration for a specific environment."""
@@ -402,13 +478,20 @@ class HelmDependency(BaseModel):
         None,
         description="Helm conditional flag to enable/disable this dependency (e.g., 'postgresql.enabled')"
     )
+    alias: Optional[str] = Field(
+        None,
+        description="Alternative name for the dependency in values.yaml"
+    )
     reason: str = Field(
         ...,
         description="Why this dependency is needed for the application",
         min_length=10,
         max_length=300
     )
-
+    tags: Optional[List[str]] = Field(
+        None,
+        description="Tags to group dependencies (e.g., ['database', 'production'])"
+    )
 
 class InitContainer(BaseModel):
     """Init container definition."""
@@ -418,11 +501,25 @@ class InitContainer(BaseModel):
         description="Name of the init container",
         pattern=r"^[a-z0-9-]+$"
     )
+    image: Optional[str] = Field(
+        None,
+        description="Container image to use (e.g., 'busybox:latest', 'bitnami/postgresql:14')"
+    )
     purpose: str = Field(
         ...,
         description="What this init container does (e.g., database migration, wait-for-service)",
         min_length=10,
         max_length=200
+    )
+    estimated_duration_seconds: Optional[int] = Field(
+        None,
+        description="Expected execution time in seconds",
+        ge=1,
+        le=600
+    )
+    retry_policy: Optional[Literal["Never", "OnFailure"]] = Field(
+        "Never",
+        description="Restart policy for the init container"
     )
 
 
@@ -434,13 +531,63 @@ class Sidecar(BaseModel):
         description="Name of the sidecar container",
         pattern=r"^[a-z0-9-]+$"
     )
+    image: Optional[str] = Field(
+        None,
+        description="Container image to use (e.g., 'fluent/fluent-bit:latest')"
+    )
     purpose: str = Field(
         ...,
         description="What this sidecar does (e.g., log shipping, service mesh proxy, metrics collection)",
         min_length=10,
         max_length=200
     )
+    communication_type: Optional[Literal["shared-volume", "localhost-network", "none"]] = Field(
+        None,
+        description="How the sidecar communicates with the main container"
+    )
+    resource_impact: Optional[Literal["low", "medium", "high"]] = Field(
+        None,
+        description="Expected CPU/memory overhead of this sidecar"
+    )
 
+class HelmHook(BaseModel):
+    """Helm hook definition with job specification."""
+    
+    hook_type: Literal[
+        "pre-install",
+        "post-install",
+        "pre-delete",
+        "post-delete",
+        "pre-upgrade",
+        "post-upgrade",
+        "pre-rollback",
+        "post-rollback",
+        "test"
+    ] = Field(
+        ...,
+        description="Helm lifecycle hook type"
+    )
+    name: str = Field(
+        ...,
+        description="Name of the hook job",
+        pattern=r"^[a-z0-9-]+$"
+    )
+    purpose: str = Field(
+        ...,
+        description="What this hook accomplishes (e.g., 'Run database migrations', 'Backup data')",
+        min_length=10,
+        max_length=200
+    )
+    weight: Optional[int] = Field(  # Hook execution order
+        0,
+        description="Hook weight for execution ordering (lower executes first)",
+        ge=-100,
+        le=100
+    )
+    delete_policy: Optional[List[Literal["before-hook-creation", "hook-succeeded", "hook-failed"]]] = Field(
+        default_factory=lambda: ["before-hook-creation"],
+        description="When to delete the hook resource"
+    )
 
 class DependenciesOutput(BaseModel):
     """Complete output of dependency checking."""
@@ -460,17 +607,7 @@ class DependenciesOutput(BaseModel):
         description="List of sidecar containers that run alongside the main application",
         max_items=10
     )
-    helm_hooks: List[Literal[
-        "pre-install",
-        "post-install",
-        "pre-delete",
-        "post-delete",
-        "pre-upgrade",
-        "post-upgrade",
-        "pre-rollback",
-        "post-rollback",
-        "test"
-    ]] = Field(
+    helm_hooks: List[HelmHook] = Field(
         default_factory=list,
         description="List of Helm hooks needed for lifecycle management",
         max_items=10
@@ -480,6 +617,11 @@ class DependenciesOutput(BaseModel):
         description="Detailed explanation of dependency analysis and selections",
         min_length=50,
         max_length=1000
+    )
+    warnings: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Potential concerns or tradeoffs with selected dependencies",
+        max_items=5
     )
 
 class ApplicationAnalysisOutput(BaseModel):
@@ -520,10 +662,9 @@ class KubernetesArchitectureOutput(BaseModel):
     design_decisions: List[DesignDecision] = Field(
         ...,
         description="Structured list of key architectural decisions with rationale",
-        min_items=5,
+        min_items=3,
         max_items=15
     )
-
 
 class ResourceEstimationOutput(BaseModel):
     """Complete output of resource estimation across environments."""
@@ -545,6 +686,20 @@ class ResourceEstimationOutput(BaseModel):
         description="Detailed explanation of resource estimation rationale including startup time, memory patterns, and scaling considerations",
         min_length=50,
         max_length=1000
+    )
+    framework_considerations: FrameworkSpecificConsiderations = Field(
+        ...,
+        description="Framework-specific factors that influenced estimation"
+    )
+    
+    metadata: ResourceEstimationMetadata = Field(
+        ...,
+        description="Metadata about the estimation process"
+    )
+    cost_optimization_notes: str = Field(
+        ...,
+        description="Specific recommendations for cost optimization while maintaining reliability",
+        max_length=500
     )
 
 class ScalingStrategyOutput(BaseModel):
@@ -764,7 +919,6 @@ async def design_kubernetes_architecture(
         )
         return Command(update={"messages": [failed_tool_message]})
 
-
 @tool
 async def estimate_resources(
     runtime: ToolRuntime[None, PlanningSwarmState],
@@ -879,7 +1033,10 @@ async def define_scaling_strategy(
     try:
         handoff_data = runtime.state.get('handoff_data', {})
         parsed_requirements = handoff_data.get('parsed_requirements', {})
+        application_analysis = handoff_data.get('application_analysis', {})
+        
         parsed_requirements_encoded = encode(parsed_requirements)
+        application_analysis_encoded = encode(application_analysis)
 
         def escape_json_for_template(json_str):
             """Escape curly braces in JSON strings for template compatibility"""
@@ -887,6 +1044,7 @@ async def define_scaling_strategy(
 
         formatted_user_query = DEFINE_SCALING_STRATEGY_HUMAN_PROMPT.format(
             requirements=escape_json_for_template(parsed_requirements_encoded),
+            analysis=escape_json_for_template(application_analysis_encoded)
         )
         parser = PydanticOutputParser(pydantic_object=ScalingStrategyOutput)
         escaped_system_prompt = DEFINE_SCALING_STRATEGY_SYSTEM_PROMPT.replace('{', '{{').replace('}', '}}')
@@ -1026,7 +1184,7 @@ async def check_dependencies(
         }
         
         tool_message = ToolMessage(
-            content="Dependency checking completed successfully. All planning tools have finished.",
+            content="Dependency checking completed successfully. All planning tools have finished and the status is completed.",
             tool_call_id=tool_call_id
         )
         
@@ -1034,6 +1192,8 @@ async def check_dependencies(
             update={
                 "handoff_data": handoff_data,
                 "messages": [tool_message],
+                "chart_plan": handoff_data,
+                "status": "completed"
             },
         )
     except Exception as e:
@@ -1046,7 +1206,7 @@ async def check_dependencies(
             }
         )
         failed_tool_message = ToolMessage(
-            content=f"Failed to check dependencies: {e}. Please re-run the tool.",
+            content=f"Failed to check dependencies: {e}. Please re-run the check_dependencies tool.",
             tool_call_id=tool_call_id
         )
         return Command(update={"messages": [failed_tool_message]})

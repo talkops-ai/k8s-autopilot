@@ -1,5 +1,5 @@
 from typing import Dict
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from k8s_autopilot.core.state.base import (
     MainSupervisorState,
     PlanningSwarmState,
@@ -61,7 +61,8 @@ class StateTransformer:
     @staticmethod
     def planning_to_supervisor(
         planning_state: PlanningSwarmState,
-        original_supervisor_state: MainSupervisorState
+        original_supervisor_state: MainSupervisorState,
+        tool_call_id: str
     ) -> Dict:
         """
         Transform planning swarm output back to supervisor state updates.
@@ -71,15 +72,45 @@ class StateTransformer:
         - messages → messages (updated conversation)
         - Updates workflow_state.planning_complete
         """
-        return {
-            "messages": planning_state["messages"],
-            "planning_output": planning_state.get("chart_plan"),
-            "workflow_state": {
-                **original_supervisor_state.get("workflow_state", {}).__dict__,
+        # Reconstruct workflow state object to use helper methods
+        current_workflow_state = original_supervisor_state.get("workflow_state")
+        if current_workflow_state:
+            # Ensure it's a SupervisorWorkflowState object
+            if isinstance(current_workflow_state, dict):
+                workflow_state_obj = SupervisorWorkflowState(**current_workflow_state)
+            else:
+                workflow_state_obj = current_workflow_state
+            
+            # Use helper method to set phase complete
+            workflow_state_obj.set_phase_complete("planning")
+            workflow_state_obj.last_swarm = "planning_swarm"
+            
+            # Convert back to dict for state update
+            updated_workflow_state = workflow_state_obj.model_dump()
+        else:
+            # Fallback if no workflow state exists
+            updated_workflow_state = {
                 "planning_complete": True,
                 "last_swarm": "planning_swarm",
                 "current_phase": "planning"
             }
+
+        # Create summary messages instead of dumping full history
+        summary_messages = [
+            ToolMessage(
+                content="Planning swarm completed successfully. Chart plan has been generated and stored.",
+                tool_call_id=tool_call_id
+            ),
+            HumanMessage(
+                content="Planning is complete. Please proceed to generate the Helm chart artifacts based on the plan."
+            )
+        ]
+
+        return {
+            "messages": summary_messages,
+            "llm_input_messages": summary_messages,
+            "planning_output": planning_state.get("chart_plan") or planning_state.get("handoff_data"),
+            "workflow_state": updated_workflow_state
         }
     
     # ============================================================================

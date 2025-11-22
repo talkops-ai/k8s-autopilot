@@ -111,7 +111,7 @@ class ComplexityClassification(BaseModel):
     )
     components_count: int = Field(
         ...,
-        ge=1,
+        ge=0,
         description="Total number of distinct components (app, databases, services)"
     )
     special_considerations: List[str] = Field(
@@ -564,7 +564,7 @@ async def validate_requirements(
         handoff_data = runtime.state.get('handoff_data', {})
         parsed_requirements_json = handoff_data.get('parsed_requirements')
         complexity_json = handoff_data.get('complexity_classification')
-        complexity_level = complexity_json.get('complexity_level')
+        complexity_level = complexity_json.get('complexity_level') if complexity_json else "unknown"
         parsed_requirements_encoded = encode(parsed_requirements_json)
         questions_asked = runtime.state.get('question_asked', '') or ''
 

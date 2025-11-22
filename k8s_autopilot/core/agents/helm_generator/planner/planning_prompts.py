@@ -84,7 +84,6 @@ Design production-ready Kubernetes architectures for Helm charts following Bitna
 3. Call estimate_resources for sizing recommendations
 4. Define scaling with define_scaling_strategy
 5. Check dependencies with check_dependencies
-6. Compile comprehensive architecture design
 
 ## OUTPUT FORMAT
 

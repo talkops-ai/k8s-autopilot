@@ -115,6 +115,7 @@ class ValidateRequirementsHITLMiddleware(AgentMiddleware):
                         
                         # Update the Command to include the new requirements
                         result.update["updated_user_requirements"] = new_requirements
+                        result.update["active_agent"] = "architecture_planner"
                         
                         # Log the update
                         planning_deep_agent_logger.log_structured(

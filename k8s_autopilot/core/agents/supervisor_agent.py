@@ -275,8 +275,9 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
             @tool
             async def transfer_to_planning_swarm(
                 task_description: str,
-                runtime: ToolRuntime[None, MainSupervisorState]
-            ) -> str:
+                runtime: ToolRuntime[None, MainSupervisorState],
+                tool_call_id: Annotated[str, InjectedToolCallId]
+            ) -> Command:
                 """
                 Delegate to planning swarm for Helm chart architecture planning.
                 
@@ -289,7 +290,7 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 supervisor_logger.log_structured(
                     level="INFO",
                     message="Planning swarm tool invoked",
-                    extra={"task_description": task_description}
+                    extra={"task_description": task_description, "tool_call_id": tool_call_id}
                 )
                 
                 # 1. Transform supervisor state → planning state
@@ -301,19 +302,14 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 # 3. Transform back (note: state updates happen automatically via tool return)
                 supervisor_updates = StateTransformer.planning_to_supervisor(
                     planning_output,
-                    runtime.state
+                    runtime.state,
+                    tool_call_id
                 )
                 
-                # Update the runtime state with supervisor updates
-                for key, value in supervisor_updates.items():
-                    if key in runtime.state:
-                        runtime.state[key] = value
-                
-                # Return meaningful result for LLM
-                if supervisor_updates.get("workflow_state", {}).get("planning_complete"):
-                    return f"✅ Planning completed successfully. Helm chart architecture plan created for: {task_description}"
-                else:
-                    return f"⏳ Planning in progress for: {task_description}"
+                # Return Command with state updates
+                return Command(
+                    update=supervisor_updates
+                )
             
             tools.append(transfer_to_planning_swarm)
             supervisor_logger.log_structured(

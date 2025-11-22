@@ -331,7 +331,7 @@ class MainSupervisorState(AgentState):
     ]]
     
     # Phase outputs - populated during workflow execution
-    planning_output:  NotRequired[Dict[str, str]]
+    planning_output:  NotRequired[Dict[str, Any]]
     generated_artifacts: NotRequired[Dict[str, str]]  # filepath -> content
     validation_results: NotRequired[Annotated[List[ValidationResult], add]]
     
@@ -388,7 +388,7 @@ class MainSupervisorState(AgentState):
     error_state: NotRequired[ErrorContext]
     
     # File system artifacts (for Deep Agents) - populated during generation
-    file_artifacts: NotRequired[Annotated[Dict[str, str], lambda x, y: {**x, **y}]]
+    file_artifacts: NotRequired[Annotated[Dict[str, str], lambda x, y: {**(x or {}), **(y or {})}]]
 
     session_id: NotRequired[str] 
     task_id: NotRequired[str]
@@ -423,14 +423,14 @@ class PlanningSwarmState(AgentState):
     requirements_validation: NotRequired[ValidationResult]
     research_findings: NotRequired[Annotated[List[Dict[str, Any]], add]]
     # Overall Planned Chart Structure
-    chart_plan: NotRequired[Dict[str, Any]]
+    chart_plan: NotRequired[Annotated[Dict[str, Any], lambda x, y: {**(x or {}), **(y or {})}]]
     
     # Deep Agent features
     todos: NotRequired[Annotated[List[Dict[str, Any]], add]]
-    workspace_files: NotRequired[Annotated[Dict[str, str], lambda x, y: {**x, **y}]]
+    workspace_files: NotRequired[Annotated[Dict[str, str], lambda x, y: {**(x or {}), **(y or {})}]]
     
     # Handoff context
-    handoff_data: NotRequired[Dict[str, Any]]
+    handoff_data: NotRequired[Annotated[Dict[str, Any], lambda x, y: {**(x or {}), **(y or {})}]]
     
     # HITL: Use Case 1 - General feedback requests during execution
     pending_feedback_requests: NotRequired[Dict[str, Any]]
