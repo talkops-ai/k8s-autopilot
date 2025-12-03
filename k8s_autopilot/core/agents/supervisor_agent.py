@@ -195,14 +195,14 @@ Your request appears to be about [topic], which is outside my scope. Would you l
 
 Available tools:
 - transfer_to_planning_swarm: Analyze requirements and create Helm chart architecture plans
-- transfer_to_generation_swarm: Generate Helm chart templates and values files
-- transfer_to_validation_swarm: Validate charts, perform security scanning, and prepare deployment configs
+- transfer_to_template_supervisor: Generate Helm chart templates and values files
+- transfer_to_validator_deep_agent: Validate charts, perform security scanning, and prepare deployment configs
 - request_human_feedback: Request human feedback, clarification, or guide users about capabilities
 
 HITL APPROVAL GATES (REQUIRED):
 - request_planning_review: Request human review of planning output (call after planning_swarm completes)
-- request_security_review: Request human review of security scan results (call after generation_swarm completes)
-- request_deployment_approval: Request final approval before deployment (call after validation_swarm completes)
+- request_security_review: Request human review of security scan results (call after template_supervisor completes)
+- request_deployment_approval: Request final approval before deployment (call after validator_deep_agent completes)
 
 Your responsibilities:
 1. **FIRST**: Validate that the request is Helm/Kubernetes/CI-CD related
@@ -216,9 +216,9 @@ Your responsibilities:
 WORKFLOW SEQUENCE WITH HITL:
 1. For ANY Helm chart request → transfer_to_planning_swarm(task_description="...")
 2. When planning_complete → request_planning_review() [REQUIRED - workflow will pause for human approval]
-3. When planning_approved → transfer_to_generation_swarm(task_description="...")
+3. When planning_approved → transfer_to_template_supervisor(task_description="...")
 4. When generation_complete → request_security_review() [REQUIRED - workflow will pause for human approval]
-5. When security_approved → transfer_to_validation_swarm(task_description="...")
+5. When security_approved → transfer_to_validator_deep_agent(task_description="...")
 6. When validation_complete → request_deployment_approval() [REQUIRED - workflow will pause for human approval]
 7. When deployment_approved → Workflow complete
 
@@ -233,8 +233,8 @@ CRITICAL RULES:
 
 HITL GATE RULES:
 - request_planning_review: Call IMMEDIATELY after planning_swarm completes. Do NOT proceed to generation without approval.
-- request_security_review: Call IMMEDIATELY after generation_swarm completes. Do NOT proceed to validation without approval.
-- request_deployment_approval: Call IMMEDIATELY after validation_swarm completes. Do NOT complete workflow without approval.
+- request_security_review: Call IMMEDIATELY after template_supervisor completes. Do NOT proceed to validation without approval.
+- request_deployment_approval: Call IMMEDIATELY after validator_deep_agent completes. Do NOT complete workflow without approval.
 - If gate returns "pending", workflow is paused - wait for human input
 - If gate returns "approved", proceed to next phase
 - If gate returns "rejected", end workflow or request changes
@@ -249,8 +249,8 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
         """Get description for an agent based on its name."""
         descriptions = {
             "planning_swarm": "Deep Agent swarm that validates requirements, researches best practices, and creates detailed Helm chart architecture plans",
-            "generation_swarm": "Deep Agent swarm that generates Helm templates, values files, and documentation using file system tools",
-            "validation_swarm": "Agent swarm that validates charts, performs security scanning, generates tests, and prepares ArgoCD deployment configurations"
+            "template_supervisor": "Deep Agent swarm that generates Helm templates, values files, and documentation using file system tools",
+            "validator_deep_agent": "Agent swarm that validates charts, performs security scanning, generates tests, and prepares ArgoCD deployment configurations"
         }
         return descriptions.get(agent_name, "Specialized Helm chart agent swarm")
 
@@ -319,14 +319,15 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
             )
         
         # Generation swarm tool
-        if "generation_swarm" in compiled_swarms:
-            generation_swarm = compiled_swarms["generation_swarm"]
+        if "template_supervisor" in compiled_swarms:
+            template_supervisor = compiled_swarms["template_supervisor"]
             
             @tool
-            async def transfer_to_generation_swarm(
+            async def transfer_to_template_supervisor(
                 task_description: str,
-                runtime: ToolRuntime[None, MainSupervisorState]
-            ) -> str:
+                runtime: ToolRuntime[None, MainSupervisorState],
+                tool_call_id: Annotated[str, InjectedToolCallId]
+            ) -> Command:
                 """
                 Delegate to generation swarm for Helm chart code generation.
                 
@@ -339,46 +340,40 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 supervisor_logger.log_structured(
                     level="INFO",
                     message="Generation swarm tool invoked",
-                    extra={"task_description": task_description}
+                    extra={"task_description": task_description, "tool_call_id": tool_call_id}
                 )
                 
                 # 1. Transform supervisor state → generation state
                 generation_input = StateTransformer.supervisor_to_generation(runtime.state)
                 
                 # 2. Invoke generation swarm
-                generation_output = await generation_swarm.ainvoke(generation_input)
+                generation_output = await template_supervisor.ainvoke(generation_input)
                 
-                # 3. Transform back
+                # 3. Transform back (note: state updates happen automatically via tool return)
                 supervisor_updates = StateTransformer.generation_to_supervisor(
                     generation_output,
-                    runtime.state
+                    runtime.state,
+                    tool_call_id
                 )
                 
-                # Update the runtime state
-                for key, value in supervisor_updates.items():
-                    if key in runtime.state:
-                        runtime.state[key] = value
-                
-                # Return meaningful result
-                if supervisor_updates.get("workflow_state", {}).get("generation_complete"):
-                    artifact_count = len(supervisor_updates.get("file_artifacts", {}))
-                    return f"✅ Generation completed. Created {artifact_count} Helm chart files for: {task_description}"
-                else:
-                    return f"⏳ Generation in progress for: {task_description}"
+                # Return Command with state updates
+                return Command(
+                    update=supervisor_updates
+                )
             
-            tools.append(transfer_to_generation_swarm)
+            tools.append(transfer_to_template_supervisor)
             supervisor_logger.log_structured(
                 level="DEBUG",
                 message="Created generation swarm tool",
-                extra={"tool_name": "transfer_to_generation_swarm"}
+                extra={"tool_name": "transfer_to_template_supervisor"}
             )
         
         # Validation swarm tool
-        if "validation_swarm" in compiled_swarms:
-            validation_swarm = compiled_swarms["validation_swarm"]
+        if "validator_deep_agent" in compiled_swarms:
+            validator_deep_agent = compiled_swarms["validator_deep_agent"]
             
             @tool
-            async def transfer_to_validation_swarm(
+            async def transfer_to_validator_deep_agent(
                 task_description: str,
                 runtime: ToolRuntime[None, MainSupervisorState]
             ) -> str:
@@ -398,10 +393,15 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 )
                 
                 # 1. Transform supervisor state → validation state
-                validation_input = StateTransformer.supervisor_to_validation(runtime.state)
+                # Get workspace_dir from state (set during security review), default to "/tmp/helm-charts"
+                workspace_dir = runtime.state.get("workspace_dir", "/tmp/helm-charts")
+                validation_input = StateTransformer.supervisor_to_validation(
+                    runtime.state, 
+                    workspace_dir=workspace_dir
+                )
                 
                 # 2. Invoke validation swarm
-                validation_output = await validation_swarm.ainvoke(validation_input)
+                validation_output = await validator_deep_agent.ainvoke(validation_input)
                 
                 # 3. Transform back
                 supervisor_updates = StateTransformer.validation_to_supervisor(
@@ -421,11 +421,11 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 else:
                     return f"⏳ Validation in progress for: {task_description}"
             
-            tools.append(transfer_to_validation_swarm)
+            tools.append(transfer_to_validator_deep_agent)
             supervisor_logger.log_structured(
                 level="DEBUG",
                 message="Created validation swarm tool",
-                extra={"tool_name": "transfer_to_validation_swarm"}
+                extra={"tool_name": "transfer_to_validator_deep_agent"}
             )
         
         return tools

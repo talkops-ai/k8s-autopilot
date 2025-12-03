@@ -1,10 +1,5 @@
-import json
-import traceback
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, Annotated
-import re
-from functools import wraps
-from langchain_core.prompts import ChatPromptTemplate
+from typing import Dict, Any, Optional, Annotated, Callable, Awaitable
 from langgraph.types import Command, interrupt
 from langchain.tools import tool, InjectedToolCallId, ToolRuntime
 from pydantic import BaseModel
@@ -12,21 +7,20 @@ from langgraph.graph import StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 from deepagents import create_deep_agent, CompiledSubAgent
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
+from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ToolCallRequest
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
-from typing import Dict, Any, Optional, Annotated, Callable, Awaitable
+from langchain_core.messages import ToolMessage
 from k8s_autopilot.core.state.base import PlanningSwarmState
-from k8s_autopilot.utils.logger import AgentLogger, log_async, log_sync
+from k8s_autopilot.utils.logger import AgentLogger, log_sync
 from k8s_autopilot.config.config import Config
 from k8s_autopilot.core.llm.llm_provider import LLMProvider
 from k8s_autopilot.core.agents.base_agent import BaseSubgraphAgent
-from k8s_autopilot.core.agents.helm_generator.planner.tools.requirement_parser import (
+from k8s_autopilot.core.agents.helm_generator.planner.tools.parser import (
     parse_requirements, 
     classify_complexity, 
     validate_requirements,
 )
-from k8s_autopilot.core.agents.helm_generator.planner.tools.planner import (
+from k8s_autopilot.core.agents.helm_generator.planner.tools.analyzer import (
     analyze_application_requirements,
     design_kubernetes_architecture,
     estimate_resources,
@@ -90,7 +84,7 @@ class ValidateRequirementsHITLMiddleware(AgentMiddleware):
                         "pending_feedback_requests": {
                             "status": "input_required",
                             "session_id": request.runtime.state.get("session_id", "unknown"),
-                            "question": "\n".join(clarifications),
+                            "question": "I apologize, but I missed asking a few details in our previous conversation. Could you please clarify the following items so I can finalize the plan?\n\n" + "\n".join(clarifications),
                             "context": "Requirements validation identified missing information.",
                             "active_phase": "planning",
                             "tool_name": "validate_requirements",
@@ -110,8 +104,17 @@ class ValidateRequirementsHITLMiddleware(AgentMiddleware):
                     # Update the result with user feedback
                     if user_feedback:
                         # Append feedback to updated_user_requirements
-                        current_requirements = request.runtime.state.get("updated_user_requirements", "")
-                        new_requirements = f"{current_requirements}\n\nUser Feedback on Clarifications:\n{user_feedback}"
+                        first_question = request.runtime.state.get("question_asked", "Initial Clarification Request")
+                        first_response = request.runtime.state.get("updated_user_requirements", "No response recorded")
+                        validation_question = "\n".join(clarifications)
+                        
+                        new_requirements = (
+                            f"Discussion happened so far:\n\n"
+                            f"**question_asked**:\n{first_question}\n\n"
+                            f"**user_replied**:\n{first_response}\n\n"
+                            f"**validation_question_asked**:\n{validation_question}\n\n"
+                            f"**validation_response**:\n{user_feedback}"
+                        )
                         
                         # Update the Command to include the new requirements
                         result.update["updated_user_requirements"] = new_requirements

@@ -1,4 +1,5 @@
 from typing import Annotated, TypedDict, Optional, Literal, Dict, List, Any
+import operator 
 from typing_extensions import NotRequired
 from operator import add
 from enum import Enum
@@ -331,9 +332,10 @@ class MainSupervisorState(AgentState):
     ]]
     
     # Phase outputs - populated during workflow execution
-    planning_output:  NotRequired[Dict[str, Any]]
-    generated_artifacts: NotRequired[Dict[str, str]]  # filepath -> content
+    planner_output:  NotRequired[Dict[str, Any]]
+    helm_chart_artifacts: NotRequired[Dict[str, str]]  # filepath -> content
     validation_results: NotRequired[Annotated[List[ValidationResult], add]]
+    deployment_ready: NotRequired[bool]
     
     # HITL tracking - initialized with defaults
     human_approval_status: NotRequired[Dict[str, ApprovalStatus]]
@@ -394,6 +396,9 @@ class MainSupervisorState(AgentState):
     task_id: NotRequired[str]
     # Todo tracking - populated during workflow
     todos: NotRequired[Annotated[List[Dict], add]]
+    
+    # Workspace directory for chart generation/validation (set during security review)
+    workspace_dir: NotRequired[str]  # Default: "/tmp/helm-charts"
 
 
 class PlanningSwarmState(AgentState):
@@ -434,54 +439,13 @@ class PlanningSwarmState(AgentState):
     
     # HITL: Use Case 1 - General feedback requests during execution
     pending_feedback_requests: NotRequired[Dict[str, Any]]
-    # Structure: {
-    #   "feedback_id": {
-    #     "question": str,
-    #     "context": Dict[str, Any],
-    #     "phase": str,
-    #     "timestamp": datetime,
-    #     "status": "pending" | "answered"
-    #   }
-    # }
     
     # HITL: Use Case 2 - Review tool call results after execution
     tool_call_results_for_review: NotRequired[Dict[str, Any]]
-    # Structure: {
-    #   "tool_call_id": {
-    #     "tool_name": str,
-    #     "tool_args": Dict[str, Any],
-    #     "tool_result": Any,
-    #     "phase": str,
-    #     "requires_review": bool,
-    #     "review_status": "pending" | "approved" | "rejected" | "modified"
-    #   }
-    # }
     
     # HITL: Use Case 4 - Critical tool call pre-approval (before execution)
     pending_tool_calls: NotRequired[Dict[str, Any]]
-    # Structure: {
-    #   "tool_call_id": {
-    #     "tool_name": str,
-    #     "tool_args": Dict[str, Any],
-    #     "is_critical": bool,
-    #     "phase": str,
-    #     "reason": str,  # Why approval is needed
-    #     "status": "pending" | "approved" | "rejected" | "modified"
-    #   }
-    # }
     
-    # HITL: Tool call approvals for critical operations
-    tool_call_approvals: NotRequired[Dict[str, ApprovalStatus]]
-    # Maps tool_call_id -> ApprovalStatus for critical tool calls
-    
-    # HITL: Sub-agent level approvals (e.g., requirement_analyzer, architecture_planner)
-    human_approval_status: NotRequired[Dict[str, ApprovalStatus]]
-    # Structure: {
-    #   "requirement_analyzer": ApprovalStatus,
-    #   "architecture_planner": ApprovalStatus,
-    #   "planning_complete": ApprovalStatus
-    # }
-
 
 # ============================================================================
 # Generation Swarm State
@@ -493,38 +457,55 @@ class GenerationSwarmState(AgentState):
     
     # Deep Agent required fields (must be present for create_deep_agent to work)
     remaining_steps: Optional[int]  # Required by Deep Agent TodoListMiddleware
-    
-    # Active agent tracking
-    active_agent: NotRequired[Literal[
-        "template_generator",
-        "values_generator",
-        "dependencies_manager",
-        "security_hardening",
-        "documentation_generator",
-        "generation_supervisor"
-    ]]
-    
     # Inputs from planning swarm
-    chart_plan: NotRequired[ChartPlan]
+    planner_output: NotRequired[Dict[str, Any]]
     
     # Generated artifacts (using merge reducer for concurrent updates)
-    templates: NotRequired[Annotated[Dict[str, str], lambda x, y: {**x, **y}]]
-    values_yaml: NotRequired[Optional[str]]
-    values_schema_json: NotRequired[Optional[str]]
-    chart_yaml: NotRequired[Optional[str]]
-    readme: NotRequired[Optional[str]]
-    status: WorkflowStatus = WorkflowStatus.PENDING
-    # Security policies (can be updated by multiple agents)
-    security_policies: NotRequired[Annotated[List[Dict], add]]
+    generated_templates: NotRequired[Annotated[Dict[str, Any], lambda x, y: {**(x or {}), **(y or {})}]]
+    validation_results: NotRequired[Annotated[List[Any], add]]
+    template_variables: NotRequired[Annotated[List[str], add]]
+    
+    generation_status: NotRequired[Annotated[Dict[str, Any], lambda x, y: {**(x or {}), **(y or {})}]]
+    
+    # Execution State (Coordinator Architecture)
+    current_phase: NotRequired[Literal[
+        "INIT",
+        "CORE_TEMPLATES",
+        "CONDITIONAL_TEMPLATES",
+        "HELPERS_AND_CONFIG",
+        "DOCUMENTATION",
+        "AGGREGATION",
+        "COMPLETED"
+    ]]
+    
+    next_action: NotRequired[str]  # Name of next tool or agent action
+    
+    tools_to_execute: NotRequired[List[str]]  # Queue of pending tools
+    completed_tools: NotRequired[List[str]]  # Executed tools (ordered)
+    pending_dependencies: NotRequired[Dict[str, List[str]]]  # Tool: [dependencies]
+    
+    # Tool Results
+    tool_results: NotRequired[Dict[str, Any]]
+    
+    # Coordinator State
+    coordinator_state: NotRequired[Dict[str, Any]]
+    
+    # Error Handling
+    errors: NotRequired[List[Dict[str, Any]]]
+    
+    # Final Output
+    final_helm_chart: NotRequired[Dict[str, Any]]
+    final_status: NotRequired[Literal["SUCCESS", "PARTIAL_SUCCESS", "FAILED", None]]
+    
     session_id: NotRequired[str] 
     task_id: NotRequired[str]
     # Deep Agent features
-    todos: NotRequired[Annotated[List[Dict], add]]
-    workspace_files: NotRequired[Annotated[Dict[str, str], lambda x, y: {**x, **y}]]
+    todos: NotRequired[Annotated[List[Dict[str, Any]], add]]
+    workspace_files: NotRequired[Annotated[Dict[str, str], lambda x, y: {**(x or {}), **(y or {})}]]
     
     # Generation metadata
-    generation_metadata: NotRequired[Dict]
-    handoff_metadata: NotRequired[Dict]
+    generation_metadata: NotRequired[Dict[str, Any]]
+    handoff_data: NotRequired[Annotated[Dict[str, Any], lambda x, y: {**(x or {}), **(y or {})}]]
 
 
 # ============================================================================
@@ -549,8 +530,7 @@ class ValidationSwarmState(AgentState):
     
     # Inputs from generation swarm
     generated_chart: NotRequired[Dict[str, str]]
-    chart_metadata: NotRequired[ChartPlan]
-    status: WorkflowStatus = WorkflowStatus.PENDING
+    validation_status: NotRequired[Annotated[Dict[str, Any], lambda x, y: {**(x or {}), **(y or {})}]]
     # Validation results (can be updated concurrently)
     validation_results: NotRequired[Annotated[List[ValidationResult], add]]
     security_scan_results: NotRequired[Optional[SecurityScanReport]]
@@ -560,7 +540,11 @@ class ValidationSwarmState(AgentState):
     # Deployment readiness
     deployment_ready: NotRequired[bool]
     blocking_issues: NotRequired[Annotated[List[str], add]]
-    
+
+    session_id: NotRequired[str] 
+    task_id: NotRequired[str]
+    # Deep Agent features
+    todos: NotRequired[Annotated[List[Dict[str, Any]], add]]
     # Handoff context
     handoff_metadata: NotRequired[Dict]
 

@@ -151,6 +151,15 @@ async def request_security_review(
                 runtime.state["human_approval_status"] = {}
             runtime.state["human_approval_status"].update(gate_result["human_approval_status"])
         
+        # Update workspace_dir if provided in gate result
+        if "workspace_dir" in gate_result:
+            runtime.state["workspace_dir"] = gate_result["workspace_dir"]
+            gate_tools_logger.log_structured(
+                level="INFO",
+                message="Workspace directory set from security review",
+                extra={"workspace_dir": gate_result["workspace_dir"]}
+            )
+        
         if "messages" in gate_result:
             if "messages" not in runtime.state:
                 runtime.state["messages"] = []
@@ -161,9 +170,10 @@ async def request_security_review(
         if approval:
             status = approval.status if hasattr(approval, "status") else approval.get("status", "pending")
             reviewer = approval.reviewer if hasattr(approval, "reviewer") else approval.get("reviewer")
+            workspace_dir = gate_result.get("workspace_dir", "/tmp/helm-charts")
             
             if status == "approved":
-                return f"✅ Security approved by {reviewer or 'reviewer'}. You can now proceed to validation/deployment phase."
+                return f"✅ Security approved by {reviewer or 'reviewer'}. Workspace directory set to: {workspace_dir}. You can now proceed to validation/deployment phase."
             elif status == "rejected":
                 return f"❌ Security review rejected by {reviewer or 'reviewer'}. Please fix security issues or end the workflow."
             else:

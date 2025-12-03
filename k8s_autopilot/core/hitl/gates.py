@@ -135,12 +135,13 @@ def security_review_gate(state: MainSupervisorState) -> Dict[str, Any]:
     
     Reviews security scan results and requires human approval before proceeding
     to validation/deployment if critical or error-level issues are found.
+    Also requests workspace directory for chart validation.
     
     Args:
         state: Current MainSupervisorState
         
     Returns:
-        Updated state with approval status and messages
+        Updated state with approval status, workspace_dir, and messages
     """
     # Check if already approved
     if is_approved(state, "security"):
@@ -153,6 +154,30 @@ def security_review_gate(state: MainSupervisorState) -> Dict[str, Any]:
                 )
             ]
         }
+    
+    # Extract chart/application name for the approval message
+    chart_name = "the application"
+    app_name = None
+    
+    # Try to get chart name from helm_chart_artifacts (Chart.yaml)
+    helm_chart_artifacts = state.get("helm_chart_artifacts", {})
+    if helm_chart_artifacts and "Chart.yaml" in helm_chart_artifacts:
+        try:
+            import yaml
+            chart_metadata = yaml.safe_load(helm_chart_artifacts["Chart.yaml"])
+            chart_name = chart_metadata.get("name", chart_name)
+        except Exception:
+            pass
+    
+    # Try to get app name from planning output
+    planning_output = state.get("planning_output", {})
+    if planning_output:
+        if isinstance(planning_output, dict):
+            parsed_reqs = planning_output.get("parsed_requirements", {})
+            app_analysis = planning_output.get("application_analysis", {})
+            app_name = parsed_reqs.get("app_name") or app_analysis.get("app_name")
+            if app_name:
+                chart_name = app_name
     
     # Get security scan results from validation_results
     validation_results = state.get("validation_results", [])
@@ -176,17 +201,35 @@ def security_review_gate(state: MainSupervisorState) -> Dict[str, Any]:
     # Extract summary using utility function
     summary = extract_security_summary(security_issues)
     
+    # Add workspace directory question to the summary
+    workspace_question = f"""
+
+## Workspace Directory Configuration
+
+Requesting approval to proceed with validation of the generated Helm chart artifacts for the {chart_name} application.
+
+**Please specify the workspace directory where the Helm chart should be written:**
+- Default: `/tmp/helm-charts`
+- If you are running this in a Docker container, make sure the directory you specify is mounted to your local disk.
+
+You can provide the workspace directory path in your response, or leave it empty to use the default."""
+    
+    # Combine summary with workspace question
+    full_summary = summary + workspace_question
+    
     # Build review data
     review_data = format_review_data(
         phase="security",
-        summary=summary,
+        summary=full_summary,
         data={
             "security_issues": security_issues,
             "issue_count": {
                 "critical": len([i for i in security_issues if i.get("severity") == "critical"]),
                 "error": len([i for i in security_issues if i.get("severity") == "error"]),
                 "total": len(security_issues)
-            }
+            },
+            "chart_name": chart_name,
+            "workspace_dir_prompt": True
         },
         required_action="approve",
         options=["approve", "reject"]
@@ -200,6 +243,17 @@ def security_review_gate(state: MainSupervisorState) -> Dict[str, Any]:
     reviewer = human_decision.get("reviewer")
     comments = human_decision.get("comments")
     
+    # Extract workspace_dir from human decision (could be in comments or separate field)
+    workspace_dir = human_decision.get("workspace_dir", "/tmp/helm-charts")
+    
+    # If workspace_dir not explicitly provided, try to extract from comments
+    if workspace_dir == "/tmp/helm-charts" and comments:
+        # Try to find a path-like string in comments (starts with /)
+        import re
+        path_match = re.search(r'/(?:[^\s]+/)*[^\s]+', comments)
+        if path_match:
+            workspace_dir = path_match.group(0)
+    
     updated_approvals = update_approval_status(
         state=state,
         approval_type="security",
@@ -208,15 +262,20 @@ def security_review_gate(state: MainSupervisorState) -> Dict[str, Any]:
         comments=comments
     )
     
-    return {
+    # Prepare return state updates
+    state_updates = {
         "human_approval_status": updated_approvals,
+        "workspace_dir": workspace_dir,
         "messages": [
             AIMessage(
                 content=f"Security review: {decision} by {reviewer or 'reviewer'}"
                 + (f": {comments}" if comments else "")
+                + f" | Workspace directory: {workspace_dir}"
             )
         ]
     }
+    
+    return state_updates
 
 
 def deployment_approval_gate(state: MainSupervisorState) -> Dict[str, Any]:

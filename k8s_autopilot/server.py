@@ -19,6 +19,8 @@ from k8s_autopilot.core import A2AAutoPilotExecutor
 from k8s_autopilot.core.agents import (
     create_k8sAutopilotSupervisorAgent,
     create_planning_swarm_deep_agent,
+    create_template_supervisor,
+    create_validator_deep_agent,
 )
 from k8s_autopilot.utils.logger import AgentLogger, log_sync
 
@@ -69,10 +71,22 @@ def main(host: str, port: int, agent_card: str, config_file: str):
 
         # Create Planning Swarm Deep Agent
         planning_swarm_deep_agent = create_planning_swarm_deep_agent(config)
+        
+        # Create Template Supervisor (for Helm chart generation)
+        template_supervisor = create_template_supervisor(
+            config=config,
+            name="template_supervisor"  # Must match the name expected in supervisor_agent.py
+        )
+
+        # Create Validator Deep Agent
+        validator_deep_agent = create_validator_deep_agent(
+            config=config,
+            name="validator_deep_agent"  # Must match the name expected in supervisor_agent.py
+        )
 
         # Create Supervisor Agent
         supervisor_agent = create_k8sAutopilotSupervisorAgent(
-            agents=[planning_swarm_deep_agent],
+            agents=[planning_swarm_deep_agent, template_supervisor, validator_deep_agent],
             config=config,
             name="k8sAutopilotSupervisorAgent"
         )

@@ -55,26 +55,26 @@ class ExternalService(BaseModel):
 
 class DeploymentConfig(BaseModel):
     """Deployment configuration requirements."""
-    min_replicas: int = Field(
+    min_replicas: Optional[int] = Field(
         default=1,
         ge=1,
         description="Minimum number of pod replicas"
     )
-    max_replicas: int = Field(
+    max_replicas: Optional[int] = Field(
         default=10,
         ge=1,
         description="Maximum number of pod replicas for autoscaling"
     )
-    regions: List[str] = Field(
+    regions: Optional[List[str]] = Field(
         default=["us-east-1"],
         description="Deployment regions",
         examples=[["us-east-1", "eu-west-1"]]
     )
-    high_availability: bool = Field(
+    high_availability: Optional[bool] = Field(
         default=False,
         description="Whether high availability is required"
     )
-    canary_deployment: bool = Field(
+    canary_deployment: Optional[bool] = Field(
         default=False,
         description="Whether canary deployment strategy should be used"
     )
@@ -171,7 +171,8 @@ class ServiceInfo(BaseModel):
 class EnvironmentVariableInfo(BaseModel):
     """Single environment variable."""
     name: str = Field(..., description="Variable name")
-    value: Optional[str] = Field(None, description="Variable value if provided")
+    value: Optional[str] = Field(None, description="Variable value OR resource name (if from_secret/configmap)")
+    key: Optional[str] = Field(None, description="Key within the secret/configmap")
     from_secret: bool = Field(
         default=False,
         description="Whether this should come from a secret"
@@ -226,6 +227,16 @@ class ParsedRequirements(BaseModel):
         description="Type of application being deployed",
         examples=["nodejs_microservice", "python_microservice", "java_microservice", "monolith", "daemon", "cronjob", "web_application", "api_service", "database", "cache", "message_queue"]
     )
+    app_name: Optional[str] = Field(
+        None,
+        description="Name of the application",
+        examples=["myapp", "my-app", "my-application"]
+    )
+    app_env: Optional[str] = Field(
+        None,
+        description="Environment of the application",
+        examples=["dev", "staging", "prod"]
+    )
     framework: str = Field(
         ...,
         description="Application framework",
@@ -248,10 +259,10 @@ class ParsedRequirements(BaseModel):
         default_factory=DeploymentConfig,
         description="Deployment configuration"
     )
-    security: SecurityConfig = Field(
+    security: Optional[SecurityConfig] = Field(
         default_factory=SecurityConfig,
         description="Security requirements"
-    ),
+    )
     image: Optional[ContainerImageInfo] = Field(
         None,
         description="Container image details from Q2"
@@ -375,7 +386,7 @@ async def parse_requirements(
             max_tokens=higher_llm_config['max_tokens']
         )
 
-        chain = prompt | model | parser
+        chain = prompt | higher_model | parser
 
         requirement_parser_logger.log_structured(            
             level="DEBUG",
@@ -587,6 +598,7 @@ async def validate_requirements(
 
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
         requirement_parser_logger.log_structured(
             level="INFO",
             message="Using LLM configuration for requirements validation",
@@ -603,7 +615,13 @@ async def validate_requirements(
             temperature=llm_config['temperature'],
             max_tokens=llm_config['max_tokens']
         )
-        chain = prompt | model | parser
+        higher_model = LLMProvider.create_llm(
+            provider=higher_llm_config['provider'],
+            model=higher_llm_config['model'],
+            temperature=higher_llm_config['temperature'],
+            max_tokens=higher_llm_config['max_tokens']
+        )
+        chain = prompt | higher_model | parser
         requirement_parser_logger.log_structured(
             level="DEBUG",
             message="Executing LLM chain for requirements validation",

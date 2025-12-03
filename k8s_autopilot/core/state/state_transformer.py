@@ -5,8 +5,13 @@ from k8s_autopilot.core.state.base import (
     PlanningSwarmState,
     GenerationSwarmState,
     ValidationSwarmState,
-    WorkflowStatus
+    WorkflowStatus,
+    SupervisorWorkflowState
 )
+from k8s_autopilot.utils.logger import AgentLogger
+
+# Create logger for StateTransformer
+state_transformer_logger = AgentLogger("StateTransformer")
 
 
 class StateTransformer:
@@ -85,8 +90,8 @@ class StateTransformer:
             workflow_state_obj.set_phase_complete("planning")
             workflow_state_obj.last_swarm = "planning_swarm"
             
-            # Convert back to dict for state update
-            updated_workflow_state = workflow_state_obj.model_dump()
+            # Return object directly to avoid Pydantic serialization warnings
+            updated_workflow_state = workflow_state_obj
         else:
             # Fallback if no workflow state exists
             updated_workflow_state = {
@@ -98,7 +103,7 @@ class StateTransformer:
         # Create summary messages instead of dumping full history
         summary_messages = [
             ToolMessage(
-                content="Planning swarm completed successfully. Chart plan has been generated and stored.",
+                content="Planning swarm completed successfully. Chart plan has been generated and stored. Please transfer call to transfer_to_template_supervisor tool.",
                 tool_call_id=tool_call_id
             ),
             HumanMessage(
@@ -109,7 +114,7 @@ class StateTransformer:
         return {
             "messages": summary_messages,
             "llm_input_messages": summary_messages,
-            "planning_output": planning_state.get("chart_plan") or planning_state.get("handoff_data"),
+            "planner_output": planning_state.get("chart_plan") or planning_state.get("handoff_data"),
             "workflow_state": updated_workflow_state
         }
     
@@ -123,29 +128,34 @@ class StateTransformer:
         Transform supervisor state to generation swarm input state.
         
         Maps:
-        - planning_output → chart_plan (ChartPlan from planning phase)
+        - planner_output → planner_output (ChartPlan from planning phase)
         - messages → messages (conversation history)
+        
+        Note: The Template Coordinator's initialization_node will set up:
+        - current_phase, next_action, tools_to_execute, completed_tools
+        - pending_dependencies, coordinator_state, tool_results, errors
+        based on the planner_output, so we don't set them here.
         """
+        messages = [HumanMessage(content=supervisor_state["user_query"])]
         return {
-            "messages": supervisor_state["messages"],
-            "active_agent": "generation_supervisor",
-            "chart_plan": supervisor_state.get("planning_output"),
-            "templates": {},
-            "values_yaml": None,
-            "values_schema_json": None,
-            "chart_yaml": None,
-            "readme": None,
-            "security_policies": [],
-            "todos": [],
-            "workspace_files": {},
-            "generation_metadata": {},
-            "handoff_metadata": {}
+            # Core fields
+            "messages": messages,
+            "planner_output": supervisor_state.get("planner_output"),
+            
+            # Generated artifacts (will be populated by tools)
+            "generated_templates": {},
+            "validation_results": [],
+            "template_variables": [],
+            
+            # Generation status (legacy field, kept for compatibility)
+            "generation_status": {},
         }
     
     @staticmethod
     def generation_to_supervisor(
         generation_state: GenerationSwarmState,
-        original_supervisor_state: MainSupervisorState
+        original_supervisor_state: MainSupervisorState,
+        tool_call_id: str
     ) -> Dict:
         """
         Transform generation swarm output back to supervisor state updates.
@@ -155,32 +165,44 @@ class StateTransformer:
         - messages → messages (updated conversation)
         - Updates workflow_state.generation_complete
         """
-        # Combine all generated files into single dict
-        generated_artifacts = {}
-        
-        # Add templates
-        if generation_state.get("templates"):
-            generated_artifacts.update(generation_state["templates"])
-        
-        # Add standalone files
-        if generation_state.get("values_yaml"):
-            generated_artifacts["values.yaml"] = generation_state["values_yaml"]
-        if generation_state.get("values_schema_json"):
-            generated_artifacts["values.schema.json"] = generation_state["values_schema_json"]
-        if generation_state.get("chart_yaml"):
-            generated_artifacts["Chart.yaml"] = generation_state["chart_yaml"]
-        if generation_state.get("readme"):
-            generated_artifacts["README.md"] = generation_state["readme"]
-        
-        return {
-            "messages": generation_state["messages"],
-            "generated_artifacts": generated_artifacts if generated_artifacts else None,
-            "workflow_state": {
-                **original_supervisor_state.get("workflow_state", {}).__dict__,
+        current_workflow_state = original_supervisor_state.get("workflow_state")
+        if current_workflow_state:
+            # Ensure it's a SupervisorWorkflowState object
+            if isinstance(current_workflow_state, dict):
+                workflow_state_obj = SupervisorWorkflowState(**current_workflow_state)
+            else:
+                workflow_state_obj = current_workflow_state
+            
+            # Use helper method to set phase complete
+            workflow_state_obj.set_phase_complete("generation")
+            workflow_state_obj.last_swarm = "generation_swarm"
+            
+            # Return object directly to avoid Pydantic serialization warnings
+            updated_workflow_state = workflow_state_obj
+        else:
+            # Fallback if no workflow state exists
+            updated_workflow_state = {
                 "generation_complete": True,
                 "last_swarm": "generation_swarm",
                 "current_phase": "generation"
             }
+
+        # Create summary messages instead of dumping full history
+        summary_messages = [
+            ToolMessage(
+                content="Generation swarm completed successfully. Chart artifacts have been generated. Please transfer call to transfer_to_validation_swarm tool.",
+                tool_call_id=tool_call_id
+            ),
+            HumanMessage(
+                content="Generation is complete. Please proceed to validate the generated artifacts."
+            )
+        ]
+
+        return {
+            "messages": summary_messages,
+            "llm_input_messages": summary_messages,
+            "helm_chart_artifacts": generation_state.get("final_helm_chart"),
+            "workflow_state": updated_workflow_state
         }
     
     # ============================================================================
@@ -188,7 +210,7 @@ class StateTransformer:
     # ============================================================================
     
     @staticmethod
-    def supervisor_to_validation(supervisor_state: MainSupervisorState) -> Dict:
+    def supervisor_to_validation(supervisor_state: MainSupervisorState, workspace_dir: str = "/tmp/helm-charts") -> Dict:
         """
         Transform supervisor state to validation swarm input state.
         
@@ -196,42 +218,237 @@ class StateTransformer:
         - generated_artifacts → generated_chart (Dict[str, str])
         - planning_output → chart_metadata (ChartPlan)
         - messages → messages (conversation history)
+        
+        Also pre-writes chart files to filesystem to avoid context overload.
         """
+        generated_chart = supervisor_state.get("helm_chart_artifacts", {}) or {}
+        
+        # Extract chart name from Chart.yaml if available
+        chart_name = "my-app"  # default
+        if "Chart.yaml" in generated_chart:
+            try:
+                import yaml
+                chart_metadata = yaml.safe_load(generated_chart["Chart.yaml"])
+                chart_name = chart_metadata.get("name", "my-app")
+            except Exception:
+                pass
+        
+        # Pre-write chart files to filesystem to avoid context overload
+        # This way the agent can work with files directly without needing them in messages
+        chart_path = f"{workspace_dir}/{chart_name}"
+        files_written = []
+        if generated_chart:
+            import os
+            try:
+                os.makedirs(chart_path, exist_ok=True)
+                os.makedirs(f"{chart_path}/templates", exist_ok=True)
+                
+                # Write all files as-is (content already has proper newlines)
+                for filename, content in generated_chart.items():
+                    try:
+                        # Content already has actual newline characters (\n) - no decoding needed
+                        # Just ensure it's a string type
+                        if not isinstance(content, str):
+                            content = str(content)
+                        
+                        # Determine file path and create directory structure
+                        file_path = f"{chart_path}/{filename}"
+                        
+                        # Handle templates/ subdirectory
+                        if filename.startswith("templates/"):
+                            template_name = filename.replace("templates/", "")
+                            file_path = f"{chart_path}/templates/{template_name}"
+                        elif "/" in filename and not filename.startswith("templates/"):
+                            # Handle other subdirectories (e.g., "charts/", "crds/")
+                            dir_path = f"{chart_path}/{os.path.dirname(filename)}"
+                            os.makedirs(dir_path, exist_ok=True)
+                            file_path = f"{chart_path}/{filename}"
+                        
+                        # Ensure parent directory exists (double-check)
+                        parent_dir = os.path.dirname(file_path)
+                        if parent_dir and parent_dir != chart_path:
+                            os.makedirs(parent_dir, exist_ok=True)
+                        
+                        # Write file with proper encoding and newline handling
+                        # Use newline="" to preserve original line endings
+                        with open(file_path, "w", encoding="utf-8", newline="") as f:
+                            f.write(content)
+                        files_written.append(filename)
+                    except Exception as e:
+                        # Log but continue - agent can write files itself if needed
+                        state_transformer_logger.log_structured(
+                            level="WARNING",
+                            message=f"Failed to pre-write chart file: {filename}",
+                            extra={
+                                "filename": filename,
+                                "error": str(e),
+                                "error_type": type(e).__name__,
+                                "chart_path": chart_path
+                            }
+                        )
+            except Exception as e:
+                # If directory creation fails, agent will handle it
+                state_transformer_logger.log_structured(
+                    level="WARNING",
+                    message=f"Failed to create chart directory",
+                    extra={
+                        "chart_path": chart_path,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                        "workspace_dir": workspace_dir
+                    }
+                )
+        
+        # Create minimal instruction message (no chart contents to avoid context overload)
+        files_status = f"Pre-written ({len(files_written)}/{len(generated_chart)} files)" if files_written else "Need to write from state"
+        instruction = f"""Validate the Helm chart located at: {chart_path}
+
+Chart Name: {chart_name}
+Chart Files: {files_status}
+
+Steps:
+1. Use `ls {chart_path}` to verify chart structure
+2. If files are missing, check `generated_chart` in state and write them using `write_file`
+3. Run `helm_lint_validator(chart_path="{chart_path}")`
+4. Run `helm_template_validator(chart_path="{chart_path}")`
+5. Run `helm_dry_run_validator(chart_path="{chart_path}", release_name="{chart_name}", namespace="default")` if cluster available
+6. Report validation results
+
+Chart files should be at: {chart_path}"""
+        
+        messages = [HumanMessage(content=instruction)]
+        
         return {
-            "messages": supervisor_state["messages"],
+            "messages": messages,
             "active_agent": "validation_supervisor",
-            "generated_chart": supervisor_state.get("generated_artifacts", {}),
-            "chart_metadata": supervisor_state.get("planning_output"),
+            "generated_chart": generated_chart,  # Keep in state for reference, but not in messages
             "validation_results": [],
             "security_scan_results": None,
             "test_artifacts": None,
             "argocd_manifests": None,
             "deployment_ready": False,
             "blocking_issues": [],
-            "handoff_metadata": {}
+            "handoff_metadata": {
+                "chart_name": chart_name,
+                "chart_path": chart_path,
+                "workspace_dir": workspace_dir
+            }
         }
     
     @staticmethod
     def validation_to_supervisor(
         validation_state: ValidationSwarmState,
-        original_supervisor_state: MainSupervisorState
+        original_supervisor_state: MainSupervisorState,
+        tool_call_id: str = "validation_complete"
     ) -> Dict:
         """
         Transform validation swarm output back to supervisor state updates.
         
         Maps:
         - validation_results → validation_results (List[ValidationResult])
-        - messages → messages (updated conversation)
-        - Updates workflow_state.validation_complete
+        - deployment_ready → deployment_ready (bool)
+        - blocking_issues → blocking_issues (List[str])
+        - security_scan_results → security_scan_results (if present)
+        - test_artifacts → test_artifacts (if present)
+        - argocd_manifests → argocd_manifests (if present)
+        - messages → messages (summary messages with ToolMessage and HumanMessage)
+        - Updates workflow_state.validation_complete via set_phase_complete("validation")
         """
-        return {
-            "messages": validation_state["messages"],
-            "validation_results": validation_state.get("validation_results", []),
-            "workflow_state": {
-                **original_supervisor_state.get("workflow_state", {}).__dict__,
+        # Reconstruct workflow state object
+        current_workflow_state = original_supervisor_state.get("workflow_state")
+        if current_workflow_state:
+            # Ensure it's a SupervisorWorkflowState object
+            if isinstance(current_workflow_state, dict):
+                workflow_state_obj = SupervisorWorkflowState(**current_workflow_state)
+            else:
+                workflow_state_obj = current_workflow_state
+            
+            # Use helper method to set phase complete
+            workflow_state_obj.set_phase_complete("validation")
+            workflow_state_obj.last_swarm = "validation_swarm"
+            
+            # Return object directly to avoid Pydantic serialization warnings
+            updated_workflow_state = workflow_state_obj
+        else:
+            # Fallback if no workflow state exists
+            updated_workflow_state = {
                 "validation_complete": True,
                 "last_swarm": "validation_swarm",
-                "current_phase": "validation",
-                "deployment_ready": validation_state.get("deployment_ready", False)
+                "current_phase": "validation"
             }
+
+        # Determine validation status summary
+        validation_results = validation_state.get("validation_results", [])
+        blocking_issues = validation_state.get("blocking_issues", [])
+        deployment_ready = validation_state.get("deployment_ready", False)
+        
+        # Count validation results by status (handle both Pydantic models and dicts)
+        passed_count = 0
+        for r in validation_results:
+            if hasattr(r, 'passed'):
+                # Pydantic model
+                if r.passed:
+                    passed_count += 1
+            elif isinstance(r, dict):
+                # Dict format
+                if r.get("passed", False):
+                    passed_count += 1
+        
+        failed_count = len(validation_results) - passed_count
+        
+        # Build validation summary message
+        if deployment_ready and not blocking_issues:
+            validation_summary = (
+                f"Validation completed successfully. All {len(validation_results)} validation checks passed. "
+                f"Chart is ready for deployment."
+            )
+        elif blocking_issues:
+            validation_summary = (
+                f"Validation completed with {len(blocking_issues)} blocking issue(s) and {failed_count} failed check(s). "
+                f"Chart is NOT ready for deployment. Review blocking issues before proceeding."
+            )
+        else:
+            validation_summary = (
+                f"Validation completed with {failed_count} failed check(s) out of {len(validation_results)} total. "
+                f"Review validation results before proceeding."
+            )
+
+        # Create summary messages instead of dumping full history
+        summary_messages = [
+            ToolMessage(
+                content=f"Validation swarm completed. {validation_summary}",
+                tool_call_id=tool_call_id
+            ),
+            HumanMessage(
+                content=(
+                    f"Validation phase complete. "
+                    f"Results: {passed_count} passed, {failed_count} failed. "
+                    f"{'Chart is ready for deployment.' if deployment_ready else 'Chart requires fixes before deployment.'}"
+                )
+            )
+        ]
+
+        # Build return dictionary with all validation data
+        return_dict = {
+            "messages": summary_messages,
+            "llm_input_messages": summary_messages,
+            "validation_results": validation_results,
+            "workflow_state": updated_workflow_state,
+            "deployment_ready": deployment_ready
         }
+        
+        # Include optional validation outputs if present
+        if validation_state.get("security_scan_results"):
+            return_dict["security_scan_results"] = validation_state.get("security_scan_results")
+        
+        if validation_state.get("test_artifacts"):
+            return_dict["test_artifacts"] = validation_state.get("test_artifacts")
+        
+        if validation_state.get("argocd_manifests"):
+            return_dict["argocd_manifests"] = validation_state.get("argocd_manifests")
+        
+        # Include blocking issues in a structured way
+        if blocking_issues:
+            return_dict["blocking_issues"] = blocking_issues
+
+        return return_dict
