@@ -142,8 +142,17 @@ async def generate_traefik_ingressroute_yaml(
             raise ValueError("runtime.state is None - cannot generate Traefik IngressRoute YAML")
         
         planner_output = runtime.state.get("planner_output", {}) or {}
+        # Defensive check for planner_output
+        if isinstance(planner_output, list):
+            planner_output = planner_output[0] if planner_output else {}
+
         parsed_reqs = planner_output.get("parsed_requirements", {}) or {}
+        if isinstance(parsed_reqs, list):
+            parsed_reqs = parsed_reqs[0] if parsed_reqs else {}
+
         k8s_arch = planner_output.get("kubernetes_architecture", {}) or {}
+        if isinstance(k8s_arch, list):
+            k8s_arch = k8s_arch[0] if k8s_arch else {}
         
         # Extract app name from parsed requirements
         ingress_traefik_app_name = parsed_reqs.get("app_name", "myapp")
@@ -151,6 +160,9 @@ async def generate_traefik_ingressroute_yaml(
         # Find Ingress resource in kubernetes_architecture.resources.auxiliary
         ingress_resource = None
         resources = k8s_arch.get("resources", {}) or {}
+        if isinstance(resources, list):
+            resources = {}
+            
         auxiliary_resources = resources.get("auxiliary", []) or []
         for resource in auxiliary_resources:
             if (resource or {}).get("type") == "Ingress":
@@ -161,13 +173,20 @@ async def generate_traefik_ingressroute_yaml(
             raise ValueError("No Ingress resource found in kubernetes_architecture")
         
         config_hints = (ingress_resource or {}).get("configuration_hints", {}) or {}
+        if isinstance(config_hints, list):
+            config_hints = config_hints[0] if config_hints and isinstance(config_hints[0], dict) else {}
         
         # Extract basic configuration
         ingress_traefik_namespace = config_hints.get("namespace", "default")
         hosts = config_hints.get("hosts", []) or []
         rules = config_hints.get("rules", []) or []
         tls_config = config_hints.get("tls", {}) or {}
+        if isinstance(tls_config, list):
+            tls_config = tls_config[0] if tls_config else {}
+
         traefik_config = config_hints.get("traefik", {}) or {}
+        if isinstance(traefik_config, list):
+            traefik_config = traefik_config[0] if traefik_config else {}
         
         # Determine route type (HTTP/TCP/UDP) - default to HTTP for standard Ingress
         ingress_traefik_route_type = "HTTP"
@@ -252,6 +271,15 @@ async def generate_traefik_ingressroute_yaml(
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
         
+        # Extract helper templates from previous tool execution
+        tool_results = runtime.state.get("tool_results", {})
+        helper_output = tool_results.get("generate_helpers_tpl", {}).get("output", {})
+        template_categories = helper_output.get("template_categories", {})
+        
+        naming_templates = template_categories.get("naming", [])
+        label_templates = template_categories.get("labels", [])
+        annotation_templates = template_categories.get("annotations", [])
+
         # Format entry_points as string with "- " prefix for each entry point
         entry_points_formatted = "\n".join([f"- {ep}" for ep in ingress_traefik_entry_points]) if ingress_traefik_entry_points else "- web"
         
@@ -275,6 +303,9 @@ async def generate_traefik_ingressroute_yaml(
             pass_host_header=ingress_traefik_pass_host_header,
             servers_transport_name=ingress_traefik_servers_transport_name or "None",
             timeout=ingress_traefik_timeout or "None",
+            naming_templates=json.dumps(naming_templates, indent=2),
+            label_templates=json.dumps(label_templates, indent=2),
+            annotation_templates=json.dumps(annotation_templates, indent=2)
         )
 
         parser = PydanticOutputParser(return_id=True, pydantic_object=TraefikIngressRouteToolOutput)
@@ -293,6 +324,7 @@ async def generate_traefik_ingressroute_yaml(
 
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
         traefik_ingressroute_tool_logger.log_structured(
             level="INFO",
             message="Generating Traefik IngressRoute YAML file",

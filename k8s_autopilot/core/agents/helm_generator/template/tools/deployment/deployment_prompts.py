@@ -105,10 +105,12 @@ spec:
     metadata:
       labels:
         {{- include "CHARTNAME.selectorLabels" . | nindent 8 }}
-      {{- if .Values.podAnnotations }}
+        {{- include "CHARTNAME.labels.pod" . | nindent 8 }}
       annotations:
+        {{- include "CHARTNAME.annotations.pod" . | nindent 8 }}
+        {{- if .Values.podAnnotations }}
         {{- toYaml .Values.podAnnotations | nindent 8 }}
-      {{- end }}
+        {{- end }}
 ```
 
 ## OUTPUT FORMAT
@@ -180,11 +182,22 @@ Generate liveness and readiness probes appropriate for {framework}.
 
 {core_config}
 
+## Helper Templates (Use these specific templates)
+
+**Naming Templates:**
+{naming_templates}
+
+**Label Templates:**
+{label_templates}
+
+**Annotation Templates:**
+{annotation_templates}
+
 ## Additional Requirements
 
 - Implement proper security contexts (runAsNonRoot, drop ALL capabilities, seccomp)
 - Use Helm templating for all configurable values ({{ .Values.* }})
-- Use helper templates for labels ({{ include "CHARTNAME.labels" . }})
+- Use the provided helper templates for labels and annotations (e.g., {{ include "CHARTNAME.labels" . }})
 - Set appropriate resource requests and limits
 - Configure rolling update strategy
 - Add pod disruption budget considerations if HA enabled

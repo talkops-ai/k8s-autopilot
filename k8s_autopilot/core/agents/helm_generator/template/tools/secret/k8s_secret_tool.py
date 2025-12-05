@@ -176,11 +176,23 @@ async def generate_secret(
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
         
+        # Extract helper templates from previous tool execution
+        tool_results = runtime.state.get("tool_results", {})
+        helper_output = tool_results.get("generate_helpers_tpl", {}).get("output", {})
+        template_categories = helper_output.get("template_categories", {})
+        
+        naming_templates = template_categories.get("naming", [])
+        label_templates = template_categories.get("labels", [])
+        annotation_templates = template_categories.get("annotations", [])
+
         formatted_user_query = SECRET_USER_PROMPT.format(
             app_name=app_name,
             namespace=namespace,
             secret_config=escape_json_for_template(json.dumps(secret_config, indent=2)),
-            k8s_architecture=escape_json_for_template(json.dumps(k8s_architecture, indent=2))
+            k8s_architecture=escape_json_for_template(json.dumps(k8s_architecture, indent=2)),
+            naming_templates=json.dumps(naming_templates, indent=2),
+            label_templates=json.dumps(label_templates, indent=2),
+            annotation_templates=json.dumps(annotation_templates, indent=2)
         )
         
         parser = PydanticOutputParser(return_id=True, pydantic_object=SecretGenerationOutput)
@@ -197,8 +209,10 @@ async def generate_secret(
             format_instructions=parser.get_format_instructions(),
         )
         
+        
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
         model = LLMProvider.create_llm(
             provider=llm_config['provider'],
             model=llm_config['model'],
@@ -206,7 +220,14 @@ async def generate_secret(
             max_tokens=llm_config['max_tokens']
         )
         
-        chain = prompt | model | parser
+        higher_model = LLMProvider.create_llm(
+            provider=higher_llm_config['provider'],
+            model=higher_llm_config['model'],
+            temperature=higher_llm_config['temperature'],
+            max_tokens=higher_llm_config['max_tokens']
+        )
+        
+        chain = prompt | higher_model | parser
         # Pass system message directly
         response = await chain.ainvoke({
             "system_message": [SystemMessage(content=SECRET_SYSTEM_PROMPT)]

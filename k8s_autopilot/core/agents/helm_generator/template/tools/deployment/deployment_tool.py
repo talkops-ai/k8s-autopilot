@@ -1,7 +1,7 @@
 from langchain.tools import tool, InjectedToolCallId, ToolRuntime
 from langgraph.types import Command
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import ToolMessage, SystemMessage
 from typing_extensions import Annotated
 from toon import encode
@@ -526,6 +526,15 @@ async def generate_deployment_yaml(
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
         
+        # Extract helper templates from previous tool execution
+        tool_results = runtime.state.get("tool_results", {})
+        helper_output = tool_results.get("generate_helpers_tpl", {}).get("output", {})
+        template_categories = helper_output.get("template_categories", {})
+        
+        naming_templates = template_categories.get("naming", [])
+        label_templates = template_categories.get("labels", [])
+        annotation_templates = template_categories.get("annotations", [])
+
         formatted_user_query = DEPLOYMENT_GENERATOR_USER_PROMPT.format(
             workload_type=workload_type,
             app_name=app_name,
@@ -549,12 +558,12 @@ async def generate_deployment_yaml(
             configuration=escape_json_for_template(json.dumps(configuration)),
             security=escape_json_for_template(json.dumps(security_analysis)),
             core_config=escape_json_for_template(json.dumps(core_config, indent=2)),
-            chart_name=chart_name
+            chart_name=chart_name,
+            naming_templates=json.dumps(naming_templates, indent=2),
+            label_templates=json.dumps(label_templates, indent=2),
+            annotation_templates=json.dumps(annotation_templates, indent=2)
         )
         parser = PydanticOutputParser(return_id=True, pydantic_object=DeploymentGenerationOutput)
-    
-        from langchain_core.prompts import MessagesPlaceholder
-        from langchain_core.messages import SystemMessage
         
         # Use MessagesPlaceholder for the system prompt to completely bypass template parsing
         # This prevents LangChain from interpreting {{ .Values.* }} as variables
@@ -572,6 +581,7 @@ async def generate_deployment_yaml(
         )
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
         
         deployment_generator_logger.log_structured(
             level="INFO",

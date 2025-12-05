@@ -121,14 +121,23 @@ Generate a PodDisruptionBudget YAML for this Helm chart:
 
 {pdb_config}
 
+## Helper Templates (Use these specific templates)
+
+**Naming Templates:**
+{naming_templates}
+
+**Label Templates:**
+{label_templates}
+
+**Annotation Templates:**
+{annotation_templates}
+
 ## Requirements
 
 - Use policy/v1 API version
 - Selector must match Deployment labels exactly
 - Use Helm templating for values ({{ .Values.podDisruptionBudget.* }})
-- Use {{ include "CHARTNAME.fullname" . }} for name
-- Use {{ include "CHARTNAME.labels" . | nindent 4 }} for labels
-- Use {{ include "CHARTNAME.selectorLabels" . | nindent 6 }} for selector
+- Use the provided helper templates for labels and selector (e.g., {{ include "CHARTNAME.labels" . }})
 - Configure EITHER minAvailable OR maxUnavailable (not both)
 
 **Generate the complete PDB YAML now.**

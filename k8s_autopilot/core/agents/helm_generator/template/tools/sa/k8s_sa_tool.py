@@ -178,11 +178,23 @@ async def generate_service_account_rbac(
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
         
+        # Extract helper templates from previous tool execution
+        tool_results = runtime.state.get("tool_results", {})
+        helper_output = tool_results.get("generate_helpers_tpl", {}).get("output", {})
+        template_categories = helper_output.get("template_categories", {})
+        
+        naming_templates = template_categories.get("naming", [])
+        label_templates = template_categories.get("labels", [])
+        annotation_templates = template_categories.get("annotations", [])
+
         formatted_user_query = SERVICE_ACCOUNT_USER_PROMPT.format(
             app_name=app_name,
             namespace=namespace,
             sa_config=escape_json_for_template(json.dumps(sa_config, indent=2)),
-            k8s_architecture=escape_json_for_template(json.dumps(k8s_architecture, indent=2))
+            k8s_architecture=escape_json_for_template(json.dumps(k8s_architecture, indent=2)),
+            naming_templates=json.dumps(naming_templates, indent=2),
+            label_templates=json.dumps(label_templates, indent=2),
+            annotation_templates=json.dumps(annotation_templates, indent=2)
         )
         
         parser = PydanticOutputParser(return_id=True, pydantic_object=ServiceAccountGenerationOutput)
@@ -201,6 +213,7 @@ async def generate_service_account_rbac(
         
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
         model = LLMProvider.create_llm(
             provider=llm_config['provider'],
             model=llm_config['model'],

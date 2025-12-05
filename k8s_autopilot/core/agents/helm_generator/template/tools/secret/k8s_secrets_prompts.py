@@ -135,11 +135,22 @@ Generate Kubernetes Secret manifests for this Helm chart:
 
 {k8s_architecture}
 
+## Helper Templates (Use these specific templates)
+
+**Naming Templates:**
+{naming_templates}
+
+**Label Templates:**
+{label_templates}
+
+**Annotation Templates:**
+{annotation_templates}
+
 ## Requirements
 
 - Generate Secret with proper Helm templating
-- Use {{ include "CHARTNAME.fullname" . }} for names
-- Use {{ include "CHARTNAME.labels" . | nindent 4 }} for labels
+- Use Helm templating for all configurable values ({{ .Values.* }})
+- Use the provided helper templates for labels and annotations (e.g., {{ include "CHARTNAME.labels" . }})
 - Use {{ .Values.secrets.* }} for all secret data
 - Never hardcode sensitive values
 - Provide usage examples for environment variables and volume mounts

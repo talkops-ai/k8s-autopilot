@@ -146,7 +146,8 @@ class StateTransformer:
             "generated_templates": {},
             "validation_results": [],
             "template_variables": [],
-            
+            "session_id": supervisor_state.get("session_id"),
+            "task_id": supervisor_state.get("task_id"),
             # Generation status (legacy field, kept for compatibility)
             "generation_status": {},
         }
@@ -327,6 +328,8 @@ Chart files should be at: {chart_path}"""
             "test_artifacts": None,
             "argocd_manifests": None,
             "deployment_ready": False,
+            "session_id": supervisor_state.get("session_id"),
+            "task_id": supervisor_state.get("task_id"),
             "blocking_issues": [],
             "handoff_metadata": {
                 "chart_name": chart_name,

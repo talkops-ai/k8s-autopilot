@@ -1,5 +1,5 @@
 from langchain.tools import tool, InjectedToolCallId, ToolRuntime
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 from langchain_core.messages import ToolMessage
 from k8s_autopilot.utils.logger import AgentLogger
 from typing_extensions import Annotated
@@ -33,10 +33,18 @@ def helm_lint_validator(
         Command: Command to update ValidationSwarmState with validation results
     """
     try:
+        # Get current retry count from state
+        current_retry_counts = runtime.state.get("validation_retry_counts", {}) or {}
+        current_retry_count = current_retry_counts.get("helm_lint", 0)
+        
         helm_validator_tool_logger.log_structured(
             level="INFO",
             message="Starting helm lint validation",
-            extra={"chart_path": chart_path, "tool_call_id": tool_call_id}
+            extra={
+                "chart_path": chart_path,
+                "tool_call_id": tool_call_id,
+                "current_retry_count": current_retry_count
+            }
         )
         
         # Run helm lint
@@ -68,14 +76,17 @@ def helm_lint_validator(
             "stderr": result.stderr,
             "errors_count": errors_count,
             "warnings_count": warnings_count,
-            "chart_path": chart_path
+            "chart_path": chart_path,
+            "retry_count": current_retry_count
         }
         
-        # Create message
+        # Create message with retry information
         if passed:
             message = f"Helm lint validation passed. {warnings_count} warning(s) found."
         else:
-            message = f"Helm lint validation failed. {errors_count} error(s), {warnings_count} warning(s) found."
+            message = f"Helm lint validation failed. {errors_count} error(s), {warnings_count} warning(s) found. (Retry attempt: {current_retry_count}/2)"
+            if current_retry_count >= 2:
+                message += " ⚠️ MAX RETRIES REACHED - Call ask_human for assistance."
         
         # Create ValidationResult
         validation_result = ValidationResult(
@@ -99,9 +110,16 @@ def helm_lint_validator(
             "validation_results": [validation_result]
         }
         
-        # Add blocking issues if validation failed
+        # Add blocking issues and update retry count if validation failed
         if not passed:
-            blocking_message = f"Helm lint validation failed: {result.stderr[:500] if result.stderr else result.stdout[:500]}"
+            # Increment retry count
+            new_retry_count = current_retry_count + 1
+            updated_retry_counts = {**current_retry_counts, "helm_lint": new_retry_count}
+            update_dict["validation_retry_counts"] = updated_retry_counts
+            
+            blocking_message = f"Helm lint validation failed (attempt {new_retry_count}/2): {result.stderr[:500] if result.stderr else result.stdout[:500]}"
+            if new_retry_count >= 2:
+                blocking_message += " ⚠️ MAX RETRIES REACHED - Use ask_human tool for assistance."
             update_dict["blocking_issues"] = [blocking_message]
             
             helm_validator_tool_logger.log_structured(
@@ -111,10 +129,16 @@ def helm_lint_validator(
                     "chart_path": chart_path,
                     "errors_count": errors_count,
                     "warnings_count": warnings_count,
+                    "retry_count": new_retry_count,
+                    "max_retries_reached": new_retry_count >= 2,
                     "stderr": result.stderr[:200]
                 }
             )
         else:
+            # Reset retry count on success
+            updated_retry_counts = {**current_retry_counts, "helm_lint": 0}
+            update_dict["validation_retry_counts"] = updated_retry_counts
+            
             helm_validator_tool_logger.log_structured(
                 level="INFO",
                 message="Helm lint validation passed",
@@ -244,13 +268,18 @@ def helm_template_validator(
         Command: Command to update ValidationSwarmState with validation results
     """
     try:
+        # Get current retry count from state
+        current_retry_counts = runtime.state.get("validation_retry_counts", {}) or {}
+        current_retry_count = current_retry_counts.get("helm_template", 0)
+        
         helm_validator_tool_logger.log_structured(
             level="INFO",
             message="Starting helm template validation",
             extra={
                 "chart_path": chart_path,
                 "values_file": values_file,
-                "tool_call_id": tool_call_id
+                "tool_call_id": tool_call_id,
+                "current_retry_count": current_retry_count
             }
         )
         
@@ -302,16 +331,21 @@ def helm_template_validator(
             "error": result.stderr,
             "yaml_error": yaml_error,
             "chart_path": chart_path,
-            "values_file": values_file
+            "values_file": values_file,
+            "retry_count": current_retry_count
         }
         
-        # Create message
+        # Create message with retry information
         if passed:
             message = "Helm template validation passed. Templates rendered successfully and YAML is valid."
         elif yaml_error:
-            message = f"Helm template validation failed: Invalid YAML - {yaml_error[:200]}"
+            message = f"Helm template validation failed: Invalid YAML - {yaml_error[:200]} (Retry attempt: {current_retry_count}/2)"
+            if current_retry_count >= 2:
+                message += " ⚠️ MAX RETRIES REACHED - Call ask_human for assistance."
         else:
-            message = f"Helm template validation failed: {result.stderr[:200] if result.stderr else 'Unknown error'}"
+            message = f"Helm template validation failed: {result.stderr[:200] if result.stderr else 'Unknown error'} (Retry attempt: {current_retry_count}/2)"
+            if current_retry_count >= 2:
+                message += " ⚠️ MAX RETRIES REACHED - Call ask_human for assistance."
         
         # Create ValidationResult
         validation_result = ValidationResult(
@@ -335,12 +369,20 @@ def helm_template_validator(
             "validation_results": [validation_result]
         }
         
-        # Add blocking issues if validation failed
+        # Add blocking issues and update retry count if validation failed
         if not passed:
+            # Increment retry count
+            new_retry_count = current_retry_count + 1
+            updated_retry_counts = {**current_retry_counts, "helm_template": new_retry_count}
+            update_dict["validation_retry_counts"] = updated_retry_counts
+            
             if yaml_error:
-                blocking_message = f"Helm template YAML validation failed: {yaml_error[:500]}"
+                blocking_message = f"Helm template YAML validation failed (attempt {new_retry_count}/2): {yaml_error[:500]}"
             else:
-                blocking_message = f"Helm template validation failed: {result.stderr[:500] if result.stderr else result.stdout[:500]}"
+                blocking_message = f"Helm template validation failed (attempt {new_retry_count}/2): {result.stderr[:500] if result.stderr else result.stdout[:500]}"
+            
+            if new_retry_count >= 2:
+                blocking_message += " ⚠️ MAX RETRIES REACHED - Use ask_human tool for assistance."
             update_dict["blocking_issues"] = [blocking_message]
             
             helm_validator_tool_logger.log_structured(
@@ -351,10 +393,16 @@ def helm_template_validator(
                     "values_file": values_file,
                     "yaml_valid": yaml_valid,
                     "exit_code": result.returncode,
-                    "yaml_error": yaml_error
+                    "yaml_error": yaml_error,
+                    "retry_count": new_retry_count,
+                    "max_retries_reached": new_retry_count >= 2
                 }
             )
         else:
+            # Reset retry count on success
+            updated_retry_counts = {**current_retry_counts, "helm_template": 0}
+            update_dict["validation_retry_counts"] = updated_retry_counts
+            
             helm_validator_tool_logger.log_structured(
                 level="INFO",
                 message="Helm template validation passed",
@@ -488,6 +536,10 @@ def helm_dry_run_validator(
         Command: Command to update ValidationSwarmState with validation results
     """
     try:
+        # Get current retry count from state
+        current_retry_counts = runtime.state.get("validation_retry_counts", {}) or {}
+        current_retry_count = current_retry_counts.get("helm_dry_run", 0)
+        
         helm_validator_tool_logger.log_structured(
             level="INFO",
             message="Starting helm dry-run validation",
@@ -495,7 +547,8 @@ def helm_dry_run_validator(
                 "chart_path": chart_path,
                 "release_name": release_name,
                 "namespace": namespace,
-                "tool_call_id": tool_call_id
+                "tool_call_id": tool_call_id,
+                "current_retry_count": current_retry_count
             }
         )
         
@@ -532,15 +585,18 @@ def helm_dry_run_validator(
             "manifest": result.stdout if result.returncode == 0 else None,
             "chart_path": chart_path,
             "release_name": release_name,
-            "namespace": namespace
+            "namespace": namespace,
+            "retry_count": current_retry_count
         }
         
-        # Create message
+        # Create message with retry information
         if passed:
             message = f"Helm dry-run validation passed. Chart can be installed successfully in namespace '{namespace}'."
         else:
             error_preview = result.stderr[:200] if result.stderr else result.stdout[:200]
-            message = f"Helm dry-run validation failed: {error_preview}"
+            message = f"Helm dry-run validation failed: {error_preview} (Retry attempt: {current_retry_count}/2)"
+            if current_retry_count >= 2:
+                message += " ⚠️ MAX RETRIES REACHED - Call ask_human for assistance."
         
         # Create ValidationResult
         validation_result = ValidationResult(
@@ -564,10 +620,17 @@ def helm_dry_run_validator(
             "validation_results": [validation_result]
         }
         
-        # Add blocking issues if validation failed
+        # Add blocking issues and update retry count if validation failed
         if not passed:
+            # Increment retry count
+            new_retry_count = current_retry_count + 1
+            updated_retry_counts = {**current_retry_counts, "helm_dry_run": new_retry_count}
+            update_dict["validation_retry_counts"] = updated_retry_counts
+            
             error_output = result.stderr[:500] if result.stderr else result.stdout[:500]
-            blocking_message = f"Helm dry-run validation failed: {error_output}"
+            blocking_message = f"Helm dry-run validation failed (attempt {new_retry_count}/2): {error_output}"
+            if new_retry_count >= 2:
+                blocking_message += " ⚠️ MAX RETRIES REACHED - Use ask_human tool for assistance."
             update_dict["blocking_issues"] = [blocking_message]
             
             helm_validator_tool_logger.log_structured(
@@ -578,10 +641,16 @@ def helm_dry_run_validator(
                     "release_name": release_name,
                     "namespace": namespace,
                     "exit_code": result.returncode,
-                    "error_preview": error_output[:200]
+                    "error_preview": error_output[:200],
+                    "retry_count": new_retry_count,
+                    "max_retries_reached": new_retry_count >= 2
                 }
             )
         else:
+            # Reset retry count on success
+            updated_retry_counts = {**current_retry_counts, "helm_dry_run": 0}
+            update_dict["validation_retry_counts"] = updated_retry_counts
+            
             helm_validator_tool_logger.log_structured(
                 level="INFO",
                 message="Helm dry-run validation passed",
@@ -702,5 +771,80 @@ def helm_dry_run_validator(
                 "messages": [tool_message],
                 "validation_results": [validation_result],
                 "blocking_issues": [error_message]
+            }
+        )
+
+
+@tool
+def ask_human(
+    question: str,
+    runtime: ToolRuntime[None, ValidationSwarmState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """
+    Ask the human user a question to resolve a blocking issue or get missing information.
+    
+    Use this tool when:
+    1. You cannot fix a validation error yourself (e.g., missing specific configuration).
+    2. You need to make a decision that requires human judgment.
+    3. You need to confirm a critical action.
+    
+    The agent will PAUSE until the user responds.
+    
+    Args:
+        question: The question to ask the user. Be specific about what information you need.
+        runtime: Tool runtime.
+        tool_call_id: Tool call ID.
+        
+    Returns:
+        Command: Updates the conversation with the user's response.
+    """
+    try:
+        helm_validator_tool_logger.log_structured(
+            level="INFO",
+            message="Asking human user a question",
+            extra={
+                "question": question,
+                "tool_call_id": tool_call_id
+            }
+        )
+        
+        # Prepare interrupt payload
+        interrupt_payload = {
+            "question": question,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Trigger interrupt and wait for user feedback
+        user_feedback = interrupt(interrupt_payload)
+        
+        # Create ToolMessage with the user's response
+        tool_message = ToolMessage(
+            content=f"User response: {user_feedback}",
+            tool_call_id=tool_call_id
+        )
+        
+        return Command(
+            update={
+                "messages": [tool_message]
+            }
+        )
+        
+    except Exception as e:
+        error_message = f"Error asking human: {str(e)}"
+        helm_validator_tool_logger.log_structured(
+            level="ERROR",
+            message=error_message,
+            extra={"error": str(e), "tool_call_id": tool_call_id}
+        )
+        
+        tool_message = ToolMessage(
+            content=error_message,
+            tool_call_id=tool_call_id
+        )
+        
+        return Command(
+            update={
+                "messages": [tool_message]
             }
         )

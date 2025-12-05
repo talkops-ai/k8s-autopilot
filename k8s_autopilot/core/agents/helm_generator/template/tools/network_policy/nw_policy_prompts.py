@@ -158,12 +158,24 @@ Generate a NetworkPolicy YAML for the following configuration:
 
 ## Preset Policy: {preset_policy}
 
+## Helper Templates (Use these specific templates)
+
+**Naming Templates:**
+{naming_templates}
+
+**Label Templates:**
+{label_templates}
+
+**Annotation Templates:**
+{annotation_templates}
+
 ## Requirements
 
 - Use networking.k8s.io/v1 API version
 - Pod selector must match Deployment labels
 - Include both Ingress and Egress if specified
 - Use Helm templating for values
+- Use the provided helper templates for labels and selector (e.g., {{ include "CHARTNAME.labels" . }})
 - Add comments explaining the policy
 
 **Generate the complete NetworkPolicy YAML now.**

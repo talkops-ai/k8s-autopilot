@@ -135,13 +135,24 @@ Generate ServiceAccount and RBAC manifests for this Helm chart:
 
 {k8s_architecture}
 
+## Helper Templates (Use these specific templates)
+
+**Naming Templates:**
+{naming_templates}
+
+**Label Templates:**
+{label_templates}
+
+**Annotation Templates:**
+{annotation_templates}
+
 ## Requirements
 
 - Generate ServiceAccount with proper Helm templating
 - Generate Role/ClusterRole with minimum necessary permissions
 - Generate RoleBinding/ClusterRoleBinding to connect them
-- Use {{ include "CHARTNAME.fullname" . }} for names
-- Use {{ include "CHARTNAME.labels" . | nindent 4 }} for labels
+- Use Helm templating for all configurable values ({{ .Values.* }})
+- Use the provided helper templates for labels and annotations (e.g., {{ include "CHARTNAME.labels" . }})
 - Use {{ .Values.serviceAccount.* }} for configurable parameters
 - Follow principle of least privilege
 - Provide security analysis and recommendations

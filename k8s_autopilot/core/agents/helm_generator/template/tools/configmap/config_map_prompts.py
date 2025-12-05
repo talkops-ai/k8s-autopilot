@@ -102,12 +102,22 @@ Generate a ConfigMap YAML for this Helm chart:
 
 {configmap_config}
 
+## Helper Templates (Use these specific templates)
+
+**Naming Templates:**
+{naming_templates}
+
+**Label Templates:**
+{label_templates}
+
+**Annotation Templates:**
+{annotation_templates}
+
 ## Requirements
 
 - Generate ConfigMap with proper Helm templating
-- Use {{ include "CHARTNAME.fullname" . }} for names
-- Use {{ include "CHARTNAME.labels" . | nindent 4 }} for labels
-- Use {{ .Values.configmap.* }} for configurable data
+- Use Helm templating for all configurable values ({{ .Values.* }})
+- Use the provided helper templates for labels and annotations (e.g., {{ include "CHARTNAME.labels" . }})
 - Separate data and binaryData fields appropriately
 - Use multi-line format (|) for file contents
 - Ensure keys are valid (alphanumeric, -, _, .)

@@ -635,13 +635,11 @@ class TemplateSupervisor(BaseSubgraphAgent):
 
     def generate_chart_yaml(self, app_name: str, app_description: str, version: str) -> str:
         return f"""apiVersion: v2
-kind: Chart
-metadata:
-  name: {app_name}
-  description: {app_description}
-  type: application
-  version: {version}
-  appVersion: "1.0.0"
+name: {app_name}
+description: {app_description}
+type: application
+version: {version}
+appVersion: "1.0.0
 """
 
 

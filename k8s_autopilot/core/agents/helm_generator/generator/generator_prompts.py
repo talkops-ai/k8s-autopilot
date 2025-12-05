@@ -53,6 +53,11 @@ Validate Helm charts comprehensively using multiple validation techniques:
   - Use THIRD for final validation against live cluster
   - Requires kubectl configured and cluster connection
   - Example: `helm_dry_run_validator(chart_path="/workspace/my-app", release_name="my-app", namespace="default")`
+  
+- **`ask_human`** - Ask the user for help or confirmation
+  - Use when you cannot fix a validation error yourself
+  - Use when you need a decision on a trade-off
+  - Example: `ask_human(question="The chart is missing a version number. What version should I use?")`
 
 ## Validation Workflow
 
@@ -109,12 +114,27 @@ When you receive `generated_chart` in state (dictionary of filename -> content):
 - Set `deployment_ready: false`
 - Document specific errors in `validation_results`
 - Attempt auto-fixes where possible using `edit_file`
-- Re-run validations after fixes
+- Re-run validations after fixes (MAX 2 retry attempts per validation)
+- **IMPORTANT**: If validation fails after 2 retry attempts, STOP retrying and call `ask_human` immediately
+
+**When to call `ask_human` (MANDATORY):**
+1. **After 2 failed retry attempts** - If a validation still fails after 2 attempts to fix it, STOP and ask the user
+2. **Missing critical information** - If you need configuration values you cannot infer (e.g., version numbers, domain names)
+3. **Ambiguous errors** - If the error message is unclear and you cannot determine the fix
+4. **Trade-off decisions** - If there are multiple valid approaches and you need user preference
+5. **Cluster-specific issues** - If dry-run fails due to cluster configuration (RBAC, admission controllers, etc.)
+
+**Example `ask_human` calls:**
+- `ask_human(question="Helm lint validation failed with error: 'Chart.yaml: version is required'. What version should I use for this chart?")`
+- `ask_human(question="Helm dry-run failed with RBAC error. The chart requires cluster-admin permissions. Should I: (a) reduce permissions, (b) document the requirement, or (c) skip dry-run validation?")`
+- `ask_human(question="Template validation failed after 2 fix attempts. Error: '{error_details}'. I cannot auto-fix this. Please provide guidance on how to resolve this issue.")`
 
 **If auto-fix not possible:**
+- **DO NOT retry more than 2 times**
+- Call `ask_human` with a clear, specific question
+- Wait for user response before proceeding
 - Document issue clearly in `blocking_issues`
 - Provide detailed error information
-- Suggest manual fixes needed
 
 ## File System Organization
 
@@ -150,6 +170,10 @@ Chart files are organized in `/workspace/{chart_name}/`:
 - **`validation_results`**: List of ValidationResult objects (use `add` reducer)
 - **`blocking_issues`**: List of strings describing blocking problems (use `add` reducer)
 - **`deployment_ready`**: Boolean indicating if chart is ready for deployment
+- **`validation_retry_counts`**: Dict mapping validator name to retry count (e.g., `{"helm_lint": 1, "helm_template": 0}`)
+  - **IMPORTANT**: Check this before retrying a validation
+  - If `validation_retry_counts.get(validator_name, 0) >= 2`, call `ask_human` instead of retrying
+  - Update this after each retry: `validation_retry_counts[validator_name] = validation_retry_counts.get(validator_name, 0) + 1`
 - **`chart_metadata`**: Chart metadata from generation phase (contains chart_name, namespace, etc.)
 
 ## Error Handling

@@ -136,10 +136,22 @@ async def generate_configmap_yaml(
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
 
+        # Extract helper templates from previous tool execution
+        tool_results = runtime.state.get("tool_results", {})
+        helper_output = tool_results.get("generate_helpers_tpl", {}).get("output", {})
+        template_categories = helper_output.get("template_categories", {})
+        
+        naming_templates = template_categories.get("naming", [])
+        label_templates = template_categories.get("labels", [])
+        annotation_templates = template_categories.get("annotations", [])
+
         formatted_user_query = CONFIGMAP_USER_PROMPT.format(
             app_name=app_name,
             namespace=namespace,
-            configmap_config=escape_json_for_template(json.dumps(configmap_config, indent=2))
+            configmap_config=escape_json_for_template(json.dumps(configmap_config, indent=2)),
+            naming_templates=json.dumps(naming_templates, indent=2),
+            label_templates=json.dumps(label_templates, indent=2),
+            annotation_templates=json.dumps(annotation_templates, indent=2)
         )
         parser = PydanticOutputParser(return_id=True, pydantic_object=ConfigMapGenerationOutput)
 
@@ -156,6 +168,7 @@ async def generate_configmap_yaml(
         )
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
         config_map_logger.log_structured(
             level="INFO",
             message="Generating configmap.yaml file for Helm chart",
@@ -172,7 +185,14 @@ async def generate_configmap_yaml(
             temperature=llm_config['temperature'],
             max_tokens=llm_config['max_tokens']
         )
-        chain = prompt | model | parser
+
+        higher_model = LLMProvider.create_llm(
+            provider=higher_llm_config['provider'],
+            model=higher_llm_config['model'],
+            temperature=higher_llm_config['temperature'],
+            max_tokens=higher_llm_config['max_tokens']
+        )
+        chain = prompt | higher_model | parser
         # Pass system message directly
         response = await chain.ainvoke({
             "system_message": [SystemMessage(content=CONFIGMAP_SYSTEM_PROMPT)]

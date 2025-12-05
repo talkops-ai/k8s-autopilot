@@ -102,9 +102,20 @@ Generate a Service YAML for the following application:
 **Extra Service Details(if any):**
 {extra_service_details}
 
+## Helper Templates (Use these specific templates)
+
+**Naming Templates:**
+{naming_templates}
+
+**Label Templates:**
+{label_templates}
+
+**Annotation Templates:**
+{annotation_templates}
+
 **Requirements:**
 - Use Helm templating ({{ .Values.service.* }})
-- Use helper templates for labels and selectors
+- Use the provided helper templates for labels and selectors (e.g., {{ include "CHARTNAME.labels" . }})
 - Ensure selector matches exactly: {selector_labels}
 
 """

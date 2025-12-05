@@ -280,13 +280,24 @@ Generate a production-ready Traefik routing configuration for the following appl
 **Servers Transport:** {servers_transport_name}
 **Timeout:** {timeout}
 
+## Helper Templates (Use these specific templates)
+
+**Naming Templates:**
+{naming_templates}
+
+**Label Templates:**
+{label_templates}
+
+**Annotation Templates:**
+{annotation_templates}
+
 ## Requirements
 
 - Generate valid traefik.io/v1alpha1 YAML
 - Use exact Traefik matcher syntax
 - Include all service/middleware references
 - Apply Helm templating for configurable values
-- Use helper templates for labels and names
+- Use the provided helper templates for labels and names (e.g., {{ include "CHARTNAME.labels" . }})
 - Validate matcher rules syntax
 - Set proper priority if disambiguation needed
 - Include TLS configuration if enabled

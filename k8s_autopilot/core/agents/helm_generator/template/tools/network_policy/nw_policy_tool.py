@@ -95,6 +95,16 @@ async def generate_network_policy_yaml(
         def escape_json_for_template(json_str):
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
+        
+        # Extract helper templates from previous tool execution
+        tool_results = runtime.state.get("tool_results", {})
+        helper_output = tool_results.get("generate_helpers_tpl", {}).get("output", {})
+        template_categories = helper_output.get("template_categories", {})
+        
+        naming_templates = template_categories.get("naming", [])
+        label_templates = template_categories.get("labels", [])
+        annotation_templates = template_categories.get("annotations", [])
+
         network_policy_labels_str = escape_json_for_template(json.dumps(network_policy_labels))
         network_policy_policy_types_str = escape_json_for_template(json.dumps(network_policy))
         network_policy_ingress_rules_str = escape_json_for_template(json.dumps(network_policy_ingress_rules))
@@ -107,6 +117,9 @@ async def generate_network_policy_yaml(
             ingress_rules=network_policy_ingress_rules_str,
             egress_rules=network_policy_egress_rules_str,
             preset_policy=network_policy_preset_policy,
+            naming_templates=json.dumps(naming_templates, indent=2),
+            label_templates=json.dumps(label_templates, indent=2),
+            annotation_templates=json.dumps(annotation_templates, indent=2)
         )
         parser = PydanticOutputParser(pydantic_object=NetworkPolicyGenerationToolOutput)
         escaped_system_prompt = NETWORKPOLICY_GENERATOR_SYSTEM_PROMPT.replace('{', '{{').replace('}', '}}')
@@ -118,13 +131,21 @@ async def generate_network_policy_yaml(
 
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
         model = LLMProvider.create_llm(
             provider=llm_config['provider'],
             model=llm_config['model'],
             temperature=llm_config['temperature'],
             max_tokens=llm_config['max_tokens']
         )
-        chain = prompt | model | parser
+
+        higher_model = LLMProvider.create_llm(
+            provider=higher_llm_config['provider'],
+            model=higher_llm_config['model'],
+            temperature=higher_llm_config['temperature'],
+            max_tokens=higher_llm_config['max_tokens']
+        )
+        chain = prompt | higher_model | parser
         response = await chain.ainvoke({})
         nw_policy_generator_tool_logger.log_structured(
             level="INFO",

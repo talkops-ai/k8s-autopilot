@@ -137,6 +137,7 @@ Input may be presented in either JSON or TOON (Token-Oriented Object Notation). 
    - service: access_type, port
    - resources: cpu_request, memory_request, cpu_limit, memory_limit
    - configuration: environment_variables, secrets_mentioned, configmaps_mentioned
+   - namespace: name, namespace_type (production/staging/development), team
 
 2. **Technical Analysis** (application_analysis):
    - framework_analysis: startup_time, typical_memory, graceful_shutdown_period, probe_paths
@@ -170,6 +171,24 @@ Before generating your output, use the following structured thinking approach:
 5. Review user clarification: Extract critical details from the conversation transcript.
 </analysis_phase>
 
+<user_clarification_extraction>
+**CRITICAL: Extract these configurations from User Clarification transcript:**
+
+| Configuration | Look For | Example Phrases | Result |
+|--------------|----------|-----------------|--------|
+| **Namespace** | namespace name, environment, team | "deploy to myapp-prod", "staging namespace", "team backend" | Include Namespace resource |
+| **HPA/Scaling** | autoscaling, replicas, scale up/down | "enable autoscaling", "2-5 replicas", "scale based on CPU" | Include HPA resource |
+| **Secrets** | credentials, API keys, passwords, sensitive | "needs DB password", "API key required", "secrets for..." | Include Secret resource |
+| **ConfigMap** | config, environment variables, settings | "env vars for DB_HOST", "configure APP_ENV" | Include ConfigMap resource |
+| **TLS/HTTPS** | TLS, HTTPS, SSL, certificate, secure | "enable HTTPS", "TLS termination", "letsencrypt" | Include TLS configuration |
+| **Ingress** | ingress, domain, hostname, external access | "expose at api.example.com", "Traefik ingress" | Include IngressRoute resource |
+| **Storage/PVC** | persistent, volume, storage, data directory | "needs persistent storage", "data volume" | Include PVC resource |
+| **ServiceAccount** | RBAC, permissions, service account | "needs K8s API access", "RBAC enabled" | Include ServiceAccount resource |
+| **NetworkPolicy** | network isolation, restrict traffic | "isolate network", "only allow internal" | Include NetworkPolicy resource |
+
+**Priority Rule**: User clarification details OVERRIDE default assumptions from parsed_requirements.
+</user_clarification_extraction>
+
 <decision_phase>
 For each decision, you must:
 - Reference specific values from requirements/analysis
@@ -183,11 +202,23 @@ Verify your architecture:
 - Does the core resource match workload characteristics?
 - Are essential resources (Service, ConfigMap/Secret if needed) included?
 - Does the selection make sense for production deployment?
+- Have all user clarification requirements been addressed?
 </validation_phase>
 
 </thinking_process>
 
 <resource_selection_framework>
+
+<core_resources_list>
+**IMPORTANT**: `resources.core` is a LIST of core resources. Always include:
+
+1. **Namespace** (FIRST): IF namespace.name is specified
+   - Creates isolated environment for the application
+   - Include labels: environment, team, app name
+   - Use {{ .Values.namespace.name }} for Helm templating
+
+2. **Primary Workload** (SECOND): Based on workload characteristics below
+</core_resources_list>
 
 <core_workload_decision_tree>
 

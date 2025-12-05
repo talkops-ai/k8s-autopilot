@@ -200,7 +200,6 @@ Available tools:
 - request_human_feedback: Request human feedback, clarification, or guide users about capabilities
 
 HITL APPROVAL GATES (REQUIRED):
-- request_planning_review: Request human review of planning output (call after planning_swarm completes)
 - request_security_review: Request human review of security scan results (call after template_supervisor completes)
 - request_deployment_approval: Request final approval before deployment (call after validator_deep_agent completes)
 
@@ -215,29 +214,34 @@ Your responsibilities:
 
 WORKFLOW SEQUENCE WITH HITL:
 1. For ANY Helm chart request → transfer_to_planning_swarm(task_description="...")
-2. When planning_complete → request_planning_review() [REQUIRED - workflow will pause for human approval]
-3. When planning_approved → transfer_to_template_supervisor(task_description="...")
-4. When generation_complete → request_security_review() [REQUIRED - workflow will pause for human approval]
-5. When security_approved → transfer_to_validator_deep_agent(task_description="...")
-6. When validation_complete → request_deployment_approval() [REQUIRED - workflow will pause for human approval]
-7. When deployment_approved → Workflow complete
+2. When planning_complete → transfer_to_template_supervisor(task_description="...") [Proceeds automatically]
+3. When generation_complete → request_security_review() [REQUIRED - workflow will pause for human approval]
+4. When security_approved → transfer_to_validator_deep_agent(task_description="...")
+5. When validation_complete → request_deployment_approval() [REQUIRED - workflow will pause for human approval]
+6. When deployment_approved → Workflow complete
 
 CRITICAL RULES:
 - Check workflow_state flags before each tool call
-- ALWAYS call HITL gate tools after phase completion (planning → request_planning_review, etc.)
-- Do NOT proceed to next phase without approval (check human_approval_status)
+- ALWAYS call HITL gate tools after phase completion (generation → request_security_review, validation → request_deployment_approval)
+- Do NOT proceed to next phase without approval for security and deployment (check human_approval_status)
 - If approval status is "pending" or "rejected", wait or end workflow
-- If loop_counter >= 30, terminate with error
 - Always call tools immediately, don't describe what you will do
 - Do NOT do any chart generation/validation yourself - ONLY delegate using tools
+- Template generation proceeds automatically after planning completes (no approval needed)
+
+STOP CONDITIONS (When to finish):
+- When deployment_approved == True AND validation_complete == True → Workflow is complete, respond with final summary
+- When any phase is rejected AND user doesn't request changes → End workflow with error message
+- When all phases are complete (planning_complete, generation_complete, validation_complete) → Respond with completion summary
+- DO NOT keep calling tools if workflow is already complete - check workflow_state first
 
 HITL GATE RULES:
-- request_planning_review: Call IMMEDIATELY after planning_swarm completes. Do NOT proceed to generation without approval.
 - request_security_review: Call IMMEDIATELY after template_supervisor completes. Do NOT proceed to validation without approval.
 - request_deployment_approval: Call IMMEDIATELY after validator_deep_agent completes. Do NOT complete workflow without approval.
 - If gate returns "pending", workflow is paused - wait for human input
 - If gate returns "approved", proceed to next phase
 - If gate returns "rejected", end workflow or request changes
+- Planning phase does NOT require approval - proceed directly to template generation
 
 IMPORTANT: For requests like "help me write nginx helm chart", immediately call:
 transfer_to_planning_swarm(task_description="create nginx helm chart")
@@ -297,7 +301,10 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 planning_input = StateTransformer.supervisor_to_planning(runtime.state)
                 
                 # 2. Invoke planning swarm
-                planning_output = await planning_swarm.ainvoke(planning_input)
+                planning_output = await planning_swarm.ainvoke(
+                    planning_input,
+                    config={"recursion_limit": 100}
+                )
                 
                 # 3. Transform back (note: state updates happen automatically via tool return)
                 supervisor_updates = StateTransformer.planning_to_supervisor(
@@ -333,7 +340,6 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 
                 Use this when:
                 - Planning is complete (workflow_state.planning_complete == True)
-                - Planning approval granted (workflow_state.planning_approved == True)
                 - Need to generate actual Helm chart files
                 - active_phase == "planning"
                 """
@@ -347,7 +353,10 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 generation_input = StateTransformer.supervisor_to_generation(runtime.state)
                 
                 # 2. Invoke generation swarm
-                generation_output = await template_supervisor.ainvoke(generation_input)
+                generation_output = await template_supervisor.ainvoke(
+                    generation_input,
+                    config={"recursion_limit": 100}
+                )
                 
                 # 3. Transform back (note: state updates happen automatically via tool return)
                 supervisor_updates = StateTransformer.generation_to_supervisor(
@@ -401,7 +410,10 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 )
                 
                 # 2. Invoke validation swarm
-                validation_output = await validator_deep_agent.ainvoke(validation_input)
+                validation_output = await validator_deep_agent.ainvoke(
+                    validation_input,
+                    config={"recursion_limit": 100}
+                )
                 
                 # 3. Transform back
                 supervisor_updates = StateTransformer.validation_to_supervisor(
@@ -911,6 +923,7 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
         
         # Use create_agent() instead of create_supervisor()
         # This eliminates ~200 lines of manual graph building
+        # Note: recursion_limit is set in the config when invoking the graph, not here
         supervisor_agent = create_agent(
             model=self.model,
             tools=all_tools,  # Tool wrappers with state transformation + HITL gates
@@ -1110,7 +1123,14 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 }
             )
 
-        config: RunnableConfig = {'configurable': {'thread_id': thread_id}}
+        config: RunnableConfig = {
+            'configurable': {
+                'thread_id': thread_id,
+                # Increase recursion limit for complex multi-phase workflows
+                # Config stores keys as lowercase attributes (from _set_attributes)
+                'recursion_limit': getattr(self.config_instance, 'recursion_limit', 50)
+            }
+        }
         step_count = 0
         config_with_durability = {
             **config,
@@ -1144,7 +1164,96 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                             # The graph execution is paused at the interrupt point
                             # No more items will be streamed until resume with Command(resume=...)
                             break                    
-                    # 2. Handle normal state updates (direct status-based responses like reference)
+                    # 2. Check for workflow completion to prevent infinite loops
+                    workflow_state = item.get('workflow_state', {})
+                    human_approval_status = item.get('human_approval_status', {})
+                    
+                    # Check if workflow is complete (all phases done and deployment approved)
+                    is_workflow_complete = False
+                    planning_complete = False
+                    generation_complete = False
+                    validation_complete = False
+                    deployment_approved = False
+                    
+                    if isinstance(workflow_state, dict):
+                        planning_complete = workflow_state.get('planning_complete', False)
+                        generation_complete = workflow_state.get('generation_complete', False)
+                        validation_complete = workflow_state.get('validation_complete', False)
+                        
+                        if isinstance(human_approval_status, dict):
+                            deployment_approval = human_approval_status.get('deployment')
+                            if deployment_approval:
+                                if isinstance(deployment_approval, dict):
+                                    deployment_approved = deployment_approval.get('status') == 'approved'
+                                elif hasattr(deployment_approval, 'status'):
+                                    deployment_approved = deployment_approval.status == 'approved'
+                        
+                        is_workflow_complete = (
+                            planning_complete and 
+                            generation_complete and 
+                            validation_complete and 
+                            deployment_approved
+                        )
+                    elif hasattr(workflow_state, 'planning_complete'):
+                        # Handle Pydantic object
+                        planning_complete = workflow_state.planning_complete
+                        generation_complete = workflow_state.generation_complete
+                        validation_complete = workflow_state.validation_complete
+                        deployment_approved = self._check_approval_status(item, "deployment")
+                        
+                        is_workflow_complete = (
+                            planning_complete and
+                            generation_complete and
+                            validation_complete and
+                            deployment_approved
+                        )
+                    
+                    # If workflow is complete, stop execution
+                    if is_workflow_complete:
+                        supervisor_logger.log_structured(
+                            level="INFO",
+                            message="Workflow complete - stopping execution",
+                            task_id=task_id,
+                            context_id=context_id,
+                            extra={
+                                'step_count': step_count,
+                                'planning_complete': planning_complete,
+                                'generation_complete': generation_complete,
+                                'validation_complete': validation_complete,
+                                'deployment_approved': deployment_approved
+                            }
+                        )
+                        yield AgentResponse(
+                            response_type='text',
+                            is_task_complete=True,
+                            require_user_input=False,
+                            content='✅ Workflow complete: All phases finished and deployment approved.',
+                            metadata={
+                                'session_id': context_id,
+                                'task_id': task_id,
+                                'agent_name': self.name,
+                                'step_count': step_count,
+                                'status': 'workflow_complete'
+                            }
+                        )
+                        break  # Stop streaming
+                    
+                    # 3. Check recursion limit warning
+                    recursion_limit = config_with_durability.get('configurable', {}).get('recursion_limit', 50)
+                    if step_count >= (recursion_limit - 10):  # Warn 10 steps before hitting limit
+                        supervisor_logger.log_structured(
+                            level="WARNING",
+                            message="Approaching recursion limit",
+                            task_id=task_id,
+                            context_id=context_id,
+                            extra={
+                                'step_count': step_count,
+                                'recursion_limit': recursion_limit,
+                                'remaining_steps': recursion_limit - step_count
+                            }
+                        )
+                    
+                    # 4. Handle normal state updates (direct status-based responses like reference)
                     status = item.get('status')
                     if status == 'completed':
                         # Get planning data and status for individual agent completion

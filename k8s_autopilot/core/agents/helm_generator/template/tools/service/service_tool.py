@@ -34,10 +34,24 @@ class ServiceGenerationOutput(BaseModel):
     @field_validator('template_variables_used')
     def validate_required_variables(cls, v):
         """Ensure critical variables are templated"""
-        required_vars = ['.Values.service.port']
-        missing = [var for var in required_vars if var not in v]
-        if missing:
-            raise ValueError(f"Missing required template variables: {missing}")
+        # Accept either .Values.service.port (singular) or .Values.service.ports (plural)
+        # Both are valid patterns depending on whether single or multiple ports are used
+        required_vars_options = [
+            ['.Values.service.port'],  # Singular port
+            ['.Values.service.ports']  # Plural ports (array)
+        ]
+        
+        # Check if at least one of the patterns is present
+        has_valid_pattern = any(
+            all(var in v for var in option)
+            for option in required_vars_options
+        )
+        
+        if not has_valid_pattern:
+            raise ValueError(
+                f"Missing required template variables. Expected one of: "
+                f"{required_vars_options}. Got: {v}"
+            )
         return v
 
     class Config:
@@ -120,12 +134,24 @@ async def generate_service_yaml(
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
         
+        # Extract helper templates from previous tool execution
+        tool_results = runtime.state.get("tool_results", {})
+        helper_output = tool_results.get("generate_helpers_tpl", {}).get("output", {})
+        template_categories = helper_output.get("template_categories", {})
+        
+        naming_templates = template_categories.get("naming", [])
+        label_templates = template_categories.get("labels", [])
+        annotation_templates = template_categories.get("annotations", [])
+
         formatted_user_query = SERVICE_GENERATOR_USER_PROMPT.format(
             app_name=app_name,
             service_type=service_type,
             ports=ports,
             selector_labels=selector_labels_str,
             extra_service_details=escape_json_for_template(json.dumps(service_details)),
+            naming_templates=json.dumps(naming_templates, indent=2),
+            label_templates=json.dumps(label_templates, indent=2),
+            annotation_templates=json.dumps(annotation_templates, indent=2)
         )
         parser = PydanticOutputParser(return_id=True, pydantic_object=ServiceGenerationOutput)
 
@@ -141,6 +167,7 @@ async def generate_service_yaml(
 
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
         service_generator_logger.log_structured(
             level="INFO",
             message="Generating Service YAML file for Helm chart",
@@ -158,7 +185,14 @@ async def generate_service_yaml(
             temperature=llm_config['temperature'],
             max_tokens=llm_config['max_tokens']
         )
-        chain = prompt | model | parser
+
+        higher_model = LLMProvider.create_llm(
+            provider=higher_llm_config['provider'],
+            model=higher_llm_config['model'],
+            temperature=higher_llm_config['temperature'],
+            max_tokens=higher_llm_config['max_tokens']
+        )
+        chain = prompt | higher_model | parser
         # Pass system message directly
         response = await chain.ainvoke({
             "system_message": [SystemMessage(content=SERVICE_GENERATOR_SYSTEM_PROMPT)]

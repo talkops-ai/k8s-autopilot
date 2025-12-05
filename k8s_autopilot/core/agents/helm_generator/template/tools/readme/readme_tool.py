@@ -892,13 +892,21 @@ async def generate_readme(
         )
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
         model = LLMProvider.create_llm(
             provider=llm_config['provider'],
             model=llm_config['model'],
             temperature=llm_config['temperature'],
             max_tokens=llm_config['max_tokens']
         )
-        chain = prompt | model | parser
+
+        higher_model = LLMProvider.create_llm(
+            provider=higher_llm_config['provider'],
+            model=higher_llm_config['model'],
+            temperature=higher_llm_config['temperature'],
+            max_tokens=higher_llm_config['max_tokens']
+        )
+        chain = prompt | higher_model | parser
         # Pass system message directly
         response = await chain.ainvoke({
             "system_message": [SystemMessage(content=README_GENERATOR_SYSTEM_PROMPT)]

@@ -20,15 +20,22 @@ from .helper_prompts import (
 # Create agent logger for helper tool
 helper_generator_logger = AgentLogger("HelperGenerator")
 
+class TemplateCategories(BaseModel):
+    naming: List[str] = Field(default=[], description="Naming templates")
+    labels: List[str] = Field(default=[], description="Label templates")
+    annotations: List[str] = Field(default=[], description="Annotation templates")
+    security: List[str] = Field(default=[], description="Security templates")
+    observability: List[str] = Field(default=[], description="Observability templates")
+    resources: List[str] = Field(default=[], description="Resource templates")
+    rbac: List[str] = Field(default=[], description="RBAC templates")
+
 class HelpersTplGenerationOutput(BaseModel):
     tpl_content: str = Field(..., description="Content of _helpers.tpl")
     file_name: str = Field(default="_helpers.tpl")
     defined_templates: List[str] = Field(..., description="List of defined template names")
+    template_categories: TemplateCategories = Field(default_factory=TemplateCategories, description="Categorized templates")
     template_variables_used: List[str] = Field(default=[], description="List of template variables used")
-    kubernetes_api_version: str = Field(default="v1")
-    generated_resources: List[str] = Field(default=["_helpers.tpl"])
     validation_messages: List[str] = Field(default=[])
-    helm_template_functions_used: List[str] = Field(default=[])
     
     @field_validator('defined_templates')
     @classmethod
@@ -61,19 +68,158 @@ async def generate_helpers_tpl(
         tool_call_id: The ID of the tool call.
     """
     try:
-        planner_output = runtime.state.get("planner_output", {})
-        parsed_reqs = planner_output.get("parsed_requirements", {})
-        app_name = parsed_reqs.get("app_name", "")
-        chart_name = parsed_reqs.get("chart_name", "")
-
-        def escape_json_for_template(json_str):
-            """Escape curly braces in JSON strings for template compatibility"""
-            return json_str.replace('{', '{{').replace('}', '}}')
+        planner_output = runtime.state.get("planner_output", {}) or {}
+        parsed_reqs = planner_output.get("parsed_requirements", {}) or {}
+        app_analysis = planner_output.get("application_analysis", {}) or {}
+        k8s_arch = planner_output.get("kubernetes_architecture", {}) or {}
         
+        # --- Extract Metadata ---
+        app_name = parsed_reqs.get("app_name", "")
+        chart_name = parsed_reqs.get("chart_name", app_name)
+        chart_version = parsed_reqs.get("chart_version", "0.1.0")
+        
+        # Application Profile
+        app_type = parsed_reqs.get("app_type", "api_service")
+        
+        # Derive Tier
+        deployment_conf = parsed_reqs.get("deployment", {}) or {}
+        regions = deployment_conf.get("regions", []) or []
+        ha = deployment_conf.get("high_availability", False)
+        min_replicas = deployment_conf.get("min_replicas", 1)
+        
+        derived_tier = "dev"
+        if ha or len(regions) > 1 or min_replicas > 2:
+            derived_tier = "prod-ha"
+        elif min_replicas > 1:
+            derived_tier = "staging"
+            
+        # Criticality
+        criticality_level = "medium"
+        resources = k8s_arch.get("resources", {}) or {}
+        aux_resources = resources.get("auxiliary", []) or []
+        for res in aux_resources:
+            if (res or {}).get("criticality") == "production-critical":
+                criticality_level = "high"
+                break
+        
+        owner = "platform-team" # Default as not in input
+        
+        # Deployment Config
+        max_replicas = deployment_conf.get("max_replicas", 1)
+        canary_deployment = deployment_conf.get("canary_deployment", False)
+        
+        # Image Config
+        image_conf = parsed_reqs.get("image", {}) or {}
+        repository = image_conf.get("repository", "")
+        tag = image_conf.get("tag", "latest")
+        
+        # Try to find pull policy in core resources
+        pull_policy = "IfNotPresent"
+        core_res = resources.get("core", {}) or {}
+        try:
+            key_config = core_res.get("key_configuration_parameters", {}) or {}
+            pod_spec = key_config.get("podSpec", {}) or {}
+            containers = pod_spec.get("containers", []) or []
+            if containers:
+                pull_policy = containers[0].get("imagePullPolicy", "IfNotPresent")
+        except:
+            pass
+            
+        # Service Config
+        service_conf = parsed_reqs.get("service", {}) or {}
+        access_type = service_conf.get("access_type", "ClusterIP")
+        target_port = service_conf.get("target_port")
+        if not target_port:
+            networking = app_analysis.get("networking", {}) or {}
+            target_port = networking.get("port", 8080)
+             
+        networking = app_analysis.get("networking", {}) or {}
+        protocol = networking.get("protocol", "TCP")
+        
+        ingress_class = "nginx" # Default
+        for res in aux_resources:
+            if (res or {}).get("type") == "Ingress":
+                hints = (res or {}).get("configuration_hints", {}) or {}
+                traefik_hints = hints.get("traefik", {}) or {}
+                if traefik_hints.get("ingressClassName"):
+                    ingress_class = traefik_hints.get("ingressClassName")
+                break
+                
+        # Security Requirements
+        security_reqs = parsed_reqs.get("security", {}) or {}
+        network_policy_required = security_reqs.get("network_policies", False)
+        rbac_required = security_reqs.get("rbac_required", False)
+        psp_requirement = security_reqs.get("pod_security_policy", "baseline")
+        
+        service_mesh_type = "none"
+        dependencies = planner_output.get("dependencies", {}) or {}
+        # Check sidecars or other hints for service mesh
+        
+        # Observability
+        scalability = app_analysis.get("scalability", {}) or {}
+        monitoring_enabled = scalability.get("hpa_enabled", False)
+        tracing_enabled = False # Default
+        logging_strategy = "standard"
+        
+        metrics_port = 9090
+        sidecars = dependencies.get("sidecars_needed", []) or []
+        for sidecar in sidecars:
+            sidecar_dict = sidecar or {}
+            if "metrics" in sidecar_dict.get("name", ""):
+                monitoring_enabled = True
+            if "logging" in sidecar_dict.get("name", ""):
+                logging_strategy = "sidecar"
+        
+        # Storage
+        storage_analysis = app_analysis.get("storage", {}) or {}
+        persistence_required = storage_analysis.get("persistent_storage", False)
+        storage_type = "standard" # Default
+        backup_required = False
+        helm_hooks = dependencies.get("helm_hooks", []) or []
+        for hook in helm_hooks:
+            hook_dict = hook or {}
+            if "backup" in hook_dict.get("name", ""):
+                backup_required = True
+                
+        # Resource Tier
+        resource_estimation = planner_output.get("resource_estimation", {}) or {}
+        resource_tier_data = resource_estimation.get("prod", {}) or {}
+        resource_tier = f"Requests: {resource_tier_data.get('requests', {})}, Limits: {resource_tier_data.get('limits', {})}"
+
         formatted_user_query = HELPERS_GENERATOR_USER_PROMPT.format(
             chart_name=chart_name,
+            chart_version=chart_version,
             app_name=app_name,
+            app_type=app_type,
+            derived_tier=derived_tier,
+            criticality_level=criticality_level,
+            owner=owner,
+            min_replicas=min_replicas,
+            max_replicas=max_replicas,
+            high_availability=ha,
+            canary_deployment=canary_deployment,
+            regions=regions,
+            repository=repository,
+            tag=tag,
+            pull_policy=pull_policy,
+            access_type=access_type,
+            protocol=protocol,
+            target_port=target_port,
+            ingress_class=ingress_class,
+            network_policy_required=network_policy_required,
+            rbac_required=rbac_required,
+            psp_requirement=psp_requirement,
+            service_mesh_type=service_mesh_type,
+            monitoring_enabled=monitoring_enabled,
+            tracing_enabled=tracing_enabled,
+            logging_strategy=logging_strategy,
+            metrics_port=metrics_port,
+            persistence_required=persistence_required,
+            storage_type=storage_type,
+            backup_required=backup_required,
+            resource_tier=resource_tier
         )
+        
         parser = PydanticOutputParser(return_id=True, pydantic_object=HelpersTplGenerationOutput)
 
         # Escape user query for Helm syntax
@@ -89,6 +235,7 @@ async def generate_helpers_tpl(
         )
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
         helper_generator_logger.log_structured(
             level="INFO",
             message="Generating _helpers.tpl file for Helm chart",
@@ -104,7 +251,16 @@ async def generate_helpers_tpl(
             temperature=llm_config['temperature'],
             max_tokens=llm_config['max_tokens']
         )
-        chain = prompt | model | parser
+        
+        higher_model = LLMProvider.create_llm(
+            provider=higher_llm_config['provider'],
+            model=higher_llm_config['model'],
+            temperature=higher_llm_config['temperature'],
+            max_tokens=higher_llm_config['max_tokens']
+        )
+        
+        # Create the chain
+        chain = prompt | higher_model | parser
         # Pass system message directly
         response = await chain.ainvoke({
             "system_message": [SystemMessage(content=HELPERS_GENERATOR_SYSTEM_PROMPT)]

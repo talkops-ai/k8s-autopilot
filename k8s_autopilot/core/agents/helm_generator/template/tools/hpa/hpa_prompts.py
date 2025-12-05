@@ -162,7 +162,7 @@ Generate a HorizontalPodAutoscaler YAML for the following configuration:
 ## Metrics
 
 ### Resource Metrics
-
+{resource_metrics}
 
 ### Custom Metrics
 {custom_metrics}
@@ -171,12 +171,24 @@ Generate a HorizontalPodAutoscaler YAML for the following configuration:
 
 {scaling_behavior}
 
+## Helper Templates (Use these specific templates)
+
+**Naming Templates:**
+{naming_templates}
+
+**Label Templates:**
+{label_templates}
+
+**Annotation Templates:**
+{annotation_templates}
+
 ## Requirements
 
 - Use autoscaling/v2 API version
 - Include all specified metrics
 - Configure scaling behavior if provided
 - Use Helm templating for values
+- Use the provided helper templates for labels and annotations (e.g., {{ include "CHARTNAME.labels" . }})
 - Ensure target reference is correct
 
 **Generate the complete HPA YAML now.**

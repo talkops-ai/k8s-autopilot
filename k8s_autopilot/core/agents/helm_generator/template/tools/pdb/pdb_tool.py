@@ -208,6 +208,15 @@ async def generate_pdb_yaml(
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
         
+        # Extract helper templates from previous tool execution
+        tool_results = runtime.state.get("tool_results", {})
+        helper_output = tool_results.get("generate_helpers_tpl", {}).get("output", {})
+        template_categories = helper_output.get("template_categories", {})
+        
+        naming_templates = template_categories.get("naming", [])
+        label_templates = template_categories.get("labels", [])
+        annotation_templates = template_categories.get("annotations", [])
+
         formatted_user_query = PDB_GENERATOR_USER_PROMPT.format(
             app_name=app_name,
             namespace=namespace,
@@ -217,6 +226,9 @@ async def generate_pdb_yaml(
             max_unavailable=max_unavailable,
             unhealthy_pod_eviction_policy=unhealthy_pod_eviction_policy,
             pdb_config=escape_json_for_template(json.dumps(pdb_config, indent=2)),
+            naming_templates=json.dumps(naming_templates, indent=2),
+            label_templates=json.dumps(label_templates, indent=2),
+            annotation_templates=json.dumps(annotation_templates, indent=2)
     )
         parser = PydanticOutputParser(pydantic_object=PDBGenerationOutput)
 
@@ -233,13 +245,21 @@ async def generate_pdb_yaml(
         )
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
         model = LLMProvider.create_llm(
             provider=llm_config['provider'],
             model=llm_config['model'],
             temperature=llm_config['temperature'],
             max_tokens=llm_config['max_tokens']
         )
-        chain = prompt | model | parser
+
+        higher_model = LLMProvider.create_llm(
+            provider=higher_llm_config['provider'],
+            model=higher_llm_config['model'],
+            temperature=higher_llm_config['temperature'],
+            max_tokens=higher_llm_config['max_tokens']
+        )
+        chain = prompt | higher_model | parser
         # Pass system message directly
         response = await chain.ainvoke({
             "system_message": [SystemMessage(content=PDB_GENERATOR_SYSTEM_PROMPT)]

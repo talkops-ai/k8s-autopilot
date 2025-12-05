@@ -220,6 +220,32 @@ class ResourceInfo(BaseModel):
         description="Memory limit if specified"
     )
 
+
+class NamespaceType(str, Enum):
+    """Type of namespace environment."""
+    DEVELOPMENT = "development"
+    STAGING = "staging"
+    PRODUCTION = "production"
+    SANDBOX = "sandbox"
+    SHARED = "shared"
+    NOT_SPECIFIED = "not_specified"
+
+
+class NamespaceInfo(BaseModel):
+    """Namespace configuration - captured from user requirements."""
+    name: Optional[str] = Field(
+        None,
+        description="Namespace name if specified by user (e.g., 'myapp-prod', 'backend-staging')"
+    )
+    namespace_type: NamespaceType = Field(
+        default=NamespaceType.NOT_SPECIFIED,
+        description="Type of namespace environment"
+    )
+    team: Optional[str] = Field(
+        None,
+        description="Team or owner of the namespace (e.g., 'backend', 'platform', 'devops')"
+    )
+
 class ParsedRequirements(BaseModel):
     """Structured output from requirements parsing."""
     app_type: str = Field(
@@ -279,6 +305,10 @@ class ParsedRequirements(BaseModel):
     resources: Optional[ResourceInfo] = Field(
         None,
         description="CPU and memory requirements from Q4"
+    )
+    namespace: Optional[NamespaceInfo] = Field(
+        None,
+        description="Namespace configuration if specified by user"
     )
 
 class ValidationResult(BaseModel):

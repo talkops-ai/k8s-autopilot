@@ -10,15 +10,13 @@ from k8s_autopilot.core.agents.helm_generator.generator.generator_agent import (
     k8sAutopilotValidatorDeepAgent,
     create_validator_deep_agent,
     create_validator_deep_agent_factory,
-    ValidationStateMiddleware,
-    ValidationHITLMiddleware
+    ValidationStateMiddleware
 )
 
 __all__ = [
     "k8sAutopilotValidatorDeepAgent",
     "create_validator_deep_agent",
     "create_validator_deep_agent_factory",
-    "ValidationStateMiddleware",
-    "ValidationHITLMiddleware"
+    "ValidationStateMiddleware"
 ]
 

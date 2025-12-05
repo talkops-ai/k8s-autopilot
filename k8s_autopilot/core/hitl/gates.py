@@ -182,29 +182,27 @@ def security_review_gate(state: MainSupervisorState) -> Dict[str, Any]:
     # Get security scan results from validation_results
     validation_results = state.get("validation_results", [])
     
-    # Filter security issues (critical and error severity)
-    security_issues: List[Dict[str, Any]] = []
-    for result in validation_results:
-        # Handle both ValidationResult objects and dicts
-        if isinstance(result, ValidationResult):
-            if result.validator == "security_scanner" and result.severity in ["error", "critical"]:
-                security_issues.append({
-                    "severity": result.severity,
-                    "message": result.message,
-                    "details": result.details,
-                    "timestamp": result.timestamp.isoformat() if hasattr(result.timestamp, "isoformat") else str(result.timestamp)
-                })
-        elif isinstance(result, dict):
-            if result.get("validator") == "security_scanner" and result.get("severity") in ["error", "critical"]:
-                security_issues.append(result)
+    # Check if this is called after template generation (before validation)
+    # In this case, we need to review generated artifacts, not security scan results
+    helm_chart_artifacts = state.get("helm_chart_artifacts", {})
+    is_post_generation = len(helm_chart_artifacts) > 0 and len(validation_results) == 0
     
-    # Extract summary using utility function
-    summary = extract_security_summary(security_issues)
-    
-    # Add workspace directory question to the summary
-    workspace_question = f"""
+    if is_post_generation:
+        # This is called after template generation - show artifact review message
+        chart_files = list(helm_chart_artifacts.keys())
+        chart_files_text = "\n".join(f"- {f}" for f in chart_files[:10])  # Show first 10 files
+        if len(chart_files) > 10:
+            chart_files_text += f"\n- ... and {len(chart_files) - 10} more files"
+        
+        full_summary = f"""# Template Generation Complete - Review Required
 
-## Workspace Directory Configuration
+## Generated Helm Chart Artifacts for {chart_name}
+
+The following Helm chart files have been generated:
+
+{chart_files_text}
+
+## Next Steps
 
 Requesting approval to proceed with validation of the generated Helm chart artifacts for the {chart_name} application.
 
@@ -212,28 +210,85 @@ Requesting approval to proceed with validation of the generated Helm chart artif
 - Default: `/tmp/helm-charts`
 - If you are running this in a Docker container, make sure the directory you specify is mounted to your local disk.
 
+You can provide the workspace directory path in your response, or leave it empty to use the default.
+
+Once approved, the chart will be validated using:
+- Helm lint (syntax validation)
+- Helm template (YAML validation)
+- Helm dry-run (cluster compatibility check)
+- Security scanning
+- Best practices compliance"""
+    else:
+        # This is called after validation - show security scan results
+        # Filter security issues (critical and error severity)
+        security_issues: List[Dict[str, Any]] = []
+        for result in validation_results:
+            # Handle both ValidationResult objects and dicts
+            if isinstance(result, ValidationResult):
+                if result.validator == "security_scanner" and result.severity in ["error", "critical"]:
+                    security_issues.append({
+                        "severity": result.severity,
+                        "message": result.message,
+                        "details": result.details,
+                        "timestamp": result.timestamp.isoformat() if hasattr(result.timestamp, "isoformat") else str(result.timestamp)
+                    })
+            elif isinstance(result, dict):
+                if result.get("validator") == "security_scanner" and result.get("severity") in ["error", "critical"]:
+                    security_issues.append(result)
+        
+        # Extract summary using utility function
+        summary = extract_security_summary(security_issues)
+        
+        # Add workspace directory question to the summary (if not already set)
+        workspace_question = f"""
+
+## Workspace Directory Configuration
+
+**Please specify the workspace directory where the Helm chart should be written:**
+- Default: `/tmp/helm-charts`
+- If you are running this in a Docker container, make sure the directory you specify is mounted to your local disk.
+
 You can provide the workspace directory path in your response, or leave it empty to use the default."""
+        
+        # Combine summary with workspace question
+        full_summary = summary + workspace_question
     
-    # Combine summary with workspace question
-    full_summary = summary + workspace_question
-    
-    # Build review data
-    review_data = format_review_data(
-        phase="security",
-        summary=full_summary,
-        data={
-            "security_issues": security_issues,
-            "issue_count": {
-                "critical": len([i for i in security_issues if i.get("severity") == "critical"]),
-                "error": len([i for i in security_issues if i.get("severity") == "error"]),
-                "total": len(security_issues)
+    # Build review data based on review type
+    if is_post_generation:
+        # Post-generation review data
+        review_data = format_review_data(
+            phase="security",
+            summary=full_summary,
+            data={
+                "chart_name": chart_name,
+                "chart_files": list(helm_chart_artifacts.keys()),
+                "file_count": len(helm_chart_artifacts),
+                "workspace_dir_prompt": True,
+                "review_type": "artifact_review"
             },
-            "chart_name": chart_name,
-            "workspace_dir_prompt": True
-        },
-        required_action="approve",
-        options=["approve", "reject"]
-    )
+            required_action="approve",
+            options=["approve", "reject"]
+        )
+    else:
+        # Post-validation security review data
+        # security_issues is already defined in the else branch above
+        review_data = format_review_data(
+            phase="security",
+            summary=full_summary,
+            data={
+                "security_issues": security_issues,
+                "issue_count": {
+                    "critical": len([i for i in security_issues if i.get("severity") == "critical"]),
+                    "error": len([i for i in security_issues if i.get("severity") == "error"]),
+                    "total": len(security_issues)
+                },
+                "chart_name": chart_name,
+                "workspace_dir_prompt": True,
+                "review_type": "security_review"
+            },
+            required_action="approve",
+            options=["approve", "reject"]
+        )
     
     # Trigger interrupt
     human_decision = interrupt(review_data)

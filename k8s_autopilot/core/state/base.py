@@ -540,6 +540,10 @@ class ValidationSwarmState(AgentState):
     # Deployment readiness
     deployment_ready: NotRequired[bool]
     blocking_issues: NotRequired[Annotated[List[str], add]]
+    
+    # Retry tracking (prevents infinite retry loops)
+    # Uses merge reducer to allow concurrent updates from multiple validators
+    validation_retry_counts: NotRequired[Annotated[Dict[str, int], lambda x, y: {**(x or {}), **(y or {})}]]  # validator_name -> retry_count
 
     session_id: NotRequired[str] 
     task_id: NotRequired[str]

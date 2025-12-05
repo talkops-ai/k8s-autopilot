@@ -153,7 +153,7 @@ class NetworkingAnalysis(BaseModel):
 class CoreResource(BaseModel):
     """Core Kubernetes resource definition."""
     
-    type: Literal["Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob"] = Field(
+    type: Literal["Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Namespace"] = Field(
         ...,
         description="Type of core Kubernetes workload resource"
     )
@@ -216,9 +216,11 @@ class AuxiliaryResource(BaseModel):
 class ResourcesArchitecture(BaseModel):
     """Complete Kubernetes resources architecture."""
     
-    core: CoreResource = Field(
+    core: List[CoreResource] = Field(
         ...,
-        description="Primary workload resource (Deployment, StatefulSet, etc.)"
+        description="List of core resources (Namespace, Deployment, StatefulSet, etc.)",
+        min_items=1,
+        max_items=5
     )
     auxiliary: List[AuxiliaryResource] = Field(
         ...,

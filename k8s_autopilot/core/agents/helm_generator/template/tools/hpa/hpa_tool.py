@@ -177,6 +177,15 @@ async def generate_hpa_yaml(
         def escape_json_for_template(json_str):
             """Escape curly braces in JSON strings for template compatibility"""
             return json_str.replace('{', '{{').replace('}', '}}')
+        
+        # Extract helper templates from previous tool execution
+        tool_results = runtime.state.get("tool_results", {})
+        helper_output = tool_results.get("generate_helpers_tpl", {}).get("output", {})
+        template_categories = helper_output.get("template_categories", {})
+        
+        naming_templates = template_categories.get("naming", [])
+        label_templates = template_categories.get("labels", [])
+        annotation_templates = template_categories.get("annotations", [])
 
         resource_metrics_str = escape_json_for_template(json.dumps(resource_metrics))
         custom_metrics_str = escape_json_for_template(json.dumps(custom_metrics))
@@ -190,6 +199,9 @@ async def generate_hpa_yaml(
             resource_metrics=resource_metrics_str,
             custom_metrics=custom_metrics_str,
             scaling_behavior=scaling_behavior_str,
+            naming_templates=json.dumps(naming_templates, indent=2),
+            label_templates=json.dumps(label_templates, indent=2),
+            annotation_templates=json.dumps(annotation_templates, indent=2)
         )
         parser = PydanticOutputParser(pydantic_object=HPAGenerationToolOutput)
 
@@ -206,6 +218,7 @@ async def generate_hpa_yaml(
         )
         config = Config()
         llm_config = config.get_llm_config()
+        higher_llm_config = config.get_llm_higher_config()
         hpa_generator_tool_logger.log_structured(
             level="INFO",
             message="Using LLM configuration for HPA generation",
@@ -222,7 +235,14 @@ async def generate_hpa_yaml(
             temperature=llm_config['temperature'],
             max_tokens=llm_config['max_tokens']
         )
-        chain = prompt | model | parser
+
+        higher_model = LLMProvider.create_llm(
+            provider=higher_llm_config['provider'],
+            model=higher_llm_config['model'],
+            temperature=higher_llm_config['temperature'],
+            max_tokens=higher_llm_config['max_tokens']
+        )
+        chain = prompt | higher_model | parser
         # Pass system message directly
         response = await chain.ainvoke({
             "system_message": [SystemMessage(content=HPA_GENERATOR_SYSTEM_PROMPT)]
