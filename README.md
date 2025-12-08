@@ -2,10 +2,7 @@
 
 > **Production-Grade Multi-Agent Framework for Kubernetes Helm Chart Generation**
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![LangChain](https://img.shields.io/badge/LangChain-v1.0-green.svg)](https://www.langchain.com/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-v1.0-orange.svg)](https://langchain-ai.github.io/langgraph/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/hFt5DAYEVx) [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-sandeep2014/k8s--autopilot-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://hub.docker.com/r/sandeep2014/k8s-autopilot) [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge)](LICENSE) [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/) [![LangGraph](https://img.shields.io/badge/LangGraph-Multi--Agent-FF6B6B?style=for-the-badge)](https://github.com/langchain-ai/langgraph) [![A2A Protocol](https://img.shields.io/badge/Google%20A2A-Protocol-4285F4?style=for-the-badge)](https://github.com/google/a2a)
 
 **k8s-autopilot** is an intelligent, multi-agent framework that automates the complete lifecycle of Kubernetes Helm chart generation. Built on LangChain and LangGraph, it transforms natural language requirements into production-ready Helm charts following Bitnami-quality standards.
 
@@ -34,8 +31,8 @@ k8s-autopilot automates the end-to-end process of creating enterprise-grade Helm
 **🚧 Planned** (Future Releases):
 - Automated deployment to Kubernetes clusters
 - CI/CD pipeline generation
-- Application monitoring and observability setup
-- Multi-cluster deployment strategies
+- Sidecar and initcontainer YAML generation in Helm chart templates (currently: analysis/planning only)
+- Prometheus ServiceMonitor/PodMonitor resource generation (currently: monitoring labels/annotations only)
 
 ---
 
@@ -77,7 +74,7 @@ Central orchestrator that coordinates workflow phases and manages state flow bet
 - HITL gate management
 - Stream processing with interrupt detection
 
-📖 **[Supervisor Agent Documentation](./docs/supervisor/supervisor-agent-documentation.md)**
+📖 **[Supervisor Agent Documentation](./docs/supervisor/README.md)**
 
 #### 2. **Planner Agent**
 Deep agent that analyzes requirements and designs Kubernetes architecture.
@@ -99,7 +96,7 @@ LangGraph-based coordinator that generates Helm chart templates and values files
 - Phase-based workflow (core → conditional → documentation)
 - Traefik IngressRoute generation
 
-📖 **[Template Coordinator Documentation](./docs/template/template-coordinator-documentation.md)**
+📖 **[Template Coordinator Documentation](./docs/template/README.md)**
 
 #### 4. **Generator Agent (Validator)**
 Deep agent that validates, self-heals, and ensures charts are production-ready.
@@ -110,7 +107,7 @@ Deep agent that validates, self-heals, and ensures charts are production-ready.
 - Retry logic with human escalation
 - Workspace file management
 
-📖 **[Generator Agent Documentation](./docs/generator/generator-agent-documentation.md)**
+📖 **[Generator Agent Documentation](./docs/generator/README.md)**
 
 ---
 
@@ -118,102 +115,108 @@ Deep agent that validates, self-heals, and ensures charts are production-ready.
 
 ### Prerequisites
 
-- Python 3.11+
-- Helm CLI installed and in PATH
-- Kubernetes cluster (optional, for dry-run validation)
-- LLM API key (OpenAI, Anthropic, etc.)
+- Python 3.12+
+- Helm CLI installed and in PATH (required for local usage; not needed if running via Docker image)
+- LLM API key (OpenAI, Anthropic)
+- TalkOps client installed: `pip install talkops-client` (or `uv pip install talkops-client` if using uv)
 
 ### Installation
 
+#### Option 1: Standalone Installation
+
+1. **Install [uv](https://docs.astral.sh/uv/getting-started/installation/)** for dependency management
+
+2. **Create and activate a virtual environment with Python 3.12:**
+
+   ```sh
+   uv venv --python=3.12
+   source .venv/bin/activate  # On Unix/macOS
+   # or
+   .venv\Scripts\activate  # On Windows
+   ```
+
+3. **Install dependencies from pyproject.toml:**
+
+   ```sh
+   uv pip install -e .
+   ```
+
+4. **Create a `.env` file and add the following environment variables:**
+
+   ```sh
+   OPENAI_API_KEY=XXXXXXXXX
+   ```
+
+   > **Note:** All available configuration options can be found in [`k8s_autopilot/config/default.py`](k8s_autopilot/config/default.py). You can set any of these options via your `.env` file to customize the k8s-autopilot agent's behavior.
+
+5. **Start the A2A server with the agent card:**
+
+   ```sh
+   uv run --active k8s-autopilot \
+     --host localhost \
+     --port 10102 \
+     --agent-card k8s_autopilot/card/k8s_autopilot.json
+   ```
+
+#### Option 2: Docker Hub (Recommended for Quick Start)
+
+**Pull and run the pre-built image from Docker Hub:**
+
 ```bash
-# Clone the repository
-git clone https://github.com/talkops-ai/k8s-autopilot.git
-cd k8s-autopilot
+# Pull the latest version
+docker pull sandeep2014/k8s-autopilot:latest
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Set up environment variables
-export OPENAI_API_KEY="your-api-key"
-# or
-export ANTHROPIC_API_KEY="your-api-key"
+# Run the A2A server
+docker run -d -p 10102:10102 \
+  -e OPENAI_API_KEY=your_openai_key_here \
+  --name k8s-autopilot \
+  sandeep2014/k8s-autopilot:latest
 ```
 
-### Basic Usage
+> **Note:** It's recommended to mount a local volume to persist generated Helm charts. By default, the agent writes charts to `/tmp/helm-charts` inside the container. You can mount a local directory and optionally configure the agent to write to a different directory:
+>
+> ```bash
+> docker run -d -p 10102:10102 \
+>   -e OPENAI_API_KEY=your_openai_key_here \
+>   -v /path/to/local/charts:/tmp/helm-charts \
+>   --name k8s-autopilot \
+>   sandeep2014/k8s-autopilot:latest
+> ```
+>
+> This allows you to access the generated Helm charts from your host machine and use them to install applications on your Kubernetes cluster.
 
-```python
-from k8s_autopilot.core.agents.supervisor_agent import create_k8sAutopilotSupervisorAgent
-from k8s_autopilot.core.agents.helm_generator.planner.planning_swarm import create_planning_deep_agent
-from k8s_autopilot.core.agents.helm_generator.template.template_coordinator import create_template_supervisor
-from k8s_autopilot.core.agents.helm_generator.generator.generator_agent import create_validator_deep_agent
+**Available Docker tags:**
 
-# Create agent swarms
-planning_agent = create_planning_deep_agent()
-template_agent = create_template_supervisor()
-validator_agent = create_validator_deep_agent()
+- `latest` - Latest stable release
+- `v0.1.0` - Specific version
 
-# Create supervisor
-supervisor = create_k8sAutopilotSupervisorAgent(
-    agents=[planning_agent, template_agent, validator_agent]
-)
+### Working with Agents
 
-# Stream workflow execution
-async for response in supervisor.stream(
-    query_or_command="Create a Helm chart for nginx",
-    context_id="session-123",
-    task_id="task-456"
-):
-    if response.require_user_input:
-        # Handle HITL interrupt
-        user_response = input(response.content['question'])
-        # Resume workflow
-        async for response in supervisor.stream(
-            Command(resume=user_response),
-            context_id="session-123",
-            task_id="task-456"
-        ):
-            print(response.content)
-    else:
-        print(response.content)
-```
+Once you have the agent running (using either Option 1 or Option 2 above), you can interact with it using the TalkOps client:
 
----
+1. **Start the agent** using one of the installation methods above
 
-## 📚 Documentation
+2. **Connect to the agent** using the TalkOps client:
 
-### Agent Documentation
+   ```bash
+   talkops
+   ```
 
-- **[Supervisor Agent](./docs/supervisor/supervisor-agent-documentation.md)** - Central orchestrator
-  - Architecture and tool-based delegation
-  - State transformation and workflow orchestration
-  - HITL gates and interrupt handling
+   > **Note:** Make sure you have installed the TalkOps client: `pip install talkops-client` (or `uv pip install talkops-client` if using uv)
 
-- **[Planner Agent](./docs/planner/planner-agent-documentation.md)** - Requirements analysis and architecture planning
-  - Requirement extraction and validation
-  - Gap detection and HITL interactions
-  - Architecture design and resource estimation
+3. **Ask questions** about creating Helm charts for any application:
 
-- **[Template Coordinator](./docs/template/template-coordinator-documentation.md)** - Helm chart generation
-  - 13 generation tools and dependencies
-  - Phase-based workflow execution
-  - Traefik IngressRoute support
+   ```
+   Create a Helm chart for nginx
+   ```
 
-- **[Generator Agent](./docs/generator/generator-agent-documentation.md)** - Validation and self-healing
-  - Helm validation tools
-  - Autonomous error fixing
-  - Retry logic and human escalation
+   or
 
-### Specialized Documentation
+   ```
+   Generate a Helm chart for a Node.js application
+   ```
 
-- **[Traefik Comprehensive Guide](./docs/template/traefik-comprehensive-guide.md)** - Complete Traefik IngressRoute documentation
-  - CRD definitions and matcher syntax
-  - Middleware system and load balancing
-  - TLS configuration and migration guide
-
-### Tool Documentation
-
-- **[Core Tools](./docs/template/tools-core-tools.md)** - Essential generation tools
-- **[Conditional Tools](./docs/template/tools-conditional-tools.md)** - Conditional resource generation
+   The agent will guide you through the process, asking for clarifications if needed, and generate production-ready Helm charts.
 
 ---
 
@@ -280,7 +283,6 @@ User Request: "Create a Helm chart for nginx"
 ### Kubernetes & Helm
 
 - **Helm CLI**: Chart validation and template rendering
-- **Kubernetes API**: Cluster compatibility validation
 - **Traefik CRDs**: Modern ingress routing
 
 ### State Management
@@ -295,11 +297,108 @@ User Request: "Create a Helm chart for nginx"
 - **Anthropic**: Claude Sonnet, Claude Opus
 - **Configurable**: Via centralized `LLMProvider`
 
+### LLM Configuration
+
+#### Multi-Provider Architecture
+
+The system uses a modular, extensible LLM provider architecture built on an abstract base class pattern:
+
+- **Multi-Provider Support**: Support for multiple LLM providers (Anthropic, OpenAI, Azure, etc.)
+- **Model Selection**: Configurable model selection per agent
+- **Parameter Tuning**: Adjustable temperature, max tokens, and other parameters
+- **Provider Switching**: Easy switching between different LLM providers
+
+#### Adding a New LLM Provider
+
+To add a new LLM provider to the system, follow these steps:
+
+##### 1. Implement the Provider Class
+
+**Location:** `k8s_autopilot/core/llm/llm_provider.py`
+
+Create a new provider class that inherits from `BaseLLMProvider`:
+
+```python
+from .base_llm_provider import BaseLLMProvider
+from langchain_core.runnables import Runnable
+
+class MyNewProvider(BaseLLMProvider):
+    """
+    Concrete LLM provider for MyNewProvider models.
+    Implements the BaseLLMProvider interface.
+    """
+    def create_llm(
+        self,
+        model: str,
+        temperature: float = 0.1,
+        max_tokens: Optional[int] = None,
+        timeout: int = 60,
+        **kwargs: Any
+    ) -> Runnable:
+        # Import your provider's SDK or LangChain integration
+        # from my_provider_sdk import MyProviderLLM
+        
+        # Build configuration dictionary
+        config = {
+            "model": model,
+            "temperature": temperature,
+            # ... other parameters ...
+        }
+        config.update(kwargs)
+        
+        # Return a LangChain-compatible Runnable
+        return MyProviderLLM(**config)
+```
+
+##### 2. Register in the Factory
+
+Update the `_create_provider_instance` method in `LLMProvider`:
+
+```python
+elif provider == "mynewprovider":
+    return MyNewProvider().create_llm(
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        **kwargs
+    )
+```
+
+Add your provider to the `_SUPPORTED_PROVIDERS` set.
+
+##### 3. Add Environment Variables (Optional)
+
+If your provider requires API keys or endpoints, add them to your `.env` file:
+
+```bash
+MY_NEW_PROVIDER_API_KEY=your_api_key_here
+MY_NEW_PROVIDER_ENDPOINT=https://api.example.com
+```
+
+##### 4. Test Your Provider
+
+Ensure your provider works by running the agent with your provider selected in the configuration.
+
+#### Best Practices for Provider Implementation
+
+- Follow the structure and docstring style of existing providers
+- Use type hints and clear error messages
+- Keep all provider-specific logic encapsulated in your provider class
+- Do not modify agent or planner code—only the provider and factory
+- Handle API keys and endpoints securely
+
+#### Reference Documentation
+
+- [Base LLM Provider](k8s_autopilot/core/llm/base_llm_provider.py)
+- [LLM Provider Factory](k8s_autopilot/core/llm/llm_provider.py)
+- [Complete Onboarding Guide](docs/ONBOARDING_LLM_PROVIDER.md)
+
 ---
 
 ## 📋 Roadmap
 
-### Current Release (v1.0.0)
+### Current Release (v0.1.0)
 
 **✅ Implemented**:
 - [x] Multi-agent architecture with supervisor pattern
@@ -313,25 +412,31 @@ User Request: "Create a Helm chart for nginx"
 
 ### Future Releases
 
-**v1.1.0 - Enhanced Validation** (Planned):
+**v0.2.0 - Enhanced Validation** (Planned):
 - [ ] Security scanning integration (Kubesec, Trivy)
 - [ ] Policy compliance checking
 - [ ] Helm unit test generation
 - [ ] ArgoCD Application manifest generation
+- [ ] Traefik IngressRoute improvements and enhanced features
 
-**v1.2.0 - Deployment Automation** (Planned):
+**v0.3.0 - Deployment Automation** (Planned):
 - [ ] Automated deployment to Kubernetes clusters
 - [ ] Deployment rollback capabilities
 - [ ] Multi-cluster deployment strategies
 - [ ] Deployment status monitoring
 
-**v1.3.0 - CI/CD Integration** (Planned):
+**v0.4.0 - CI/CD Integration** (Planned):
 - [ ] GitHub Actions workflow generation
 - [ ] GitLab CI pipeline generation
 - [ ] Jenkins pipeline generation
-- [ ] Automated testing integration
 
-**v2.0.0 - Extended Capabilities** (Planned):
+**v0.5.0 - Testing & Evaluation** (Planned):
+- [ ] Test case generation for Helm charts
+- [ ] Evaluation framework integration
+- [ ] Automated testing integration
+- [ ] Chart quality metrics and scoring
+
+**v0.6.0 - Extended Capabilities** (Planned):
 - [ ] Application monitoring setup (Prometheus, Grafana)
 - [ ] Logging aggregation (ELK, Loki)
 - [ ] Service mesh integration (Istio, Linkerd)
@@ -372,82 +477,12 @@ Agents autonomously fix common errors:
 - Missing required fields
 - Retry logic with human escalation
 
----
-
-## 🔐 Security & Best Practices
-
-### Security Features
-
-- **Input Validation**: All user inputs validated via Pydantic schemas
-- **Path Sanitization**: File paths validated to prevent directory traversal
-- **State Encryption**: Optional encryption for checkpoint data
-- **RBAC Support**: Kubernetes RBAC validation in dry-run
-
-### Best Practices
-
-- **Bitnami Standards**: Charts follow Bitnami-quality conventions
-- **CNCF Compliance**: Adheres to CNCF Helm chart best practices
-- **Resource Limits**: All resources include requests and limits
-- **Security Contexts**: Pod security standards enforced
-- **Health Checks**: Liveness and readiness probes included
-
----
-
-## 📊 State Management
-
-### State Schemas
-
-Each agent swarm uses its own state schema:
-
-- **MainSupervisorState**: Supervisor workflow state
-- **PlanningSwarmState**: Planning phase state
-- **GenerationSwarmState**: Template generation state
-- **ValidationSwarmState**: Validation phase state
-
-### State Transformation
-
-`StateTransformer` handles bidirectional conversion:
-- Extracts relevant data from supervisor state
-- Transforms to swarm-specific schemas
-- Aggregates results back to supervisor state
-
-### Persistence
-
-- **PostgreSQL**: Preferred for production (persistent, scalable)
-- **MemorySaver**: Fallback for development (ephemeral)
-- **Checkpointing**: Automatic state persistence at each step
-
----
-
-## 🧪 Testing
-
-### Running Tests
-
-```bash
-# Run all tests
-pytest
-
-# Run specific test suite
-pytest tests/test_planner.py
-pytest tests/test_template_coordinator.py
-pytest tests/test_generator.py
-
-# Run with coverage
-pytest --cov=k8s_autopilot tests/
-```
-
-### Test Coverage
-
-- Unit tests for individual tools
-- Integration tests for agent workflows
-- End-to-end tests for complete workflows
-- HITL interrupt handling tests
 
 ---
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+We welcome contributions! Please see below details.
 
 ### Development Setup
 
@@ -456,16 +491,33 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 git clone https://github.com/talkops-ai/k8s-autopilot.git
 cd k8s-autopilot
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Install uv (if not already installed)
+# See: https://docs.astral.sh/uv/getting-started/installation/
+
+# Create virtual environment with Python 3.12
+uv venv --python=3.12
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Install development dependencies
-pip install -r requirements-dev.txt
+uv pip install -e .
 
-# Install pre-commit hooks
-pre-commit install
 ```
+
+### Development Workflow
+
+1. **Fork the repository**
+2. **Create a feature branch** (`git checkout -b feature/amazing-feature`)
+3. **Commit your changes** (`git commit -m 'Add amazing feature'`)
+4. **Push to the branch** (`git push origin feature/amazing-feature`)
+5. **Open a Pull Request**
+
+### Contributing Guidelines
+
+- Follow the existing code style and conventions
+- Add tests for new features
+- Update documentation as needed
+- Ensure all tests pass before submitting PR
+- Write clear, descriptive commit messages
 
 ### Code Style
 
@@ -478,24 +530,42 @@ pre-commit install
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
 ---
 
 ## 🙏 Acknowledgments
 
 - **LangChain Team**: For the excellent LangChain and LangGraph frameworks
-- **Bitnami**: For Helm chart best practices and standards
+- **Google A2A Protocol**: For the Agent-to-Agent communication protocol enabling enterprise agent ecosystems
 - **CNCF**: For Kubernetes and Helm community standards
 - **Traefik**: For modern ingress routing capabilities
 
 ---
 
-## 📞 Support
+## 💬 Community & Support
 
-- **GitHub Issues**: [Report bugs or request features](https://github.com/talkops-ai/k8s-autopilot/issues)
-- **Documentation**: See [docs/](./docs/) directory for detailed documentation
-- **Discussions**: [GitHub Discussions](https://github.com/talkops-ai/k8s-autopilot/discussions)
+Join our community to get help, share ideas, and contribute to the project!
+
+### Discord Community
+
+**Join our Discord**
+
+Connect with other users, developers, and contributors:
+
+- 💡 **Get Help**: Ask questions and get support from the community
+- 🚀 **Share Projects**: Showcase your Helm charts and use cases
+- 🐛 **Report Issues**: Discuss bugs and feature requests
+- 🤝 **Collaborate**: Find contributors and collaborate on improvements
+- 📢 **Stay Updated**: Get notified about new releases and updates
+
+[Join the Discord Server →](https://discord.gg/hFt5DAYEVx)
+
+### Getting Support
+
+- **Discord**: For real-time help and discussions, join our Discord community
+- **GitHub Issues**: For bug reports and feature requests, use [GitHub Issues](https://github.com/talkops-ai/k8s-autopilot/issues)
+- **Documentation**: Check our comprehensive [documentation](./docs/) for guides and references
 
 ---
 
@@ -505,15 +575,7 @@ If you find k8s-autopilot helpful, please consider starring our repository:
 
 ⭐ [https://github.com/talkops-ai/k8s-autopilot](https://github.com/talkops-ai/k8s-autopilot)
 
----
-
-## 📖 Additional Resources
-
-- **[Architecture Documentation](./docs/k8s-autopilot-architecture.md)** - Detailed system architecture
-- **[API Reference](./docs/api/)** - API documentation (coming soon)
-- **[Examples](./examples/)** - Example workflows and use cases (coming soon)
-- **[Changelog](./CHANGELOG.md)** - Version history and changes (coming soon)
 
 ---
 
-**Built with ❤️ by the TalkOps team**
+**Built with ❤️ for the DevOps and Infrastructure community**

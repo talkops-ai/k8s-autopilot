@@ -67,16 +67,16 @@ RUN apt-get update && \
     groupadd -r app && \
     useradd -r -g app -d /app -s /bin/bash app
 
+# Install Helm CLI
+RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && \
+    helm version
+
 # Copy application artifacts from build stage
 COPY --from=uv --chown=app:app /app/.venv /app/.venv
 COPY --from=uv --chown=app:app /app/k8s_autopilot /app/k8s_autopilot
 
 # Copy agent card for A2A protocol
 COPY --from=uv --chown=app:app /app/k8s_autopilot/card /app/k8s_autopilot/card
-
-# Get healthcheck script
-COPY ./docker-healthcheck.sh /usr/local/bin/docker-healthcheck.sh
-RUN chmod +x /usr/local/bin/docker-healthcheck.sh
 
 # Get entrypoint script
 COPY ./docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -87,10 +87,6 @@ USER app
 
 # Expose port
 EXPOSE 10102
-
-# Health check
-# start-period gives the server time to start before health checks begin
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 CMD ["docker-healthcheck.sh"]
 
 # Set working directory
 WORKDIR /app
