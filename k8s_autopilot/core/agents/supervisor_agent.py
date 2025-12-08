@@ -148,28 +148,29 @@ class k8sAutopilotSupervisorAgent(BaseAgent):
             }
         )
 
+
     def _get_default_prompt(self) -> str:
         """Get the default prompt template for the supervisor following architecture pattern."""
         agent_names = list(self.agents.keys())
         agent_descriptions = "\n".join([f"- {name}: {self._get_agent_description(name)}" for name in agent_names])
         
+
+
         return f"""
 You are a supervisor managing specialized swarms for Kubernetes Helm chart generation and deployment.
 
 **IMPORTANT - REQUEST VALIDATION:**
-You ONLY handle requests related to Helm chart generation, Kubernetes deployment, and CI/CD pipelines.
+You ONLY handle requests related to Helm chart generation.
+Although you are part of a larger system, for this release, your primary and ONLY focus is generating Helm charts.
 
 **VALID REQUEST EXAMPLES:**
 - "Create a Helm chart for nginx"
-- "Generate a Kubernetes deployment for my API"
 - "Help me write a Helm chart for a web application"
-- "Deploy my application to Kubernetes using Helm"
 - "Create a Helm chart with PostgreSQL and Redis"
-- "Set up CI/CD pipeline for Helm chart deployment"
-- "Create ArgoCD application for my Helm chart"
+- "Generate Helm chart for my microservice"
 
 **OUT-OF-SCOPE REQUEST HANDLING:**
-If a user request is NOT clearly related to Helm chart generation, Kubernetes deployment, or CI/CD:
+If a user request is NOT clearly related to Helm chart generation:
 1. DO NOT reject immediately
 2. Use the request_human_feedback tool to reach out to the user
 3. Guide them about your capabilities
@@ -177,14 +178,16 @@ If a user request is NOT clearly related to Helm chart generation, Kubernetes de
 
 **CAPABILITY GUIDANCE MESSAGE:**
 When using request_human_feedback for out-of-scope requests, use this guidance:
-"I can help you with:
-- Creating and generating Helm charts for Kubernetes applications
+"Right now I am capable of generating Helm charts.
+
+In future releases I will have support for:
 - Designing Kubernetes deployment configurations
 - Setting up CI/CD pipelines for Helm chart deployment
-- Validating and securing Helm charts
 - Deploying applications to Kubernetes clusters
 
-Your request appears to be about [topic], which is outside my scope. Would you like help with Helm chart generation or Kubernetes deployment instead?"
+Your request appears to be about [topic], which is outside my scope. Would you like help with Helm chart generation?
+
+For example: 'Create a Helm chart for nginx'."
 
 **FEEDBACK TOOL USAGE:**
 - request_human_feedback: Use this tool when you need to:
@@ -192,6 +195,7 @@ Your request appears to be about [topic], which is outside my scope. Would you l
   * Guide users about your capabilities for out-of-scope requests
   * Get approval for decisions
   * Request human input to proceed
+  * **Final Review**: Notify user of generated artifacts and complete workflow
 
 Available tools:
 - transfer_to_planning_swarm: Analyze requirements and create Helm chart architecture plans
@@ -200,47 +204,49 @@ Available tools:
 - request_human_feedback: Request human feedback, clarification, or guide users about capabilities
 
 HITL APPROVAL GATES (REQUIRED):
-- request_security_review: Request human review of security scan results (call after template_supervisor completes)
-- request_deployment_approval: Request final approval before deployment (call after validator_deep_agent completes)
+- request_generation_review: Request human review of generated artifacts and workspace selection (call after template_supervisor completes)
 
 Your responsibilities:
-1. **FIRST**: Validate that the request is Helm/Kubernetes/CI-CD related
-   - If NOT related: Use request_human_feedback to guide user about your capabilities
-   - Only proceed with workflow if user confirms Helm/Kubernetes/CI-CD related request
+1. **FIRST**: Validate that the request is related to Helm chart generation
+   - If NOT related: Use request_human_feedback to guide user about your capabilities (Generation only)
+   - Only proceed with workflow if user confirms Helm chart generation request
 2. Analyze user requests and delegate to appropriate swarms using the transfer tools
 3. Coordinate workflow through phases: planning → generation → validation
-4. Enforce human-in-the-loop approval gates before phase transitions
-5. Ensure final results meet user requirements
+4. Finalize with Human Review
 
 WORKFLOW SEQUENCE WITH HITL:
 1. For ANY Helm chart request → transfer_to_planning_swarm(task_description="...")
 2. When planning_complete → transfer_to_template_supervisor(task_description="...") [Proceeds automatically]
-3. When generation_complete → request_security_review() [REQUIRED - workflow will pause for human approval]
-4. When security_approved → transfer_to_validator_deep_agent(task_description="...")
-5. When validation_complete → request_deployment_approval() [REQUIRED - workflow will pause for human approval]
-6. When deployment_approved → Workflow complete
+3. When generation_complete (from template_supervisor) → STOP and call request_generation_review() IMMEDIATELY. [REQUIRED BLOCKING STEP]
+   - Do NOT proceed to validation.
+   - Do NOT ask for feedback yet.
+   - JUST call request_generation_review().
+4. When generation_approved → transfer_to_validator_deep_agent(task_description="...")
+5. When validation_complete → **MANUAL REVIEW STEP (Important)**:
+   - Call `request_human_feedback` with:
+     - question: "Chart has been generated and validated. Please follow along the readme for deployment instructions.\n\nIf you found this helpful, please support us by starring our repository: https://github.com/talkops-ai/k8s-autopilot 🌟"
+     - mark_deployment_complete: True
+   - This effectively completes the workflow as deployment is manual.
+6. When phase is complete (via feedback) → Workflow complete
 
 CRITICAL RULES:
 - Check workflow_state flags before each tool call
-- ALWAYS call HITL gate tools after phase completion (generation → request_security_review, validation → request_deployment_approval)
-- Do NOT proceed to next phase without approval for security and deployment (check human_approval_status)
+- ALWAYS call HITL gate tools after phase completion (generation → request_generation_review)
+- Do NOT proceed to next phase without approval (check human_approval_status)
 - If approval status is "pending" or "rejected", wait or end workflow
 - Always call tools immediately, don't describe what you will do
 - Do NOT do any chart generation/validation yourself - ONLY delegate using tools
 - Template generation proceeds automatically after planning completes (no approval needed)
+- Validation proceeds automatically ONLY after generation is approved
+- **NO AUTOMATED DEPLOYMENT**: Use request_human_feedback with `mark_deployment_complete=True` for final step.
 
 STOP CONDITIONS (When to finish):
-- When deployment_approved == True AND validation_complete == True → Workflow is complete, respond with final summary
-- When any phase is rejected AND user doesn't request changes → End workflow with error message
-- When all phases are complete (planning_complete, generation_complete, validation_complete) → Respond with completion summary
-- DO NOT keep calling tools if workflow is already complete - check workflow_state first
+- When workflow_state.workflow_complete == True → Respond with completion summary and end.
+- When any phase is rejected AND user doesn't request changes → End workflow with error message.
+- DO NOT keep calling tools if workflow is already complete - check workflow_state first.
 
 HITL GATE RULES:
-- request_security_review: Call IMMEDIATELY after template_supervisor completes. Do NOT proceed to validation without approval.
-- request_deployment_approval: Call IMMEDIATELY after validator_deep_agent completes. Do NOT complete workflow without approval.
-- If gate returns "pending", workflow is paused - wait for human input
-- If gate returns "approved", proceed to next phase
-- If gate returns "rejected", end workflow or request changes
+- request_generation_review: Call IMMEDIATELY after template_supervisor completes. Do NOT proceed to validation without approval. If generation_approved is False, you MUST call this tool. You cannot skip it.
 - Planning phase does NOT require approval - proceed directly to template generation
 
 IMPORTANT: For requests like "help me write nginx helm chart", immediately call:
@@ -384,8 +390,10 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
             @tool
             async def transfer_to_validator_deep_agent(
                 task_description: str,
-                runtime: ToolRuntime[None, MainSupervisorState]
-            ) -> str:
+                runtime: ToolRuntime[None, MainSupervisorState],
+                tool_call_id: Annotated[str, InjectedToolCallId],
+                workspace_dir: Optional[str] = None
+            ) -> Command:
                 """
                 Delegate to validation swarm for security and quality validation.
                 
@@ -394,19 +402,33 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 - Security approval granted (workflow_state.security_approved == True)
                 - Need to validate generated Helm charts
                 - active_phase == "generation"
+                
+                Args:
+                    task_description: Description of the validation task
+                    workspace_dir: Optional. Explicitly specify the directory where the chart is located. 
+                                   If not provided, defaults to the 'workspace_dir' in the state.
+                                   The supervisor should pass this if the user specified a location.
                 """
                 supervisor_logger.log_structured(
                     level="INFO",
                     message="Validation swarm tool invoked",
-                    extra={"task_description": task_description}
+                    extra={"task_description": task_description, "workspace_dir": workspace_dir}
                 )
                 
                 # 1. Transform supervisor state → validation state
-                # Get workspace_dir from state (set during security review), default to "/tmp/helm-charts"
-                workspace_dir = runtime.state.get("workspace_dir", "/tmp/helm-charts")
+                # Priority: Argument > State > Default
+                final_workspace_dir = workspace_dir or runtime.state.get("workspace_dir", "/tmp/helm-charts")
+                
+                # If explicitly provided by supervisor, ensure state is updated
+                state_updates = {}
+                if workspace_dir and workspace_dir != runtime.state.get("workspace_dir"):
+                    state_updates["workspace_dir"] = workspace_dir
+                    # We can't update runtime.state in place effectively effectively if we want it to persist purely via Command,
+                    # but we will include it in the returned Command later.
+                
                 validation_input = StateTransformer.supervisor_to_validation(
                     runtime.state, 
-                    workspace_dir=workspace_dir
+                    workspace_dir=final_workspace_dir
                 )
                 
                 # 2. Invoke validation swarm
@@ -418,20 +440,18 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 # 3. Transform back
                 supervisor_updates = StateTransformer.validation_to_supervisor(
                     validation_output,
-                    runtime.state
+                    runtime.state,
+                    tool_call_id=tool_call_id
                 )
                 
-                # Update the runtime state
-                for key, value in supervisor_updates.items():
-                    if key in runtime.state:
-                        runtime.state[key] = value
+                # Merge our workspace update if needed
+                if state_updates:
+                    supervisor_updates.update(state_updates)
                 
-                # Return meaningful result
-                if supervisor_updates.get("workflow_state", {}).get("validation_complete"):
-                    issue_count = len(supervisor_updates.get("validation_results", []))
-                    return f"✅ Validation completed. Found {issue_count} validation results for: {task_description}"
-                else:
-                    return f"⏳ Validation in progress for: {task_description}"
+                # Return Command with state updates
+                return Command(
+                    update=supervisor_updates
+                )
             
             tools.append(transfer_to_validator_deep_agent)
             supervisor_logger.log_structured(
@@ -502,23 +522,11 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
         # Check phase-specific conditions
         workflow_state = state.get("workflow_state", {})
         
-        if phase == "planning":
-            # Should call if planning is complete but not approved
-            planning_complete = workflow_state.planning_complete if hasattr(workflow_state, "planning_complete") else workflow_state.get("planning_complete", False)
-            planning_output = state.get("planning_output")
-            return planning_complete and planning_output is not None
-        
-        elif phase == "security":
-            # Should call if generation is complete and validation results exist
+        if phase == "generation":
+            # Should call if generation is complete but not approved
             generation_complete = workflow_state.generation_complete if hasattr(workflow_state, "generation_complete") else workflow_state.get("generation_complete", False)
-            validation_results = state.get("validation_results", [])
-            return generation_complete and len(validation_results) > 0
-        
-        elif phase == "deployment":
-            # Should call if validation is complete
-            validation_complete = workflow_state.validation_complete if hasattr(workflow_state, "validation_complete") else workflow_state.get("validation_complete", False)
-            generated_artifacts = state.get("generated_artifacts", {})
-            return validation_complete and len(generated_artifacts) > 0
+            helm_chart_artifacts = state.get("helm_chart_artifacts", {})
+            return generation_complete and len(helm_chart_artifacts) > 0
         
         return False
 
@@ -527,6 +535,7 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
         question: str,
         context: Optional[str] = None,
         phase: Optional[str] = None,
+        mark_deployment_complete: bool = False,
         runtime: ToolRuntime[None, MainSupervisorState] = None,
         tool_call_id: Annotated[str, InjectedToolCallId] = ""
     ) -> Command:
@@ -542,6 +551,7 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
             question: The question or request for the human
             context: Optional context about why feedback is needed
             phase: Optional current workflow phase
+            mark_deployment_complete: If True, marks deployment phase as complete/approved when user replies
             runtime: Tool runtime for state access
             
         Returns:
@@ -578,7 +588,8 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
             extra={
                 "phase": phase,
                 "question_preview": question[:100],
-                "session_id": session_id
+                "session_id": session_id,
+                "mark_deployment_complete": mark_deployment_complete
             }
         )
         
@@ -593,21 +604,87 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
         # Tool message must directly respond to the assistant's tool call
         # It should come first to satisfy LangChain's requirement that tool messages
         # immediately follow assistant messages with tool_calls
-        tool_message_content = f"User has changed their mind. Now they want: {human_response_str}"
+        tool_message_content = f"User has replied: {human_response_str}"
         tool_message = ToolMessage(content=tool_message_content, tool_call_id=tool_call_id)
         
         # Create human message for LLM input (separate from tool response)
         human_message = HumanMessage(content=human_response_str)
         
+        # Determine state updates
+        update_dict = {
+            "user_query": human_response_str,
+            "messages": [tool_message],  # Only tool message to respond to tool call
+            "llm_input_messages": [human_message],  # Human message for LLM input
+        }
+        
+        # Handle marking deployment as complete if requested
+        if mark_deployment_complete and runtime:
+            # GUARDRAIL: Verify validation is actually complete
+            # Prevents agent from hallucinating validation or skipping the validation phase
+            current_ws = runtime.state.get("workflow_state")
+            is_val_complete = False
+            if isinstance(current_ws, dict):
+                is_val_complete = current_ws.get("validation_complete", False)
+            elif current_ws:
+                is_val_complete = getattr(current_ws, "validation_complete", False)
+                
+            if not is_val_complete:
+                supervisor_logger.log_structured(
+                    level="WARNING",
+                    message="Agent attempted to complete deployment before validation",
+                    extra={"task_id": runtime.state.get("task_id")}
+                )
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content="SYSTEM ERROR: You cannot mark deployment complete because the 'validation' phase is not complete. You skipped the validation step. \n\nREQUIRED ACTION:\n1. Call 'request_generation_review' NOW.\n2. Then call 'transfer_to_validator_deep_agent'.",
+                                tool_call_id=tool_call_id
+                            )
+                        ]
+                    }
+                )
+
+            try:
+                # Retrieve current workflow state
+                current_workflow_state = runtime.state.get("workflow_state")
+                
+                # Check if it's a dict or object and convert/copy if needed
+                if isinstance(current_workflow_state, dict):
+                    workflow_state_obj = SupervisorWorkflowState(**current_workflow_state)
+                elif current_workflow_state:
+                    # It's an object, we can modify it directly or copy it
+                    # Pydantic models are mutable by default
+                    workflow_state_obj = current_workflow_state
+                else:
+                    # Create new if missing
+                    workflow_state_obj = SupervisorWorkflowState()
+                
+                # Update the flags
+                workflow_state_obj.set_phase_complete("deployment")
+                workflow_state_obj.set_approval("deployment", True)
+                
+                # Add to updates
+                update_dict["workflow_state"] = workflow_state_obj
+                
+                # Add a system note to messages to confirm
+                confirmation_msg = ToolMessage(
+                    content="Deployment phase marked as complete based on user interaction.",
+                    tool_call_id=tool_call_id # Reusing same ID might be confusing but necessary for tool output
+                )
+                # Actually we can't add two tool messages for same ID easily, just append to content above
+                tool_message.content += " (Deployment phase marked complete)"
+                
+            except Exception as e:
+                supervisor_logger.log_structured(
+                    level="ERROR",
+                    message="Failed to update workflow state in request_human_feedback",
+                    extra={"error": str(e)}
+                )
+
         # Return Command to update state with human response
-        # messages: Only tool message (required to respond to tool call)
-        # llm_input_messages: Human message (for LLM processing)
         return Command(
-            update={
-                "user_query": human_response_str,
-                "messages": [tool_message],  # Only tool message to respond to tool call
-                "llm_input_messages": [human_message],  # Human message for LLM input
-            },
+            update=update_dict,
         )
 
     def _handle_hitl_interrupt(
@@ -902,14 +979,14 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
         # Create tool wrappers for delegation (replaces manual graph building)
         swarm_tools = self._create_swarm_tools(compiled_swarms)
         
-        # # Create HITL gate tools
-        # hitl_gate_tools = self._create_hitl_gate_tools()
+        # Create HITL gate tools
+        hitl_gate_tools = self._create_hitl_gate_tools()
         
         # Create human feedback tool
         feedback_tool = self.request_human_feedback
         
         # Combine all tools
-        all_tools = swarm_tools + [feedback_tool]
+        all_tools = swarm_tools + hitl_gate_tools + [feedback_tool]
         
         supervisor_logger.log_structured(
             level="DEBUG",
@@ -1210,33 +1287,80 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                     
                     # If workflow is complete, stop execution
                     if is_workflow_complete:
-                        supervisor_logger.log_structured(
-                            level="INFO",
-                            message="Workflow complete - stopping execution",
-                            task_id=task_id,
-                            context_id=context_id,
-                            extra={
-                                'step_count': step_count,
-                                'planning_complete': planning_complete,
-                                'generation_complete': generation_complete,
-                                'validation_complete': validation_complete,
-                                'deployment_approved': deployment_approved
-                            }
-                        )
-                        yield AgentResponse(
-                            response_type='text',
-                            is_task_complete=True,
-                            require_user_input=False,
-                            content='✅ Workflow complete: All phases finished and deployment approved.',
-                            metadata={
-                                'session_id': context_id,
-                                'task_id': task_id,
-                                'agent_name': self.name,
-                                'step_count': step_count,
-                                'status': 'workflow_complete'
-                            }
-                        )
-                        break  # Stop streaming
+                        # Check if we should wait for the agent's final response
+                        # If the last message was a ToolMessage (state update), let the agent respond first
+                        messages = item.get("messages", [])
+                        last_message = messages[-1] if messages else None
+                        
+                        if isinstance(last_message, ToolMessage):
+                            supervisor_logger.log_structured(
+                                level="INFO",
+                                message="Workflow state complete, waiting for agent final response",
+                                task_id=task_id,
+                                context_id=context_id
+                            )
+                            # Continue loop to allow Agent node to execute and generate final text
+                            # processing message will be yielded by the 'else' block below
+                        else:
+                            # If there is a final message from the agent, yield it first
+                            if isinstance(last_message, (AIMessage, HumanMessage)) and last_message.content:
+                                supervisor_logger.log_structured(
+                                    level="INFO",
+                                    message="Yielding final agent message before completion",
+                                    task_id=task_id,
+                                    extra={"content_preview": str(last_message.content)[:50]}
+                                )
+                                yield AgentResponse(
+                                    response_type='text',
+                                    is_task_complete=False,
+                                    require_user_input=False,
+                                    content=str(last_message.content),
+                                    metadata={
+                                        'session_id': context_id,
+                                        'task_id': task_id,
+                                        'agent_name': self.name,
+                                        'step_count': step_count,
+                                        'status': 'working'
+                                    }
+                                )
+
+                            supervisor_logger.log_structured(
+                                level="INFO",
+                                message="Workflow complete - stopping execution",
+                                task_id=task_id,
+                                context_id=context_id,
+                                extra={
+                                    'step_count': step_count,
+                                    'planning_complete': planning_complete,
+                                    'generation_complete': generation_complete,
+                                    'validation_complete': validation_complete,
+                                    'deployment_approved': deployment_approved
+                                }
+                            )
+                            yield AgentResponse(
+                                response_type='data',
+                                is_task_complete=True,
+                                require_user_input=False,
+                                content={
+                                    "status": "completed",
+                                    "message": "✅ Workflow complete: All phases finished and deployment approved.",
+                                    "completion_metrics": {
+                                        'step_count': step_count,
+                                        'planning_complete': planning_complete,
+                                        'generation_complete': generation_complete,
+                                        'validation_complete': validation_complete,
+                                        'deployment_approved': deployment_approved
+                                    }
+                                },
+                                metadata={
+                                    'session_id': context_id,
+                                    'task_id': task_id,
+                                    'agent_name': self.name,
+                                    'step_count': step_count,
+                                    'status': 'completed'
+                                }
+                            )
+                            break  # Stop streaming
                     
                     # 3. Check recursion limit warning
                     recursion_limit = config_with_durability.get('configurable', {}).get('recursion_limit', 50)

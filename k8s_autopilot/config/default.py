@@ -12,10 +12,10 @@ class DefaultConfig:
     LLM_HIGHER_TEMPERATURE: float = 0.0
     LLM_HIGHER_MAX_TOKENS: int = 15000
 
-    LLM_REACT_AGENT_PROVIDER: str = "openai"
-    LLM_REACT_AGENT_MODEL: str = "gpt-4.1-mini"
-    LLM_REACT_AGENT_TEMPERATURE: float = 0.0
-    LLM_REACT_AGENT_MAX_TOKENS: int = 25000
+    LLM_DEEPAGENT_PROVIDER: str = "openai"
+    LLM_DEEPAGENT_MODEL: str = "gpt-4.1-mini"
+    LLM_DEEPAGENT_TEMPERATURE: float = 0.0
+    LLM_DEEPAGENT_MAX_TOKENS: int = 25000
 
     
     # Logging Configuration
@@ -33,4 +33,7 @@ class DefaultConfig:
     ARGOCD_MCP_SERVER_TRANSPORT: str = "sse"
     ARGOCD_MCP_SERVER_DISABLED: bool = False
     AGENTS_MCP_SERVER_AUTO_APPROVE: list = []
+    
+    # LangGraph Configuration
+    RECURSION_LIMIT: int = 50  # Maximum recursion depth for agent workflows (default: 25, increased for multi-phase workflows)
     

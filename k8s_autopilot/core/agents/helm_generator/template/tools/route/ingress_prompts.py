@@ -57,6 +57,14 @@ spec:
 4. **Service References**: Backend service must match Service resource name
 5. **Host Validation**: Ensure valid DNS hostname format
 
+## HELM TEMPLATING RULES (CRITICAL)
+
+1. **ALWAYS use DOUBLE QUOTES** in Go templates - NEVER single quotes
+2. **REPLACE CHARTNAME** with the actual chart name provided
+3. **USE ONLY THESE HELPERS** (they are the only ones available):
+   - CHARTNAME.fullname
+   - CHARTNAME.labels
+
 ## TLS/CERTIFICATE OPTIONS
 
 ### Option 1: Manual Secret
@@ -132,13 +140,14 @@ Generate a production-ready Ingress YAML for the following configuration:
 
 {annotations}
 
-## Requirements
+## CRITICAL INSTRUCTIONS
+1. **Replace CHARTNAME** with: {app_name}
+   - Use `{{{{ include "{app_name}.fullname" . }}}}` for name
+   - Use `{{{{ include "{app_name}.labels" . | nindent 4 }}}}` for labels
 
-- Use Helm templating for all configurable values
-- Include proper labels using helper templates
-- Configure TLS/SSL properly
-- Add controller-specific annotations
-- Ensure service backend references are correct
+2. **Use DOUBLE QUOTES** in all Go template strings (never single quotes)
+
+3. **Backend Service** must match the Service resource name exactly
 
 **Generate the complete Ingress YAML now.**
 """

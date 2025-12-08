@@ -12,49 +12,66 @@ Generate complete, production-ready Service YAML with proper Helm templating syn
 - Include ALL required fields: apiVersion, kind, metadata, spec
 - Ensure 'kind' is 'Service'
 
-### 2. Helm Templating
+### 2. Helm Templating (CRITICAL SYNTAX RULES)
 - Use {{ .Values.service.* }} for ALL configurable parameters
-- Use {{ include "CHARTNAME.labels" . | nindent 4 }} for metadata labels
-- Use {{ include "CHARTNAME.selectorLabels" . | nindent 4 }} for spec selector
-- Use {{ .Release.Name }} where appropriate
+- **ALWAYS use DOUBLE QUOTES** in Go templates: {{ include "chartname.labels" . }}
+- **NEVER use single quotes** - they cause template parsing errors
+- ALWAYS include namespace in metadata: {{ .Values.namespace.name | default .Release.Namespace }}
 
-## SERVICE TYPES
+### 3. Helper Templates
+Replace CHARTNAME with the actual chart name provided (e.g., "aws-orchestrator-agent"):
+- {{ include "CHARTNAME.fullname" . }} - for resource names
+- {{ include "CHARTNAME.labels" . | nindent 4 }} - for metadata labels
+- {{ include "CHARTNAME.selectorLabels" . | nindent 4 }} - for spec selector
 
-### ClusterIP (Internal)
-Default service type. Only accessible within cluster.
+## SERVICE STRUCTURE
 
 ```yaml
 apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "CHARTNAME.fullname" . }}
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "CHARTNAME.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.service.type | default "ClusterIP" }}
+  {{- if eq .Values.service.type "LoadBalancer" }}
+  {{- if .Values.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.service.loadBalancerIP }}
+  {{- end }}
+  externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy | default "Cluster" }}
+  {{- end }}
   ports:
   - port: {{ .Values.service.port }}
     targetPort: {{ .Values.service.targetPort }}
-    protocol: TCP
-    name: http
+    protocol: {{ .Values.service.protocol | default "TCP" }}
+    name: {{ .Values.service.name | default "http" }}
+    {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePort }}
+    nodePort: {{ .Values.service.nodePort }}
+    {{- end }}
   selector:
     {{- include "CHARTNAME.selectorLabels" . | nindent 4 }}
 ```
 
+## SERVICE TYPES
+
+### ClusterIP (Internal)
+Default service type. Only accessible within cluster.
+
 ### LoadBalancer (External)
 Provisions cloud load balancer.
-
 ```yaml
 spec:
   type: LoadBalancer
   {{- if .Values.service.loadBalancerIP }}
   loadBalancerIP: {{ .Values.service.loadBalancerIP }}
   {{- end }}
-  {{- if .Values.service.loadBalancerSourceRanges }}
-  loadBalancerSourceRanges:
-  {{- toYaml .Values.service.loadBalancerSourceRanges | nindent 4 }}
-  {{- end }}
-  externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy | default "Cluster" }}
 ```
 
 ### NodePort (External via Node IPs)
@@ -75,6 +92,15 @@ spec:
     {{- include "CHARTNAME.selectorLabels" . | nindent 4 }}
 ```
 
+## IMPORTANT RULES
+
+1. **REPLACE CHARTNAME** with the actual chart name provided (e.g., "aws-orchestrator-agent")
+2. **USE DOUBLE QUOTES** for all Go template strings - NEVER single quotes
+3. **USE ONLY THESE HELPERS** (they are the only ones available):
+   - CHARTNAME.fullname
+   - CHARTNAME.labels
+   - CHARTNAME.selectorLabels
+
 ## OUTPUT FORMAT
 
 Return the output as a valid JSON object matching the following structure:
@@ -94,28 +120,25 @@ Return the output as a valid JSON object matching the following structure:
 SERVICE_GENERATOR_USER_PROMPT = """
 Generate a Service YAML for the following application:
 
-**App Name:** {app_name}
+**App Name / Chart Name:** {app_name}
 **Service Type:** {service_type}
 **Ports:** {ports}
 **Selector Labels:** {selector_labels}
 
-**Extra Service Details(if any):**
+**Extra Service Details (if any):**
 {extra_service_details}
 
-## Helper Templates (Use these specific templates)
+## CRITICAL INSTRUCTIONS
 
-**Naming Templates:**
-{naming_templates}
+1. **Replace CHARTNAME** with: {app_name}
+   - Use `{{{{ include "{app_name}.fullname" . }}}}` for name
+   - Use `{{{{ include "{app_name}.labels" . | nindent 4 }}}}` for labels
+   - Use `{{{{ include "{app_name}.selectorLabels" . | nindent 4 }}}}` for selector
 
-**Label Templates:**
-{label_templates}
+2. **Use DOUBLE QUOTES** in all Go template strings (never single quotes)
 
-**Annotation Templates:**
-{annotation_templates}
+3. **Selector MUST match** the deployment pod labels exactly
 
-**Requirements:**
-- Use Helm templating ({{ .Values.service.* }})
-- Use the provided helper templates for labels and selectors (e.g., {{ include "CHARTNAME.labels" . }})
-- Ensure selector matches exactly: {selector_labels}
-
+**Generate the complete Service YAML now.**
 """
+

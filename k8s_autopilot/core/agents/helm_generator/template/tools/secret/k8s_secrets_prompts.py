@@ -21,12 +21,17 @@ Generate secure Kubernetes Secret manifests following best practices for sensiti
 - Recommend External Secrets Operator for production
 - Provide security warnings for plaintext values
 
-### 3. Helm Templating
-- Use {{ include "CHARTNAME.fullname" . }} for names
-- Use {{ include "CHARTNAME.labels" . | nindent 4 }} for labels
-- Use {{ .Values.secrets.* }} for secret data
-- Support conditional secret creation with {{- if .Values.secrets.create }}
-- Use {{ .Release.Namespace }} for namespace
+### 3. Helm Templating (CRITICAL)
+**ALWAYS use DOUBLE QUOTES** in Go templates - NEVER single quotes
+**REPLACE CHARTNAME** with the actual chart name provided (e.g., "aws-orchestrator-agent")
+
+Available helper templates:
+- {{ include "CHARTNAME.fullname" . }} - for resource names
+- {{ include "CHARTNAME.labels" . | nindent 4 }} - for metadata labels
+
+Use {{ .Values.secrets.* }} for secret data
+Support conditional secret creation with {{- if .Values.secrets.create }}
+Use {{ .Values.namespace.name | default .Release.Namespace }} for namespace
 
 ### 4. Usage Examples
 - Provide environment variable reference examples
@@ -41,6 +46,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: {{ include "CHARTNAME.fullname" . }}-secret
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "CHARTNAME.labels" . | nindent 4 }}
 type: Opaque
@@ -56,6 +62,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: {{ include "CHARTNAME.fullname" . }}-registry
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "CHARTNAME.labels" . | nindent 4 }}
 type: kubernetes.io/dockerconfigjson
@@ -69,6 +76,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: {{ include "CHARTNAME.fullname" . }}-tls
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "CHARTNAME.labels" . | nindent 4 }}
 type: kubernetes.io/tls
@@ -146,23 +154,15 @@ Generate Kubernetes Secret manifests for this Helm chart:
 **Annotation Templates:**
 {annotation_templates}
 
-## Requirements
+## CRITICAL INSTRUCTIONS
 
-- Generate Secret with proper Helm templating
-- Use Helm templating for all configurable values ({{ .Values.* }})
-- Use the provided helper templates for labels and annotations (e.g., {{ include "CHARTNAME.labels" . }})
-- Use {{ .Values.secrets.* }} for all secret data
-- Never hardcode sensitive values
-- Provide usage examples for environment variables and volume mounts
-- Include security analysis and recommendations
-- Support conditional creation with {{- if .Values.secrets.create }}
+1. **Replace CHARTNAME** with: {app_name}
+   - Use `{{{{ include "{app_name}.fullname" . }}}}` for name
+   - Use `{{{{ include "{app_name}.labels" . | nindent 4 }}}}` for labels
 
-## Security Requirements
+2. **Use DOUBLE QUOTES** in all Go template strings (never single quotes)
 
-- Recommend External Secrets Operator for production
-- Warn about plaintext values in values.yaml
-- Suggest secret encryption at rest
-- Provide best practices for secret rotation
+3. **Use `| quote`** for string values that need quoting
 
 **Generate the complete Secret manifests now.**
 """

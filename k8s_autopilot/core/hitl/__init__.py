@@ -22,8 +22,7 @@ from k8s_autopilot.core.hitl.utils import (
 )
 from k8s_autopilot.core.hitl.gates import (
     planning_review_gate,
-    security_review_gate,
-    deployment_approval_gate
+    generation_review_gate
 )
 from k8s_autopilot.core.hitl.middleware import (
     create_hitl_middleware_config,
@@ -35,8 +34,7 @@ from k8s_autopilot.core.hitl.middleware import (
 )
 from k8s_autopilot.core.hitl.gate_tools import (
     request_planning_review,
-    request_security_review,
-    request_deployment_approval,
+    request_generation_review,
     create_hitl_gate_tools
 )
 from k8s_autopilot.core.hitl.client_helpers import (
@@ -69,8 +67,7 @@ __all__ = [
     "is_approved",
     # Gates
     "planning_review_gate",
-    "security_review_gate",
-    "deployment_approval_gate",
+    "generation_review_gate",
     # Middleware
     "create_hitl_middleware_config",
     "create_supervisor_with_hitl",
@@ -80,8 +77,7 @@ __all__ = [
     "DEFAULT_HITL_TOOLS",
     # Gate Tools
     "request_planning_review",
-    "request_security_review",
-    "request_deployment_approval",
+    "request_generation_review",
     "create_hitl_gate_tools",
     # Client Helpers
     "create_resume_command",

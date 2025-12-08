@@ -10,6 +10,7 @@ from .network_policy.nw_policy_tool import generate_network_policy_yaml
 from .readme.readme_tool import generate_readme
 from .sa.k8s_sa_tool import generate_service_account_rbac
 from .secret.k8s_secret_tool import generate_secret
+from .namespace.namespace_tool import generate_namespace_yaml
 
 __all__ = [
     "generate_deployment_yaml",
@@ -24,4 +25,5 @@ __all__ = [
     "generate_readme",
     "generate_service_account_rbac",
     "generate_secret",
+    "generate_namespace_yaml",
 ]

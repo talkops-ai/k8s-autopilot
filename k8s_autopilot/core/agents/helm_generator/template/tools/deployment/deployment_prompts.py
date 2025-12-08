@@ -12,12 +12,14 @@ Generate complete, production-ready Deployment or StatefulSet YAML with proper H
 - Include ALL required fields: apiVersion, kind, metadata, spec
 - Nest all configurable values under spec.template.spec
 
-### 2. Helm Templating
+### 2. Helm Templating (CRITICAL SYNTAX RULES)
 - Use {{ .Values.* }} for ALL configurable parameters
-- Use {{ include "CHARTNAME.labels" . | nindent 4 }} for labels
-- Use {{ include "CHARTNAME.selectorLabels" . | nindent 6 }} for selectors
+- **ALWAYS use DOUBLE QUOTES** in Go templates: {{ include "chartname.labels" . }}
+- **NEVER use single quotes** - they cause template parsing errors
+- **REPLACE CHARTNAME** with the actual chart name provided
 - Use {{ .Release.Name }}, {{ .Release.Namespace }} where appropriate
 - Use {{ .Values.image.tag | default .Chart.AppVersion }} for image tags
+- ALWAYS include namespace in metadata: {{ .Values.namespace.name | default .Release.Namespace }}
 
 ### 3. Security Hardening
 CRITICAL: Implement these security contexts:
@@ -90,11 +92,12 @@ strategy:
 ```
 
 ### 7. Labels and Annotations
-Use helper templates:
+Use helper templates for standard labels, and .Values for pod-specific labels/annotations:
 
 ```yaml
 metadata:
   name: {{ include "CHARTNAME.fullname" . }}
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "CHARTNAME.labels" . | nindent 4 }}
 spec:
@@ -105,13 +108,26 @@ spec:
     metadata:
       labels:
         {{- include "CHARTNAME.selectorLabels" . | nindent 8 }}
-        {{- include "CHARTNAME.labels.pod" . | nindent 8 }}
-      annotations:
-        {{- include "CHARTNAME.annotations.pod" . | nindent 8 }}
-        {{- if .Values.podAnnotations }}
-        {{- toYaml .Values.podAnnotations | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 ```
+
+**IMPORTANT:** Only use these helper templates (they are the only ones available):
+- CHARTNAME.fullname
+- CHARTNAME.labels
+- CHARTNAME.selectorLabels
+- CHARTNAME.serviceAccountName
+
+Do NOT use these (they don't exist):
+- CHARTNAME.labels.pod
+- CHARTNAME.annotations.pod
+- CHARTNAME.podSecurityContext
+- CHARTNAME.containerSecurityContext
 
 ## OUTPUT FORMAT
 
@@ -169,10 +185,12 @@ Generate a production-ready {workload_type} YAML for the following application:
 ## Health Probes
 
 **Framework:** {framework}
+**Framework Analysis:** {framework_analysis}
 **Networking:** {networking}
 **Configuration:** {configuration}
 
-Generate liveness and readiness probes appropriate for {framework}.
+Generate liveness and readiness probes based on Framework Analysis.
+- If probe path is null, DO NOT generate that probe.
 
 ## Environment Variables
 
@@ -193,11 +211,21 @@ Generate liveness and readiness probes appropriate for {framework}.
 **Annotation Templates:**
 {annotation_templates}
 
+## CRITICAL INSTRUCTIONS
+1. **Replace CHARTNAME** with: {app_name}
+   - Use `{{{{ include "{app_name}.fullname" . }}}}` for name
+   - Use `{{{{ include "{app_name}.labels" . | nindent 4 }}}}` for labels
+   - Use `{{{{ include "{app_name}.selectorLabels" . | nindent 6 }}}}` for selector
+
+2. **Use DOUBLE QUOTES** in all Go template strings (never single quotes)
+
+3. **Selector MUST match** the pod labels exactly
+
 ## Additional Requirements
 
 - Implement proper security contexts (runAsNonRoot, drop ALL capabilities, seccomp)
 - Use Helm templating for all configurable values ({{ .Values.* }})
-- Use the provided helper templates for labels and annotations (e.g., {{ include "CHARTNAME.labels" . }})
+- Use {{ .Values.replicas }} for replica count
 - Set appropriate resource requests and limits
 - Configure rolling update strategy
 - Add pod disruption budget considerations if HA enabled

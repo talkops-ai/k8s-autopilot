@@ -30,6 +30,14 @@ Generate precise ServiceAccount, Role/ClusterRole, and RoleBinding manifests fol
 - Document sensitive permissions
 - Provide security warnings for overly permissive rules
 
+## HELM TEMPLATING RULES (CRITICAL)
+
+1. **ALWAYS use DOUBLE QUOTES** in Go templates - NEVER single quotes
+2. **REPLACE CHARTNAME** with the actual chart name provided
+3. **USE ONLY THESE HELPERS** (they are the only ones available):
+   - CHARTNAME.fullname
+   - CHARTNAME.labels
+
 ## RBAC STRUCTURE
 
 ### ServiceAccount
@@ -38,6 +46,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ include "CHARTNAME.fullname" . }}
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "CHARTNAME.labels" . | nindent 4 }}
 automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
@@ -49,6 +58,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "CHARTNAME.fullname" . }}
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "CHARTNAME.labels" . | nindent 4 }}
 rules:
@@ -66,6 +76,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "CHARTNAME.fullname" . }}
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "CHARTNAME.labels" . | nindent 4 }}
 roleRef:
@@ -75,7 +86,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: {{ include "CHARTNAME.fullname" . }}
-    namespace: {{ .Release.Namespace }}
+    namespace: {{ .Values.namespace.name | default .Release.Namespace }}
 ```
 
 ## OUTPUT FORMAT
@@ -146,16 +157,12 @@ Generate ServiceAccount and RBAC manifests for this Helm chart:
 **Annotation Templates:**
 {annotation_templates}
 
-## Requirements
+## CRITICAL INSTRUCTIONS
+1. **Replace CHARTNAME** with: {app_name}
+   - Use `{{{{ include "{app_name}.fullname" . }}}}` for name
+   - Use `{{{{ include "{app_name}.labels" . | nindent 4 }}}}` for labels
 
-- Generate ServiceAccount with proper Helm templating
-- Generate Role/ClusterRole with minimum necessary permissions
-- Generate RoleBinding/ClusterRoleBinding to connect them
-- Use Helm templating for all configurable values ({{ .Values.* }})
-- Use the provided helper templates for labels and annotations (e.g., {{ include "CHARTNAME.labels" . }})
-- Use {{ .Values.serviceAccount.* }} for configurable parameters
-- Follow principle of least privilege
-- Provide security analysis and recommendations
+2. **Use DOUBLE QUOTES** in all Go template strings (never single quotes)
 
 **Generate the complete RBAC manifests now.**
 """

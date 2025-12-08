@@ -21,6 +21,7 @@ from k8s_autopilot.core.agents.helm_generator.template.tools import (
     generate_readme,
     generate_service_account_rbac,
     generate_secret,
+    generate_namespace_yaml,
 )
 from k8s_autopilot.core.agents.helm_generator.template.template_prompts import (
     COORDINATOR_SYSTEM_PROMPT,
@@ -31,6 +32,7 @@ template_supervisor_logger = AgentLogger("k8sAutopilotTmplSupervisorAgent")
 
 # Tool Mapping
 TOOL_MAPPING = {
+    "generate_namespace_yaml": generate_namespace_yaml,
     "generate_deployment_yaml": generate_deployment_yaml,
     "generate_service_yaml": generate_service_yaml,
     "generate_values_yaml": generate_values_yaml,
@@ -164,7 +166,16 @@ class TemplateSupervisor(BaseSubgraphAgent):
         planner_output = state.get("planner_output", {})
         k8s_arch = planner_output.get("kubernetes_architecture", {})
         resources = k8s_arch.get("resources", {})
+        
+        # core is now a list - check if Namespace is included
+        core_resources = resources.get("core", [])
         auxiliary_resources = resources.get("auxiliary", [])
+        
+        # Check if Namespace is in core resources
+        has_namespace = any(
+            resource.get("type") == "Namespace" 
+            for resource in core_resources
+        )
         
         # Map auxiliary resources to tools
         # Resource Type -> Tool Name
@@ -191,14 +202,27 @@ class TemplateSupervisor(BaseSubgraphAgent):
         conditional_tools = list(set(conditional_tools))
         
         # Create Tool Queue
-        # Phase 1 tools (always run) - ORDER MATTERS: helpers first, then deployment/service
+        # Phase 1 tools (always run) - ORDER MATTERS: helpers first, then namespace (if exists), then deployment/service
         # Note: values_yaml runs AFTER all templates (including conditional) but BEFORE README
         core_tools = [
             "generate_helpers_tpl",  # First - other templates use helper functions
+        ]
+        
+        # Namespace runs BEFORE deployment if specified (since deployment references namespace)
+        if has_namespace:
+            core_tools.append("generate_namespace_yaml")
+            template_supervisor_logger.log_structured(
+                level="INFO",
+                message="Namespace resource detected in core resources - adding namespace tool",
+                extra={"has_namespace": has_namespace}
+            )
+        
+        # Then deployment and service
+        core_tools.extend([
             "generate_deployment_yaml",
             "generate_service_yaml"
             # values_yaml is NOT in core_tools - it runs after conditional templates
-        ]
+        ])
         
         # Phase 2: values.yaml (after all templates, before README)
         values_tools = ["generate_values_yaml"]
@@ -210,7 +234,7 @@ class TemplateSupervisor(BaseSubgraphAgent):
         
         # Identify dependencies
         # Pass all tools to properly set README dependencies
-        pending_dependencies = self.identify_tool_dependencies(conditional_tools, core_tools)
+        pending_dependencies = self.identify_tool_dependencies(conditional_tools, core_tools, has_namespace)
         
         return {
             "current_phase": "CORE_TEMPLATES",
@@ -221,7 +245,8 @@ class TemplateSupervisor(BaseSubgraphAgent):
             "coordinator_state": {
                 "phases_completed": ["PLANNING"],
                 "current_retry_count": 0,
-                "max_retries": 3
+                "max_retries": 3,
+                "has_namespace": has_namespace  # Track for later phases
             },
             "generated_templates": {},
             "tool_results": {},
@@ -249,9 +274,16 @@ class TemplateSupervisor(BaseSubgraphAgent):
         
         # PHASE: CORE_TEMPLATES
         if current_phase == "CORE_TEMPLATES":
-            # Core tools - ORDER MATTERS: helpers first (other templates use helper functions)
+            # Check if namespace tool is in the queue (has_namespace was set during initialization)
+            has_namespace = state.get("coordinator_state", {}).get("has_namespace", False)
+            
+            # Core tools - ORDER MATTERS: helpers first, then namespace (if any), then deployment/service
             if "generate_helpers_tpl" not in completed_tools:
                 return {"next_action": "generate_helpers_tpl"}
+            
+            # Namespace runs after helpers but before deployment
+            elif has_namespace and "generate_namespace_yaml" not in completed_tools:
+                return {"next_action": "generate_namespace_yaml"}
             
             elif "generate_deployment_yaml" not in completed_tools:
                 return {"next_action": "generate_deployment_yaml"}
@@ -260,7 +292,7 @@ class TemplateSupervisor(BaseSubgraphAgent):
                 return {"next_action": "generate_service_yaml"}
             
             else:
-                # All core templates done (helpers, deployment, service)
+                # All core templates done (helpers, namespace?, deployment, service)
                 # values_yaml will run after conditional templates
                 return {
                     "current_phase": "CONDITIONAL_TEMPLATES",
@@ -497,11 +529,12 @@ class TemplateSupervisor(BaseSubgraphAgent):
         generated_templates = state.get("generated_templates", {})
         planner_output = state.get("planner_output", {})
         app_analysis = planner_output.get("application_analysis", {})
+        parsed_req = planner_output.get("parsed_requirements", {})
         
         # Create Chart.yaml
         chart_yaml = self.generate_chart_yaml(
-            app_name=app_analysis.get("app_name", "my-app"),
-            app_description=app_analysis.get("description", "Helm chart generated by Autopilot"),
+            app_name=parsed_req.get("app_name", "my-app"),
+            app_description=parsed_req.get("description", "Helm chart generated by Autopilot"),
             version="1.0.0"
         )
         
@@ -541,26 +574,44 @@ class TemplateSupervisor(BaseSubgraphAgent):
             return {"next_action": "coordinator"}
             
         latest_error = errors[-1]
+        tool_name = latest_error.get("tool")
         retry_count = state.get("coordinator_state", {}).get("current_retry_count", 0)
         max_retries = state.get("coordinator_state", {}).get("max_retries", 3)
         
         # Simple retry logic
         if retry_count < max_retries:
+            template_supervisor_logger.log_structured(
+                level="INFO",
+                message=f"Retrying tool execution ({retry_count + 1}/{max_retries})",
+                extra={"tool": tool_name}
+            )
             return {
                 "coordinator_state": {
                     **state.get("coordinator_state", {}),
                     "current_retry_count": retry_count + 1
                 },
-                "next_action": latest_error["tool"] # Retry same tool
+                "next_action": tool_name # Retry same tool
             }
         else:
+            # Max retries exceeded - SKIP the tool instead of failing workflow
+            template_supervisor_logger.log_structured(
+                level="WARNING",
+                message=f"Max retries exceeded for {tool_name} - SKIPPING tool execution to allow workflow to proceed",
+                extra={"error": latest_error.get("error")}
+            )
+            
+            # Mark tool as completed (skipped) so coordinator moves to next step
+            current_completed = state.get("completed_tools", [])
+            completed_tools = current_completed + [tool_name] if tool_name and tool_name not in current_completed else current_completed
+            
             return {
-                "final_status": "FAILED",
+                "completed_tools": completed_tools,
                 "coordinator_state": {
                     **state.get("coordinator_state", {}),
-                    "final_status": "FAILED",
-                    "error_details": f"Max retries exceeded for {latest_error['tool']}"
-                }
+                    "current_retry_count": 0, # Reset for next tool
+                    "skipped_tools": state.get("coordinator_state", {}).get("skipped_tools", []) + [tool_name]
+                },
+                "next_action": "coordinator" # Return to coordinator to pick next task
             }
 
     # ============================================================
@@ -588,18 +639,32 @@ class TemplateSupervisor(BaseSubgraphAgent):
         else:
             return "coordinator"
 
-    def identify_tool_dependencies(self, conditional_tools: List[str], core_tools: List[str]) -> Dict[str, List[str]]:
+    def identify_tool_dependencies(self, conditional_tools: List[str], core_tools: List[str], has_namespace: bool = False) -> Dict[str, List[str]]:
         """
         Identify which tools depend on which other tools.
         
         Args:
             conditional_tools: List of conditional tools to execute
             core_tools: List of core tools (always executed)
+            has_namespace: Whether namespace tool is included
         
         Returns:
             Dict mapping tool_name -> list of dependency tool names
         """
         dependencies = {}
+        
+        # Namespace requires helpers (for labels/annotations templates)
+        if has_namespace:
+            dependencies["generate_namespace_yaml"] = ["generate_helpers_tpl"]
+        
+        # Deployment requires namespace (if namespace exists) and helpers
+        if has_namespace:
+            dependencies["generate_deployment_yaml"] = ["generate_helpers_tpl", "generate_namespace_yaml"]
+        else:
+            dependencies["generate_deployment_yaml"] = ["generate_helpers_tpl"]
+        
+        # Service requires deployment (for selectors)
+        dependencies["generate_service_yaml"] = ["generate_deployment_yaml"]
         
         # HPA requires Deployment
         if "generate_hpa_yaml" in conditional_tools:
@@ -639,7 +704,7 @@ name: {app_name}
 description: {app_description}
 type: application
 version: {version}
-appVersion: "1.0.0
+appVersion: "1.0.0"
 """
 
 

@@ -5,7 +5,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import ToolMessage, SystemMessage
 from typing_extensions import Annotated
 from toon import encode
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Dict, Any, Optional, Literal
 import json
 from enum import Enum
@@ -405,29 +405,55 @@ class DeploymentGenerationOutput(BaseModel):
         description="Security features implemented (e.g., 'runAsNonRoot', 'readOnlyRootFilesystem')"
     )
     
-    @field_validator('template_variables_used')
+    @field_validator('yaml_content')
     @classmethod
-    def validate_required_variables(cls, v):
-        """Ensure critical variables are templated"""
-        # Updated to match variables used in the prompt
-        required_vars = ['.Values.image.repository']
+    def validate_yaml_syntax(cls, v):
+        """
+        Validate YAML structure by stripping Helm template directives.
+        Helm templates contain {{ ... }} syntax which is not valid YAML until rendered.
+        We strip template syntax and validate the underlying YAML structure.
+        """
+        import re
+        import yaml
         
-        # Check for image tag OR app version
-        has_tag = any(var in v for var in ['.Values.image.tag', '.Chart.AppVersion'])
+        # Check if content contains Helm template syntax
+        has_helm_syntax = bool(re.search(r'\{\{', v))
         
-        # .Values.replicas is used in the prompt, not .Values.replicaCount
-        # We can check for either just in case
-        has_replicas = any(var in v for var in ['.Values.replicas', '.Values.replicaCount'])
+        if not has_helm_syntax:
+            # No Helm syntax - validate as pure YAML
+            try:
+                parsed = yaml.safe_load(v)
+                if parsed and parsed.get('kind') not in ['Deployment', 'StatefulSet']:
+                    raise ValueError("Invalid resource kind (expected Deployment or StatefulSet)")
+            except Exception as e:
+                raise ValueError(f"Invalid YAML syntax: {str(e)}")
+            return v
         
-        missing = [var for var in required_vars if var not in v]
-        if missing:
-            raise ValueError(f"Missing required template variables: {missing}")
-            
-        if not has_tag:
-             raise ValueError("Missing image tag configuration (expected .Values.image.tag or .Chart.AppVersion)")
-             
-        if not has_replicas:
-             raise ValueError("Missing replicas configuration (expected .Values.replicas or .Values.replicaCount)")
+        # Has Helm template syntax - strip it for structure validation
+        stripped_yaml = v
+        # Replace all {{ ... }} blocks (including multi-line) with placeholders
+        # This regex handles {{- ... }}, {{ ... }}, and multi-line templates
+        stripped_yaml = re.sub(r'\{\{-?\s*[^}]*\}\}', 'PLACEHOLDER', stripped_yaml, flags=re.DOTALL)
+        
+        try:
+            parsed = yaml.safe_load(stripped_yaml)
+            if parsed is None:
+                # Only comments/whitespace after stripping - might be valid Helm template
+                return v
+            # Validate that it's a Deployment/StatefulSet resource structure (even if values are placeholders)
+            if parsed.get('kind') not in ['Deployment', 'StatefulSet']:
+                raise ValueError("Generated YAML structure is not a valid resource kind (expected Deployment or StatefulSet)")
+        except Exception as e:
+            # For Helm templates, we're more lenient - structure validation is best effort
+            # The actual validation happens when Helm renders the template
+            # Log warning but don't fail - LLM should generate correct structure
+            deployment_generator_logger.log_structured(
+                level="WARNING",
+                message="YAML structure validation warning for Helm template",
+                extra={"error": str(e), "note": "Helm templates may not parse as pure YAML"}
+            )
+            # Don't raise - allow Helm template syntax through
+        
         return v
     
     # Removed validate_yaml_syntax because Helm templates are not valid YAML
@@ -462,10 +488,19 @@ async def generate_deployment_yaml(
         k8s_arch = planner_output.get("kubernetes_architecture", {}) or {}
         resource_arch = planner_output.get("resource_estimation", {}) or {}
         
-        # Determine workload type
+        # Determine workload type - core is now a list
         resources = k8s_arch.get("resources", {}) or {}
-        core = resources.get("core", {}) or {}
-        workload_type = core.get("type")
+        core_resources_list = resources.get("core", []) or []
+        
+        # Find Deployment or StatefulSet resource from core list
+        deployment_resource = None
+        for resource in core_resources_list:
+            res_type = resource.get("type")
+            if res_type in ["Deployment", "StatefulSet"]:
+                deployment_resource = resource
+                break
+        
+        workload_type = deployment_resource.get("type") if deployment_resource else "Deployment"
     
         # Extract security settings from analysis (runtime security context)
         security_analysis = app_analysis.get("security", {}) or {}
@@ -518,9 +553,8 @@ async def generate_deployment_yaml(
         config_section = parsed_reqs.get("configuration", {}) or {}
         env_vars = config_section.get("environment_variables", [])
         
-        # Extract core deployment configuration from k8s_architecture
-        resources = k8s_arch.get("resources", {}) or {}
-        core_config = resources.get("core", {}) or {}
+        # Extract core deployment configuration from k8s_architecture - use the deployment_resource we found earlier
+        core_config = deployment_resource.get("key_configuration_parameters", {}) if deployment_resource else {}
 
         def escape_json_for_template(json_str):
             """Escape curly braces in JSON strings for template compatibility"""
@@ -541,6 +575,7 @@ async def generate_deployment_yaml(
             app_type=app_type,
             language=language,
             framework=framework,
+            framework_analysis=escape_json_for_template(json.dumps(framework_analysis)),
             full_image=full_image,
             repository=repository,
             tag=tag,

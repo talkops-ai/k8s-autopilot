@@ -799,52 +799,51 @@ def ask_human(
     Returns:
         Command: Updates the conversation with the user's response.
     """
-    try:
-        helm_validator_tool_logger.log_structured(
-            level="INFO",
-            message="Asking human user a question",
-            extra={
-                "question": question,
-                "tool_call_id": tool_call_id
-            }
-        )
-        
-        # Prepare interrupt payload
-        interrupt_payload = {
+    helm_validator_tool_logger.log_structured(
+        level="INFO",
+        message="Asking human user a question",
+        extra={
             "question": question,
-            "timestamp": datetime.utcnow().isoformat()
+            "tool_call_id": tool_call_id
         }
-        
-        # Trigger interrupt and wait for user feedback
-        user_feedback = interrupt(interrupt_payload)
-        
-        # Create ToolMessage with the user's response
-        tool_message = ToolMessage(
-            content=f"User response: {user_feedback}",
-            tool_call_id=tool_call_id
-        )
-        
-        return Command(
-            update={
-                "messages": [tool_message]
-            }
-        )
-        
-    except Exception as e:
-        error_message = f"Error asking human: {str(e)}"
-        helm_validator_tool_logger.log_structured(
-            level="ERROR",
-            message=error_message,
-            extra={"error": str(e), "tool_call_id": tool_call_id}
-        )
-        
-        tool_message = ToolMessage(
-            content=error_message,
-            tool_call_id=tool_call_id
-        )
-        
-        return Command(
-            update={
-                "messages": [tool_message]
-            }
-        )
+    )
+    
+    # Prepare interrupt payload with additional context
+    interrupt_payload = {
+        "pending_feedback_requests": {
+            "status": "input_required",
+            "question": question,
+            "context": "Validation agent needs human assistance",
+            "active_phase": "validation",
+            "tool_call_id": tool_call_id
+        }
+    }
+    
+    # Trigger interrupt - this MUST propagate up to the graph executor
+    # The interrupt() function raises a GraphInterrupt exception
+    # which is caught by the graph executor to pause execution
+    # DO NOT wrap this in a try-except that catches the interrupt!
+    user_feedback = interrupt(interrupt_payload)
+    
+    # This code only executes AFTER the user resumes the workflow
+    helm_validator_tool_logger.log_structured(
+        level="INFO",
+        message="Received human feedback after interrupt",
+        extra={
+            "user_feedback": str(user_feedback)[:200],
+            "tool_call_id": tool_call_id
+        }
+    )
+    
+    # Create ToolMessage with the user's response
+    # We prefix with "User response: " to clearly distinguish it
+    tool_message = ToolMessage(
+        content=f"User response: {user_feedback}",
+        tool_call_id=tool_call_id
+    )
+    
+    return Command(
+        update={
+            "messages": [tool_message]
+        }
+    )

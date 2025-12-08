@@ -57,7 +57,7 @@ class ConfigMapGenerationOutput(BaseModel):
         stripped_yaml = v
         # Replace all {{ ... }} blocks (including multi-line) with placeholders
         # This regex handles {{- ... }}, {{ ... }}, and multi-line templates
-        stripped_yaml = re.sub(r'\{\{-?\s*[^}]*\}\}', 'PLACEHOLDER', stripped_yaml, flags=re.DOTALL)
+        stripped_yaml = re.sub(r'\{\{-?\s*[^}]*\}\}', '# HELM_TEMPLATE', stripped_yaml, flags=re.DOTALL)
         
         try:
             yaml.safe_load(stripped_yaml)

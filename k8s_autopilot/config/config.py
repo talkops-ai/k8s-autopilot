@@ -97,22 +97,22 @@ class Config:
         return self.llm_higher_config
 
     @property
-    def llm_react_config(self) -> Dict[str, Any]:
-        """Get the React agent LLM configuration."""
+    def llm_deepagent_config(self) -> Dict[str, Any]:
+        """Get the DeepAgent LLM configuration."""
         return {
-            'provider': self._config.get('LLM_REACT_AGENT_PROVIDER') or os.getenv('LLM_REACT_AGENT_PROVIDER') or 'openai',
-            'model': self._config.get('LLM_REACT_AGENT_MODEL') or os.getenv('LLM_REACT_AGENT_MODEL') or 'gpt-4o',
-            'temperature': self._config.get('LLM_REACT_AGENT_TEMPERATURE') or float(os.getenv('LLM_REACT_AGENT_TEMPERATURE', '0.0')),
-            'max_tokens': self._config.get('LLM_REACT_AGENT_MAX_TOKENS') or int(os.getenv('LLM_REACT_AGENT_MAX_TOKENS', '12000'))
+            'provider': self._config.get('LLM_DEEPAGENT_PROVIDER') or os.getenv('LLM_DEEPAGENT_PROVIDER') or 'openai',
+            'model': self._config.get('LLM_DEEPAGENT_MODEL') or os.getenv('LLM_DEEPAGENT_MODEL') or 'gpt-4o',
+            'temperature': self._config.get('LLM_DEEPAGENT_TEMPERATURE') or float(os.getenv('LLM_DEEPAGENT_TEMPERATURE', '0.0')),
+            'max_tokens': self._config.get('LLM_DEEPAGENT_MAX_TOKENS') or int(os.getenv('LLM_DEEPAGENT_MAX_TOKENS', '12000'))
         }
 
-    def get_llm_react_config(self) -> Dict[str, Any]:
-        """Get React agent LLM configuration.
+    def get_llm_deepagent_config(self) -> Dict[str, Any]:
+        """Get DeepAgent LLM configuration.
         
         Returns:
-            React agent LLM configuration dictionary
+            DeepAgent LLM configuration dictionary
         """
-        return self.llm_react_config
+        return self.llm_deepagent_config
 
 
     def set_llm_config(self, config: Dict[str, Any]) -> None:

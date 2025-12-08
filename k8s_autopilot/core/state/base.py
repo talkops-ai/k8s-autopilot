@@ -156,7 +156,6 @@ class SupervisorWorkflowState(BaseModel):
         "planning",
         "generation",
         "validation",
-        "deployment",
         "error",
         "complete"
     ] = Field(default="requirements", description="Current workflow phase")
@@ -165,12 +164,11 @@ class SupervisorWorkflowState(BaseModel):
     planning_complete: bool = Field(default=False, description="Planning phase complete (planning_output exists)")
     generation_complete: bool = Field(default=False, description="Generation phase complete (generated_artifacts exists)")
     validation_complete: bool = Field(default=False, description="Validation phase complete (validation_results populated)")
-    deployment_complete: bool = Field(default=False, description="Deployment phase complete")
     
     # HITL approval tracking (mirrors human_approval_status)
     planning_approved: bool = Field(default=False, description="Planning approved by human")
-    security_approved: bool = Field(default=False, description="Security scan approved by human")
-    deployment_approved: bool = Field(default=False, description="Deployment approved by human")
+    generation_approved: bool = Field(default=False, description="Generation (Artifacts) approved by human")
+
     
     # Workflow control
     workflow_complete: bool = Field(default=False, description="Overall workflow complete")
@@ -191,15 +189,13 @@ class SupervisorWorkflowState(BaseModel):
     @property
     def is_complete(self) -> bool:
         """Check if all required phases are complete."""
-        # For Helm chart generation: planning → generation → validation → deployment
+        # For Helm chart generation: planning → generation → validation
         return all([
             self.planning_complete,
             self.planning_approved,
             self.generation_complete,
-            self.security_approved,
-            self.validation_complete,
-            self.deployment_approved,
-            self.deployment_complete
+            self.generation_approved,
+            self.validation_complete
         ])
     
     @property
@@ -211,14 +207,10 @@ class SupervisorWorkflowState(BaseModel):
             return "planning"  # Wait for approval
         elif not self.generation_complete:
             return "generation"
-        elif self.generation_complete and not self.security_approved:
-            return "generation"  # Wait for security approval
+        elif self.generation_complete and not self.generation_approved:
+            return "generation"  # Wait for artifact approval
         elif not self.validation_complete:
             return "validation"
-        elif self.validation_complete and not self.deployment_approved:
-            return "validation"  # Wait for deployment approval
-        elif not self.deployment_complete:
-            return "deployment"
         else:
             return "complete"
     
@@ -240,9 +232,6 @@ class SupervisorWorkflowState(BaseModel):
         elif phase == "validation":
             self.validation_complete = True
             self.current_phase = "validation"
-        elif phase == "deployment":
-            self.deployment_complete = True
-            self.current_phase = "deployment"
         
         # Update transition timestamp
         self.last_phase_transition = datetime.now(timezone.utc)
@@ -252,14 +241,12 @@ class SupervisorWorkflowState(BaseModel):
             self.workflow_complete = True
             self.current_phase = "complete"
     
-    def set_approval(self, approval_type: Literal["planning", "security", "deployment"], approved: bool) -> None:
+    def set_approval(self, approval_type: Literal["planning", "generation"], approved: bool) -> None:
         """Set human approval status for a phase."""
         if approval_type == "planning":
             self.planning_approved = approved
-        elif approval_type == "security":
-            self.security_approved = approved
-        elif approval_type == "deployment":
-            self.deployment_approved = approved
+        elif approval_type == "generation":
+            self.generation_approved = approved
         
         self.last_phase_transition = datetime.now(timezone.utc)
     
@@ -278,10 +265,8 @@ class SupervisorWorkflowState(BaseModel):
             "planning_complete": self.planning_complete,
             "planning_approved": self.planning_approved,
             "generation_complete": self.generation_complete,
-            "security_approved": self.security_approved,
+            "generation_approved": self.generation_approved,
             "validation_complete": self.validation_complete,
-            "deployment_approved": self.deployment_approved,
-            "deployment_complete": self.deployment_complete,
             "workflow_complete": self.workflow_complete,
             "loop_counter": self.loop_counter,
             "last_swarm": self.last_swarm,
@@ -317,7 +302,7 @@ class MainSupervisorState(AgentState):
     llm_input_messages: Annotated[List[AnyMessage], add_messages]
     
     # Deep Agent compatibility (required if supervisor uses Deep Agent features)
-    remaining_steps: Optional[int]  # Required by Deep Agent TodoListMiddleware
+    remaining_steps: Annotated[Optional[int], lambda x, y: y]  # Required by Deep Agent TodoListMiddleware
     
     # Core workflow data - initialized with defaults or populated by nodes
     user_query: NotRequired[str]
@@ -327,15 +312,14 @@ class MainSupervisorState(AgentState):
         "planning", 
         "generation", 
         "validation", 
-        "deployment",
         "error"
     ]]
     
     # Phase outputs - populated during workflow execution
+    # Phase outputs - populated during workflow execution
     planner_output:  NotRequired[Dict[str, Any]]
     helm_chart_artifacts: NotRequired[Dict[str, str]]  # filepath -> content
-    validation_results: NotRequired[Annotated[List[ValidationResult], add]]
-    deployment_ready: NotRequired[bool]
+    validation_results: Annotated[List[ValidationResult], add]
     
     # HITL tracking - initialized with defaults
     human_approval_status: NotRequired[Dict[str, ApprovalStatus]]
@@ -395,7 +379,7 @@ class MainSupervisorState(AgentState):
     session_id: NotRequired[str] 
     task_id: NotRequired[str]
     # Todo tracking - populated during workflow
-    todos: NotRequired[Annotated[List[Dict], add]]
+    todos: Annotated[List[Dict], add]
     
     # Workspace directory for chart generation/validation (set during security review)
     workspace_dir: NotRequired[str]  # Default: "/tmp/helm-charts"
@@ -406,13 +390,13 @@ class PlanningSwarmState(AgentState):
     messages: Annotated[List[AnyMessage], add_messages]
     
     # Deep Agent required fields (must be present for create_deep_agent to work)
-    remaining_steps: Optional[int]  # Required by Deep Agent TodoListMiddleware
+    remaining_steps: Annotated[Optional[int], lambda x, y: y]  # Required by Deep Agent TodoListMiddleware
     
     # Active agent tracking
-    active_agent: NotRequired[Literal[
+    active_agent: Annotated[Optional[Literal[
         "requirement_analyzer",
         "architecture_planner"
-    ]]
+    ]], lambda x, y: y]
     
     # Inputs from main supervisor
     user_query: NotRequired[str]
@@ -456,7 +440,7 @@ class GenerationSwarmState(AgentState):
     messages: Annotated[List[AnyMessage], add_messages]
     
     # Deep Agent required fields (must be present for create_deep_agent to work)
-    remaining_steps: Optional[int]  # Required by Deep Agent TodoListMiddleware
+    remaining_steps: Annotated[Optional[int], lambda x, y: y]  # Required by Deep Agent TodoListMiddleware
     # Inputs from planning swarm
     planner_output: NotRequired[Dict[str, Any]]
     
@@ -517,16 +501,16 @@ class ValidationSwarmState(AgentState):
     messages: Annotated[List[AnyMessage], add_messages]
     
     # Deep Agent required fields (if using Deep Agent for validation)
-    remaining_steps: Optional[int]  # Required by Deep Agent TodoListMiddleware
+    remaining_steps: Annotated[Optional[int], lambda x, y: y]  # Required by Deep Agent TodoListMiddleware
     
     # Active agent tracking
-    active_agent: NotRequired[Literal[
+    active_agent: Annotated[Optional[Literal[
         "chart_validator",
         "security_scanner",
         "test_generator",
         "argocd_configurator",
         "validation_supervisor"
-    ]]
+    ]], lambda x, y: y]
     
     # Inputs from generation swarm
     generated_chart: NotRequired[Dict[str, str]]

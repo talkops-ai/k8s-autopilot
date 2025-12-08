@@ -100,10 +100,24 @@ class StateTransformer:
                 "current_phase": "planning"
             }
 
+        # Create summary of the plan for the LLM context
+        try:
+             # Convert to dict for summary extraction
+            if isinstance(planning_output, dict):
+                plan_dict = planning_output
+            else:
+                # Handle Pydantic model (ChartPlan)
+                plan_dict = planning_output.model_dump() if hasattr(planning_output, 'model_dump') else dict(planning_output)
+            
+            from k8s_autopilot.core.hitl.utils import extract_planning_summary
+            plan_summary_text = extract_planning_summary(plan_dict)
+        except Exception:
+            plan_summary_text = "Chart plan details stored in state."
+
         # Create summary messages instead of dumping full history
         summary_messages = [
             ToolMessage(
-                content="Planning swarm completed successfully. Chart plan has been generated and stored. Please transfer call to transfer_to_template_supervisor tool.",
+                content=f"Planning swarm completed successfully. Chart plan summary:\n{plan_summary_text}\n\nPlease transfer call to transfer_to_template_supervisor tool.",
                 tool_call_id=tool_call_id
             ),
             HumanMessage(
@@ -137,10 +151,32 @@ class StateTransformer:
         based on the planner_output, so we don't set them here.
         """
         messages = [HumanMessage(content=supervisor_state["user_query"])]
+        
+        # Prepare workflow state with generation phase
+        workflow_state = supervisor_state.get("workflow_state")
+        if workflow_state:
+            # Ensure it's a SupervisorWorkflowState object
+            if isinstance(workflow_state, dict):
+                workflow_state_obj = SupervisorWorkflowState(**workflow_state)
+            else:
+                # Copy or use existing object
+                workflow_state_obj = workflow_state
+            
+            # Update phase
+            workflow_state_obj.current_phase = "generation"
+            workflow_state_obj.next_swarm = "template_supervisor"
+        else:
+             # Fallback if no workflow state exists
+            workflow_state_obj = {
+                "current_phase": "generation",
+                "next_swarm": "template_supervisor"
+            }
+
         return {
             # Core fields
             "messages": messages,
             "planner_output": supervisor_state.get("planner_output"),
+            "workflow_state": workflow_state_obj, # Pass workflow state to generation swarm
             
             # Generated artifacts (will be populated by tools)
             "generated_templates": {},
@@ -324,10 +360,8 @@ Chart files should be at: {chart_path}"""
             "active_agent": "validation_supervisor",
             "generated_chart": generated_chart,  # Keep in state for reference, but not in messages
             "validation_results": [],
-            "security_scan_results": None,
             "test_artifacts": None,
             "argocd_manifests": None,
-            "deployment_ready": False,
             "session_id": supervisor_state.get("session_id"),
             "task_id": supervisor_state.get("task_id"),
             "blocking_issues": [],
@@ -349,9 +383,7 @@ Chart files should be at: {chart_path}"""
         
         Maps:
         - validation_results → validation_results (List[ValidationResult])
-        - deployment_ready → deployment_ready (bool)
         - blocking_issues → blocking_issues (List[str])
-        - security_scan_results → security_scan_results (if present)
         - test_artifacts → test_artifacts (if present)
         - argocd_manifests → argocd_manifests (if present)
         - messages → messages (summary messages with ToolMessage and HumanMessage)
@@ -366,16 +398,16 @@ Chart files should be at: {chart_path}"""
             else:
                 workflow_state_obj = current_workflow_state
             
-            # Use helper method to set phase complete
-            workflow_state_obj.set_phase_complete("validation")
-            workflow_state_obj.last_swarm = "validation_swarm"
+            # Note: We do NOT set phase complete here blindly anymore.
+            # It will be set at the end based on validation results.
             
             # Return object directly to avoid Pydantic serialization warnings
             updated_workflow_state = workflow_state_obj
         else:
             # Fallback if no workflow state exists
             updated_workflow_state = {
-                "validation_complete": True,
+                # Do not assume complete by default
+                "validation_complete": False,
                 "last_swarm": "validation_swarm",
                 "current_phase": "validation"
             }
@@ -387,46 +419,78 @@ Chart files should be at: {chart_path}"""
         
         # Count validation results by status (handle both Pydantic models and dicts)
         passed_count = 0
+        has_failures = False
+        
+        if blocking_issues:
+            has_failures = True
+            
         for r in validation_results:
+            is_passed = False
             if hasattr(r, 'passed'):
                 # Pydantic model
-                if r.passed:
-                    passed_count += 1
+                is_passed = r.passed
             elif isinstance(r, dict):
                 # Dict format
-                if r.get("passed", False):
-                    passed_count += 1
+                is_passed = r.get("passed", False)
+            
+            if is_passed:
+                passed_count += 1
+            else:
+                has_failures = True
         
         failed_count = len(validation_results) - passed_count
         
         # Build validation summary message
-        if deployment_ready and not blocking_issues:
+        # Determine if we should mark phase as complete (success)
+        # We only mark it complete if no failures, OR if deployment is already ready (manual override?)
+        phase_completed_successfully = not has_failures
+        
+        if phase_completed_successfully:
+            # Use helper method to set phase complete ONLY on success
+            workflow_state_obj.set_phase_complete("validation")
             validation_summary = (
                 f"Validation completed successfully. All {len(validation_results)} validation checks passed. "
                 f"Chart is ready for deployment."
             )
         elif blocking_issues:
-            validation_summary = (
-                f"Validation completed with {len(blocking_issues)} blocking issue(s) and {failed_count} failed check(s). "
-                f"Chart is NOT ready for deployment. Review blocking issues before proceeding."
+            # DO NOT set phase complete
+             if hasattr(workflow_state_obj, "validation_complete"):
+                workflow_state_obj.validation_complete = False
+             elif isinstance(workflow_state_obj, dict):
+                workflow_state_obj["validation_complete"] = False
+                
+             validation_summary = (
+                f"Validation FAILED with {len(blocking_issues)} blocking issue(s) and {failed_count} failed check(s). "
+                f"Chart is NOT ready for deployment. Please FIX the issues."
             )
         else:
-            validation_summary = (
-                f"Validation completed with {failed_count} failed check(s) out of {len(validation_results)} total. "
-                f"Review validation results before proceeding."
+             # DO NOT set phase complete
+             if hasattr(workflow_state_obj, "validation_complete"):
+                workflow_state_obj.validation_complete = False
+             elif isinstance(workflow_state_obj, dict):
+                workflow_state_obj["validation_complete"] = False
+                
+             validation_summary = (
+                f"Validation FAILED with {failed_count} failed check(s) out of {len(validation_results)} total. "
+                f"Review validation results and FIX them before proceeding."
             )
+        
+        workflow_state_obj.last_swarm = "validation_swarm"
+            
+        # Return object directly to avoid Pydantic serialization warnings
+        updated_workflow_state = workflow_state_obj
 
         # Create summary messages instead of dumping full history
         summary_messages = [
             ToolMessage(
-                content=f"Validation swarm completed. {validation_summary}",
+                content=f"Validation swarm finished. {validation_summary}",
                 tool_call_id=tool_call_id
             ),
             HumanMessage(
                 content=(
-                    f"Validation phase complete. "
+                    f"Validation phase finished. "
                     f"Results: {passed_count} passed, {failed_count} failed. "
-                    f"{'Chart is ready for deployment.' if deployment_ready else 'Chart requires fixes before deployment.'}"
+                    f"{'Chart is ready for deployment.' if phase_completed_successfully else 'Chart requires fixes.'}"
                 )
             )
         ]
@@ -436,14 +500,10 @@ Chart files should be at: {chart_path}"""
             "messages": summary_messages,
             "llm_input_messages": summary_messages,
             "validation_results": validation_results,
-            "workflow_state": updated_workflow_state,
-            "deployment_ready": deployment_ready
+            "workflow_state": updated_workflow_state
         }
         
         # Include optional validation outputs if present
-        if validation_state.get("security_scan_results"):
-            return_dict["security_scan_results"] = validation_state.get("security_scan_results")
-        
         if validation_state.get("test_artifacts"):
             return_dict["test_artifacts"] = validation_state.get("test_artifacts")
         

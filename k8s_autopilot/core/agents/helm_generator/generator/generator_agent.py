@@ -124,9 +124,22 @@ class k8sAutopilotValidatorDeepAgent(BaseSubgraphAgent):
                 level="INFO",
                 message=f"Initialized LLM model: {llm_config['provider']}:{llm_config['model']}",
                 extra={
-                    "llm_provider": llm_config['provider'],
                     "llm_model": llm_config['model']
                 }
+            )
+            
+            # Initialize Deep Agent model
+            llm_deepagent_config = self.config_instance.get_llm_deepagent_config()
+            self.deep_agent_model = LLMProvider.create_llm(
+                provider=llm_deepagent_config['provider'],
+                model=llm_deepagent_config['model'],
+                temperature=llm_deepagent_config['temperature'],
+                max_tokens=llm_deepagent_config['max_tokens']
+            )
+            validator_agent_logger.log_structured(
+                level="INFO",
+                message=f"Initialized Deep Agent LLM model: {llm_deepagent_config['provider']}:{llm_deepagent_config['model']}",
+                extra={"llm_provider": llm_deepagent_config['provider'], "llm_model": llm_deepagent_config['model']}
             )
         except Exception as e:
             validator_agent_logger.log_structured(
@@ -212,7 +225,7 @@ class k8sAutopilotValidatorDeepAgent(BaseSubgraphAgent):
             # - helm_template_validator: Template rendering validation
             # - helm_dry_run_validator: Cluster compatibility validation
             self.validator_agent = create_deep_agent(
-                model=self.model,
+                model=self.deep_agent_model,
                 system_prompt=self._validator_prompt,
                 tools=[
                     helm_lint_validator,

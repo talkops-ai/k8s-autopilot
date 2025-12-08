@@ -185,14 +185,42 @@ async def generate_namespace_yaml(
         
         # Extract inputs
         app_name = parsed_reqs.get("app_name", "myapp")
-        core_resources = k8s_arch.get("resources", {}).get("core", {})
-        namespace_name = core_resources.get("key_configuration_parameters", {}).get("namespace", "production")
+        
+        # core is now a list - iterate to find Namespace resource
+        core_resources_list = k8s_arch.get("resources", {}).get("core", [])
+        
+        # Find Namespace resource from core list
+        namespace_resource = None
+        for resource in core_resources_list:
+            if resource.get("type") == "Namespace":
+                namespace_resource = resource
+                break
+        
+        # Extract namespace configuration
+        if namespace_resource:
+            key_config = namespace_resource.get("key_configuration_parameters", {})
+            namespace_name = key_config.get("name", app_name)
+            labels = key_config.get("labels", {})
+            team = labels.get("team") or "devops"
+            env_from_labels = labels.get("environment")
+        else:
+            # Fallback if no Namespace resource found
+            namespace_name = parsed_reqs.get("namespace", {}).get("name", app_name)
+            team = parsed_reqs.get("namespace", {}).get("team", "devops")
+            env_from_labels = parsed_reqs.get("namespace", {}).get("namespace_type")
         
         # Determine environment type
         env_type = NamespaceType.PRODUCTION
-        if "dev" in namespace_name:
+        if env_from_labels:
+            if env_from_labels in ["development", "dev"]:
+                env_type = NamespaceType.DEVELOPMENT
+            elif env_from_labels in ["staging", "stage"]:
+                env_type = NamespaceType.STAGING
+            elif env_from_labels in ["production", "prod"]:
+                env_type = NamespaceType.PRODUCTION
+        elif "dev" in namespace_name.lower():
             env_type = NamespaceType.DEVELOPMENT
-        elif "staging" in namespace_name:
+        elif "staging" in namespace_name.lower():
             env_type = NamespaceType.STAGING
             
         # Determine quota scope based on complexity
@@ -248,7 +276,7 @@ async def generate_namespace_yaml(
             namespace_name=namespace_name,
             namespace_type=env_type.value,
             priority_level=PriorityLevel.MEDIUM.value,
-            team="devops",
+            team=team,
             naming_templates=json.dumps(naming_templates, indent=2),
             label_templates=json.dumps(label_templates, indent=2),
             annotation_templates=json.dumps(annotation_templates, indent=2),

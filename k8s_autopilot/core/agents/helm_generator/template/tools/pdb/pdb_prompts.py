@@ -12,11 +12,16 @@ Generate complete, production-ready PodDisruptionBudget YAML with proper Helm te
 - Include ALL required fields: apiVersion, kind, metadata, spec
 - Ensure 'kind' is 'PodDisruptionBudget'
 
-### 2. Helm Templating
+### 2. Helm Templating (CRITICAL SYNTAX RULES)
 - Use {{ .Values.podDisruptionBudget.* }} for configurable parameters
-- Use {{ include "CHARTNAME.fullname" . }} for name
-- Use {{ include "CHARTNAME.labels" . | nindent 4 }} for labels
-- Use {{ include "CHARTNAME.selectorLabels" . | nindent 6 }} for selector
+- **ALWAYS use DOUBLE QUOTES** in Go templates: {{ include "chartname.labels" . }}
+- **NEVER use single quotes** - they cause template parsing errors
+- **REPLACE CHARTNAME** with the actual chart name provided
+
+Available helper templates:
+- {{ include "CHARTNAME.fullname" . }} - for name
+- {{ include "CHARTNAME.labels" . | nindent 4 }} - for labels
+- {{ include "CHARTNAME.selectorLabels" . | nindent 6 }} - for selector
 
 ### 3. Disruption Configuration
 - **Budget**: Configure EITHER minAvailable OR maxUnavailable (not both)
@@ -34,6 +39,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: {{ include "CHARTNAME.fullname" . }}
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "CHARTNAME.labels" . | nindent 4 }}
 spec:
@@ -132,13 +138,15 @@ Generate a PodDisruptionBudget YAML for this Helm chart:
 **Annotation Templates:**
 {annotation_templates}
 
-## Requirements
+## CRITICAL INSTRUCTIONS
+1. **Replace CHARTNAME** with: {app_name}
+   - Use `{{{{ include "{app_name}.fullname" . }}}}` for name
+   - Use `{{{{ include "{app_name}.labels" . | nindent 4 }}}}` for labels
+   - Use `{{{{ include "{app_name}.selectorLabels" . | nindent 6 }}}}` for selector
 
-- Use policy/v1 API version
-- Selector must match Deployment labels exactly
-- Use Helm templating for values ({{ .Values.podDisruptionBudget.* }})
-- Use the provided helper templates for labels and selector (e.g., {{ include "CHARTNAME.labels" . }})
-- Configure EITHER minAvailable OR maxUnavailable (not both)
+2. **Use DOUBLE QUOTES** in all Go template strings (never single quotes)
+
+3. **Selector MUST match** the Deployment labels exactly
 
 **Generate the complete PDB YAML now.**
 """

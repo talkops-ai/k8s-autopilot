@@ -13,6 +13,14 @@ Generate ConfigMap YAML with application configuration data.
 4. **Immutability**: Consider making ConfigMap immutable for performance
 5. **Size Limits**: ConfigMap data must be < 1MB total
 
+## HELM TEMPLATING RULES (CRITICAL)
+
+1. **ALWAYS use DOUBLE QUOTES** in Go templates - NEVER single quotes
+2. **REPLACE CHARTNAME** with the actual chart name provided (e.g., "aws-orchestrator-agent")
+3. **USE ONLY THESE HELPERS** (they are the only ones available):
+   - CHARTNAME.fullname - for resource names
+   - CHARTNAME.labels - for metadata labels
+
 ## CONFIGMAP STRUCTURE
 
 ```yaml
@@ -20,6 +28,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "CHARTNAME.fullname" . }}-config
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "CHARTNAME.labels" . | nindent 4 }}
 {{- if .Values.configmap.immutable }}
@@ -27,24 +36,13 @@ immutable: true
 {{- end }}
 data:
   # Simple key-value pairs
-  key1: value1
-  key2: value2
+  KEY_NAME: {{ .Values.configmap.data.KEY_NAME | default "default-value" | quote }}
   
   # Multi-line configuration files
   config.yaml: |
     server:
-      port: 8080
+      port: {{ .Values.configmap.data.serverPort | default 8080 }}
       host: 0.0.0.0
-  
-  application.properties: |
-    spring.datasource.url=jdbc:mysql://db:3306/mydb
-    spring.jpa.hibernate.ddl-auto=update
-
-{{- if .Values.configmap.binaryData }}
-binaryData:
-  # Binary data (base64 encoded)
-  cert.pem: {{ .Values.configmap.binaryData.certPem | b64enc }}
-{{- end }}
 ```
 
 ## USAGE PATTERNS
@@ -82,7 +80,7 @@ volumeMounts:
   "validation_messages": [],
   "total_keys": 2,
   "binary_keys": [],
-  "usage_example": "volumes:\n- name: config\n  configMap:\n    name: {{ include \"CHARTNAME.fullname\" . }}-config"
+  "usage_example": "envFrom:\n- configMapRef:\n    name: {{ include \"CHARTNAME.fullname\" . }}-config"
 }
 ```
 
@@ -95,29 +93,30 @@ Generate a ConfigMap YAML for this Helm chart:
 
 ## Application Information
 
-**App Name:** {app_name}
+**App Name / Chart Name:** {app_name}
 **Namespace:** {namespace}
 
 ## ConfigMap Configuration
 
 {configmap_config}
 
-## Helper Templates (Use these specific templates)
+## CRITICAL INSTRUCTIONS
 
-**Naming Templates:**
-{naming_templates}
+1. **Replace CHARTNAME** with: {app_name}
+   - Use `{{{{ include "{app_name}.fullname" . }}}}-config` for name
+   - Use `{{{{ include "{app_name}.labels" . | nindent 4 }}}}` for labels
 
-**Label Templates:**
-{label_templates}
+2. **Use DOUBLE QUOTES** in all Go template strings (never single quotes)
 
-**Annotation Templates:**
-{annotation_templates}
+3. **Use `| quote`** for string values that need quoting:
+   - `{{{{ .Values.foo | default "bar" | quote }}}}`
+
+4. **Use `|`** for multi-line file contents
 
 ## Requirements
 
 - Generate ConfigMap with proper Helm templating
 - Use Helm templating for all configurable values ({{ .Values.* }})
-- Use the provided helper templates for labels and annotations (e.g., {{ include "CHARTNAME.labels" . }})
 - Separate data and binaryData fields appropriately
 - Use multi-line format (|) for file contents
 - Ensure keys are valid (alphanumeric, -, _, .)

@@ -118,7 +118,6 @@ class ValidateRequirementsHITLMiddleware(AgentMiddleware):
                         
                         # Update the Command to include the new requirements
                         result.update["updated_user_requirements"] = new_requirements
-                        result.update["active_agent"] = "architecture_planner"
                         
                         # Log the update
                         planning_deep_agent_logger.log_structured(
@@ -180,6 +179,20 @@ class k8sAutopilotPlanningDeepAgent(BaseSubgraphAgent):
                 level="INFO",
                 message=f"Initialized LLM model: {llm_config['provider']}:{llm_config['model']}",
                 extra={"llm_provider": llm_config['provider'], "llm_model": llm_config['model']}
+            )
+            
+            # Initialize Deep Agent model
+            llm_deepagent_config = self.config_instance.get_llm_deepagent_config()
+            self.deep_agent_model = LLMProvider.create_llm(
+                provider=llm_deepagent_config['provider'],
+                model=llm_deepagent_config['model'],
+                temperature=llm_deepagent_config['temperature'],
+                max_tokens=llm_deepagent_config['max_tokens']
+            )
+            planning_deep_agent_logger.log_structured(
+                level="INFO",
+                message=f"Initialized Deep Agent LLM model: {llm_deepagent_config['provider']}:{llm_deepagent_config['model']}",
+                extra={"llm_provider": llm_deepagent_config['provider'], "llm_model": llm_deepagent_config['model']}
             )
         except Exception as e:
             planning_deep_agent_logger.log_structured(
@@ -400,7 +413,7 @@ class k8sAutopilotPlanningDeepAgent(BaseSubgraphAgent):
             # CRITICAL: Use middleware with state_schema to ensure all state fields
             # are available in runtime.state for tools. context_schema alone is not enough.
             self.planning_agent = create_deep_agent(
-                model=self.model,
+                model=self.deep_agent_model,
                 system_prompt=self._planner_prompt,
                 tools=[self.request_human_input],  # HITL tool for requesting human input
                 subagents=self._sub_agents,

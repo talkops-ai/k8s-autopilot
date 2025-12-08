@@ -11,9 +11,11 @@ Generate complete, production-ready Kubernetes Namespace YAML with proper Helm t
 - Follow Kubernetes API schema exactly (v1)
 - Include ALL required fields: apiVersion, kind, metadata
 
-### 2. Helm Templating
+### 2. Helm Templating (CRITICAL SYNTAX RULES)
 - Use {{ .Values.namespace.* }} for configurable parameters
-- Use {{ include "CHARTNAME.labels" . | nindent 4 }} for labels
+- **ALWAYS use DOUBLE QUOTES** in Go templates: {{ include "chartname.labels" . }}
+- **NEVER use single quotes** - they cause template parsing errors
+- **REPLACE CHARTNAME** with the actual chart name provided
 - Use {{ .Release.Name }}, {{ .Release.Namespace }} where appropriate
 
 ### 3. Labels and Annotations
@@ -61,6 +63,7 @@ NAMESPACE_GENERATOR_USER_PROMPT = """
 Generate production-ready Kubernetes Namespace YAML for the following configuration:
 
 ## Namespace Details
+**App Name / Chart Name:** {app_name}
 **Name:** {namespace_name}
 **Type:** {namespace_type}
 **Priority:** {priority_level}
@@ -77,13 +80,11 @@ Generate production-ready Kubernetes Namespace YAML for the following configurat
 **Annotation Templates:**
 {annotation_templates}
 
-## Additional Requirements
+## CRITICAL INSTRUCTIONS
+1. **Replace CHARTNAME** with: {app_name}
+   - Use `{{{{ include "{app_name}.labels" . | nindent 4 }}}}` for labels
 
-- Generate a Namespace YAML with proper Helm templating
-- Use Helm templating for all configurable values ({{ .Values.* }})
-- Use the provided helper templates for labels and annotations
-- Include environment and team labels
-- Ensure all values are properly templated for Helm
+2. **Use DOUBLE QUOTES** in all Go template strings (never single quotes)
 
 **Generate the complete Namespace YAML now.**
 """

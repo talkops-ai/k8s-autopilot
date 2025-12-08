@@ -12,10 +12,15 @@ Generate complete, production-ready HPA YAML with proper Helm templating syntax 
 - Include ALL required fields: apiVersion, kind, metadata, spec
 - Ensure 'kind' is 'HorizontalPodAutoscaler'
 
-### 2. Helm Templating
+### 2. Helm Templating (CRITICAL SYNTAX RULES)
 - Use {{ .Values.autoscaling.* }} for configurable parameters
-- Use {{ include "CHARTNAME.fullname" . }} for name and scaleTargetRef
-- Use {{ include "CHARTNAME.labels" . | nindent 4 }} for labels
+- **ALWAYS use DOUBLE QUOTES** in Go templates: {{ include "chartname.labels" . }}
+- **NEVER use single quotes** - they cause template parsing errors
+- **REPLACE CHARTNAME** with the actual chart name provided
+
+Available helper templates:
+- {{ include "CHARTNAME.fullname" . }} - for name and scaleTargetRef
+- {{ include "CHARTNAME.labels" . | nindent 4 }} - for labels
 
 ### 3. Scaling Configuration
 - **Target Reference**: Must reference existing Deployment/StatefulSet
@@ -30,6 +35,7 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: {{ include "CHARTNAME.fullname" . }}
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "CHARTNAME.labels" . | nindent 4 }}
 spec:
@@ -182,14 +188,16 @@ Generate a HorizontalPodAutoscaler YAML for the following configuration:
 **Annotation Templates:**
 {annotation_templates}
 
-## Requirements
+## CRITICAL INSTRUCTIONS
+1. **Replace CHARTNAME** with: {app_name}
+   - Use `{{{{ include "{app_name}.fullname" . }}}}` for name
+   - Use `{{{{ include "{app_name}.labels" . | nindent 4 }}}}` for labels
 
-- Use autoscaling/v2 API version
-- Include all specified metrics
-- Configure scaling behavior if provided
-- Use Helm templating for values
-- Use the provided helper templates for labels and annotations (e.g., {{ include "CHARTNAME.labels" . }})
-- Ensure target reference is correct
+2. **Use DOUBLE QUOTES** in all Go template strings (never single quotes)
+
+3. **Target Reference** must match the Deployment name exactly:
+   - Use `{{{{ include "{app_name}.fullname" . }}}}` for scaleTargetRef.name
+   - DO NOT use the literal name "{target_name}"
 
 **Generate the complete HPA YAML now.**
 """

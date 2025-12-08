@@ -699,12 +699,12 @@ class KubernetesArchitectureOutput(BaseModel):
         ...,
         description="Complete set of Kubernetes resources to be created"
     )
-    design_decisions: List[DesignDecision] = Field(
-        ...,
-        description="Structured list of key architectural decisions with rationale",
-        min_items=3,
-        max_items=15
-    )
+    # design_decisions: List[DesignDecision] = Field(
+    #     ...,
+    #     description="Structured list of key architectural decisions with rationale",
+    #     min_items=3,
+    #     max_items=15
+    # )
 
 class ResourceEstimationOutput(BaseModel):
     """Complete output of resource estimation across environments."""

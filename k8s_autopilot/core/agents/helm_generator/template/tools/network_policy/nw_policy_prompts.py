@@ -12,6 +12,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ include "CHARTNAME.fullname" . }}-netpol
+  namespace: {{ .Values.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "CHARTNAME.labels" . | nindent 4 }}
 spec:
@@ -125,6 +126,15 @@ Selects IP CIDR ranges (for external traffic).
 4. **DNS Access**: Ensure DNS egress for name resolution
 5. **CNI Support**: Requires network plugin that supports NetworkPolicy (Calico, Cilium, etc.)
 
+## HELM TEMPLATING RULES (CRITICAL)
+
+1. **ALWAYS use DOUBLE QUOTES** in Go templates - NEVER single quotes
+2. **REPLACE CHARTNAME** with the actual chart name provided
+3. **USE ONLY THESE HELPERS** (they are the only ones available):
+   - CHARTNAME.fullname
+   - CHARTNAME.labels
+   - CHARTNAME.selectorLabels
+
 ## OUTPUT FORMAT
 
 Return only valid NetworkPolicy YAML with Helm templating.
@@ -169,14 +179,15 @@ Generate a NetworkPolicy YAML for the following configuration:
 **Annotation Templates:**
 {annotation_templates}
 
-## Requirements
+## CRITICAL INSTRUCTIONS
+1. **Replace CHARTNAME** with: {app_name}
+   - Use `{{{{ include "{app_name}.fullname" . }}}}` for name
+   - Use `{{{{ include "{app_name}.labels" . | nindent 4 }}}}` for labels
+   - Use `{{{{ include "{app_name}.selectorLabels" . | nindent 6 }}}}` for selector
 
-- Use networking.k8s.io/v1 API version
-- Pod selector must match Deployment labels
-- Include both Ingress and Egress if specified
-- Use Helm templating for values
-- Use the provided helper templates for labels and selector (e.g., {{ include "CHARTNAME.labels" . }})
-- Add comments explaining the policy
+2. **Use DOUBLE QUOTES** in all Go template strings (never single quotes)
+
+3. **Pod Selector MUST match** the Deployment labels exactly
 
 **Generate the complete NetworkPolicy YAML now.**
 """
