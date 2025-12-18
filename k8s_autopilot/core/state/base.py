@@ -537,3 +537,114 @@ class ValidationSwarmState(AgentState):
     handoff_metadata: NotRequired[Dict]
 
 
+class HelmChartMetadata(TypedDict, total=False):
+    """Metadata about the Helm chart being installed"""
+    name: str
+    repository: str
+    repository_url: str
+    version: str
+    description: str
+    app_version: str
+    maintainers: list[dict]
+    dependencies: list[dict]
+    values_schema: dict  # JSON Schema from values.schema.json
+    values_schema_required_fields: list[str]
+    example_values: dict
+    documentation_url: str
+    icons: list[str]
+
+class ValidationError(TypedDict):
+    """Schema for validation errors"""
+    field: str
+    error_message: str
+    required: bool
+    provided_value: str | None
+    expected_type: str
+    severity: Literal["critical", "warning"]
+
+class InstallationPlan(TypedDict, total=False):
+    """Structured plan for installation"""
+    chart_name: str
+    version: str
+    namespace: str
+    release_name: str
+    values: dict
+    plan_steps: list[str]
+    prerequisites_check: dict
+    estimated_resources: dict  # CPU, Memory, Storage
+    rollback_strategy: str
+    monitoring_plan: dict
+    created_at: str
+    status: Literal["draft", "pending_approval", "approved", "rejected"]
+
+class ExecutionLog(TypedDict, total=False):
+    """Execution tracking"""
+    step: int
+    timestamp: str
+    action: str
+    status: Literal["pending", "running", "success", "failed", "skipped"]
+    output: str
+    error: str | None
+    duration_ms: int
+
+class ApprovalCheckpoint(TypedDict, total=False):
+    """Human approval state"""
+    checkpoint_id: str
+    type: Literal["plan_review", "tool_execution", "values_confirmation"]
+    created_at: str
+    approved: bool | None
+    approved_by: str | None
+    approved_at: str | None
+    feedback: str
+    required_changes: list[str]
+
+class HelmAgentState(AgentState):
+    """Master state schema for the agent"""
+    # Message history (auto-managed by LangGraph)
+    messages: Annotated[list[BaseMessage], add_messages]
+    
+    # User request information
+    user_request: str
+    user_id: str
+    session_id: str
+    cluster_context: Annotated[dict, lambda x, y: {**(x or {}), **(y or {})}]  # Merge context
+    
+    # Chart discovery phase
+    chart_metadata: Annotated[HelmChartMetadata, lambda x, y: y] # Overwrite
+    chart_search_results: Annotated[list[dict], add] # Append results
+    
+    # Values and configuration
+    user_provided_values: Annotated[dict, lambda x, y: {**(x or {}), **(y or {})}]
+    merged_values: Annotated[dict, lambda x, y: {**(x or {}), **(y or {})}]
+    validation_errors: Annotated[list[ValidationError], add]
+    validation_status: Literal["pending", "in_progress", "passed", "failed"]
+    
+    # Planning phase
+    installation_plan: Annotated[InstallationPlan, lambda x, y: y]
+    plan_validation_results: dict
+    prerequisites_check_results: dict
+    
+    # Approval phase
+    approval_checkpoints: Annotated[list[ApprovalCheckpoint], add]
+    pending_approval: bool
+    approval_status: Literal["pending", "approved", "rejected", "modifications_requested"]
+    
+    # Execution phase
+    execution_started_at: str | None
+    execution_status: Annotated[Literal["not_started", "in_progress", "completed", "failed", "rolled_back"], lambda x, y: y]
+    execution_logs: Annotated[list[ExecutionLog], add]
+    helm_release_name: Annotated[str | None, lambda x, y: y]
+    helm_release_namespace: Annotated[str | None, lambda x, y: y]
+    
+    # Monitoring and rollback
+    deployment_status: Annotated[dict, lambda x, y: {**(x or {}), **(y or {})}]
+    rollback_available: bool
+    rollback_executed: bool
+    
+    # Error tracking
+    last_error: Annotated[str | None, lambda x, y: y]
+    error_count: Annotated[int, add]
+    recovery_attempts: Annotated[list[dict], add]
+    
+    # Audit trail
+    audit_log: Annotated[list[dict], add]

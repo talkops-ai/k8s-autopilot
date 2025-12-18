@@ -1,85 +1,209 @@
 import json
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack
 from typing import Any, Dict, List, Optional, Union
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from langchain_mcp_adapters.tools import load_mcp_tools
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.messages import BaseMessage
 from k8s_autopilot.utils.exceptions import ConfigError, K8sAutoPilotAgentError
+from k8s_autopilot.config.config import Config
+
+# ============================================================================
+# HTTPX Timeout Patch
+# The underlying langchain-mcp-adapters library does not expose timeout config.
+# We patch httpx.AsyncClient to ensure longer timeouts for MCP connections.
+# ============================================================================
+import httpx
+
+_orig_async_client_init = httpx.AsyncClient.__init__
+
+def _patched_async_client_init(self, *args, **kwargs):
+    # Set a generous default timeout (60s total, 15s connect) if not specified
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = httpx.Timeout(600.0, connect=300.0)
+    return _orig_async_client_init(self, *args, **kwargs)
+
+httpx.AsyncClient.__init__ = _patched_async_client_init
+# ============================================================================
 
 
 class MCPAdapterClient:
     """
-    MCP client using langchain-mcp-adapter for LangChain/LangGraph compatibility.
+    Production-grade MCP client wrapper using langchain-mcp-adapter.
     
-    This client wraps the langchain-mcp-adapter's MultiServerMCPClient to provide
-    a higher-level interface for agent discovery and health checking operations.
+    Features:
+    - Multi-server support (Helm, ArgoCD, etc.)
+    - Tool, Resource, and Prompt support
+    - Configuration driven via k8s_autopilot.config.Config
+    - Robust error handling and logging
     """
     
-    def __init__(self, host: str = 'localhost', port: str = '10100', transport: str = 'sse'):
+    def __init__(self, config: Optional[Config] = None):
         """
         Initialize the MCP adapter client.
         
         Args:
-            host: The hostname of the MCP server (for SSE transport)
-            port: The port of the MCP server (for SSE transport) 
-            transport: The transport type ('sse' or 'stdio')
+            config: Configuration object containing MCP server details.
+                    If None, it tries to load default configuration.
         """
-        self.host = host
-        self.port = port
-        self.transport = transport
+        self.config = config or Config()
         self.client: Optional[MultiServerMCPClient] = None
+        self._exit_stack = AsyncExitStack()
         self.tools: List[BaseTool] = []
         self._tool_map: Dict[str, BaseTool] = {}
+        self._sessions: Dict[str, Any] = {} # Persistent sessions keyed by server name
         
-        # Build MCP server configuration
+        # Build MCP server configuration from Config object
         self.mcp_config = self._build_mcp_config()
     
     def _build_mcp_config(self) -> Dict[str, Any]:
-        """Build MCP server configuration based on transport type."""
-        if self.transport == 'sse':
-            return {
-                "agent_server": {
-                    "url": f"http://{self.host}:{self.port}/sse",
+        """
+        Build MCP server configuration for MultiServerMCPClient.
+        Iterates through supported servers defined in Config.
+        """
+        servers = {}
+        
+        # 1. Helm MCP Server
+        helm_config = getattr(self.config, 'helm_mcp_config', {})
+        if helm_config and not helm_config.get('disabled', False):
+            host = helm_config.get('host', 'localhost')
+            port = helm_config.get('port', 10100)
+            transport = helm_config.get('transport', 'sse')
+            
+            if transport == 'sse':
+                servers['helm_mcp_server'] = {
+                    "url": f"http://{host}:{port}/sse",
                     "transport": "sse"
                 }
-            }
-        elif self.transport == 'stdio':
-            # Filter out None values from environment variables
-            env = {
-                key: value for key, value in {
-                    'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY'),
-                }.items() if value is not None
-            }
-            
-            return {
-                "agent_server": {
-                    "command": "uv",
-                    "args": ["run", "-m", "agents_mcp_server"],
-                    "transport": "stdio",
-                    "env": env if env else None
-                }
-            }
-        else:
-            raise ValueError(
-                f"Unsupported transport type: {self.transport}. Must be 'sse' or 'stdio'."
-            )
+            elif transport == 'stdio':
+                 # Assuming a standard location or command for stdio if ever needed
+                 # This is a placeholder as stdio usually requires specific command paths
+                pass
+
+        # 2. ArgoCD MCP Server (Example for future/other usage)
+        # argocd_config = ...
+        
+        return servers
     
+
+
+    def _create_tool_wrapper(self, original_tool: BaseTool, server_name: str) -> BaseTool:
+        """
+        Create a wrapper/proxy for an MCP tool.
+        This allows the tool to be defined in one event loop but executed in another,
+        by delegating execution to the client which manages the active session.
+        """
+        tool_name = original_tool.name
+        
+        async def _tool_proxy_func(**kwargs) -> Any:
+            return await self.execute_tool(server_name, tool_name, kwargs)
+            
+        # Create a new tool that mimics the original but calls our proxy
+        return StructuredTool.from_function(
+            func=None,
+            coroutine=_tool_proxy_func,
+            name=tool_name,
+            description=original_tool.description,
+            args_schema=original_tool.args_schema,
+        )
+
+    async def execute_tool(self, server_name: str, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """
+        Execute a tool on the specified server, ensuring a valid session exists.
+        """
+        # Lazy initialization if needed
+        if not self._sessions:
+            await self.initialize()
+            
+        session = self._sessions.get(server_name)
+        if not session:
+             # Fallback: if server_name is generic/unknown, try the first available session?
+             # But for safety, we should be strict if we mapped it.
+             # However, existing logic might rely on implicit mapping.
+             # Let's try to find the tool if server_name is potentially stale?
+             # Actually, _create_tool_wrapper binds the server_name.
+             # If config changed, it might fail. Assume consistent config.
+             
+             if not self._sessions:
+                 raise K8sAutoPilotAgentError("MCP client failed to initialize or no sessions available.")
+             
+             # If specific server not found, maybe just pick one (unsafe?)
+             # Let's try to match by name?
+             session = self._sessions.get(server_name)
+             if not session:
+                 raise K8sAutoPilotAgentError(f"MCP server '{server_name}' not connected.")
+
+        # Execute tool using low-level session
+        result = await session.call_tool(tool_name, arguments=arguments)
+        
+        # Result is CallToolResult. content is list of (TextContent | ImageContent | EmbeddedResource)
+        # We need to return a string or artifacts typically
+        output = []
+        for content in result.content:
+            if hasattr(content, 'text'):
+                output.append(content.text)
+            else:
+                 output.append(str(content))
+        
+        return "\n".join(output)
+
     async def initialize(self) -> None:
-        """Initialize the MCP client and load tools."""
+        """Initialize the MCP client connection and load tools."""
+        if self._sessions:
+            return
+
+        if not self.mcp_config:
+            # If no servers are configured, we warn but don't crash
+            print("Warning: No MCP servers configured.")
+            return
+
+        # Initialize the MultiServerMCPClient (factory)
         self.client = MultiServerMCPClient(self.mcp_config)
         
-        # Use get_tools() method as recommended for version 0.1.0
-        self.tools = await self.client.get_tools()
-        
-        # Create a mapping of tool names to tools for easy lookup
-        self._tool_map = {tool.name: tool for tool in self.tools}
+        # Connect to each configured server and maintain persistent sessions
+        from langchain_mcp_adapters.tools import load_mcp_tools
+        from langchain_core.tools import StructuredTool
+
+        try:
+            new_tools = []
+            for server_name in self.mcp_config:
+                # Enter persistent session context
+                session = await self._exit_stack.enter_async_context(
+                    self.client.session(server_name)
+                )
+                self._sessions[server_name] = session
+                
+                # Load raw tools from this session
+                server_tools = await load_mcp_tools(session)
+                
+                # Wrap tools
+                for tool in server_tools:
+                     wrapper = self._create_tool_wrapper(tool, server_name)
+                     new_tools.append(wrapper)
+            
+            # If we re-initialized, we might want to update self.tools?
+            # But if we are re-initializing in a new loop, self.tools might already exist (orphans).
+            # If we replace them, the Agent (which holds old tools) won't see new ones.
+            # CRITICAL: The wrapper logic relies on 'self'. 
+            # The 'wrapper' created in Loop A calls 'self.execute_tool'.
+            # 'self.execute_tool' uses 'self._sessions'.
+            # 'self._sessions' is updated here in Loop B.
+            # So the OLD wrappers (held by Agent) will correctly see the NEW sessions via 'self'.
+            # So we only need to populate self.tools on first run.
+            if not self.tools:
+                self.tools = new_tools
+                self._tool_map = {tool.name: tool for tool in self.tools}
+            
+        except Exception as e:
+            await self.close()
+            raise K8sAutoPilotAgentError(f"Failed to initialize MCP client tools: {e}")
     
     async def close(self) -> None:
         """Close the MCP client connection."""
-        # MultiServerMCPClient in v0.1.0 doesn't require explicit cleanup
-        pass
+        await self._exit_stack.aclose()
+        self._sessions.clear()
+        self.client = None
     
     @asynccontextmanager
     async def session(self):
@@ -90,142 +214,99 @@ class MCPAdapterClient:
         finally:
             await self.close()
     
-    def _get_tool(self, tool_name: str) -> Optional[BaseTool]:
-        """Get a tool by name from the loaded tools."""
-        return self._tool_map.get(tool_name)
-    
-    async def _execute_tool(self, tool_name: str, **kwargs) -> Any:
-        """Execute a tool with the given arguments."""
-        tool = self._get_tool(tool_name)
-        if not tool:
-            raise ConfigError(
-                "No tools available. Ensure MCP server is running and tools are registered."
-            )
-        
-        try:
-            # Execute the tool using LangChain's tool interface
-            result = await tool.ainvoke(kwargs)
-            
-            # If result is a string that looks like JSON, parse it
-            if isinstance(result, str):
-                try:
-                    return json.loads(result)
-                except json.JSONDecodeError:
-                    return result
-            
-            return result
-        except Exception as e:
-            raise K8sAutoPilotAgentError(f"Error executing tool '{tool_name}': {str(e)}")
-    
-    async def list_agents(self) -> List[Dict[str, Any]]:
-        """
-        Get list of all available agents from the MCP server.
-        
-        Returns:
-            List of agent dictionaries with agent information
-        """
-        try:
-            # Use the actual available tool for listing agents
-            if 'find_a2a_agents' in self._tool_map:
-                result = await self._execute_tool('find_a2a_agents', query="*", filters={})
-                if isinstance(result, dict) and 'agents' in result:
-                    return result['agents']
-                return result if isinstance(result, list) else []
-            
-            # Fallback: try list_mcp_servers if available
-            if 'list_mcp_servers' in self._tool_map:
-                result = await self._execute_tool('list_mcp_servers')
-                if isinstance(result, dict) and 'servers' in result:
-                    return result['servers']
-                return result if isinstance(result, list) else []
-            
-            # If no specific tools, return empty list
-            return []
-            
-        except Exception as e:
-            print(f"Warning: Failed to list agents: {e}")
-            return []
-    
-    async def find_agent(self, query: str) -> Any:
-        """
-        Find agents matching the given query.
-        
-        Args:
-            query: Natural language query for agent search
-            
-        Returns:
-            Tool execution result containing matching agents
-        """
-        return await self._execute_tool('find_a2a_agents', query=query, filters={})
-    
-    async def check_agent_health(self, agent_id: str) -> Optional[str]:
-        """
-        Check the health status of a specific agent.
-        
-        Args:
-            agent_id: The ID of the agent to check
-            
-        Returns:
-            Health status string or None if check failed
-        """
-        try:
-            # Use get_agent_details to check agent status/health
-            result = await self._execute_tool('get_agent_details', agent_id=agent_id)
-            
-            if isinstance(result, dict):
-                # Look for health/status fields in the agent details
-                return result.get('status') or result.get('health') or 'unknown'
-            elif isinstance(result, str):
-                return result
-            
-            return None
-            
-        except Exception as e:
-            print(f"Warning: Health check failed for agent {agent_id}: {e}")
-            return None
-    
-    async def get_agents_with_health(self) -> List[Dict[str, Any]]:
-        """
-        Get all agents with their current health status.
-        
-        Returns:
-            List of agents with health information added
-        """
-        agents = await self.list_agents()
-        
-        for agent in agents:
-            agent_id = agent.get("id", "")
-            if agent_id:
-                health = await self.check_agent_health(agent_id)
-                agent["health"] = health
-            else:
-                agent["health"] = None
-        
-        return agents
-    
-    def get_available_tools(self) -> List[str]:
-        """Get list of available tool names."""
-        return list(self._tool_map.keys())
-    
     def get_tools(self) -> List[BaseTool]:
-        """Get the loaded LangChain tools for use in agents."""
+        """Get the loaded LangChain tools."""
         return self.tools
-
-
-# Convenience function to create a client session
-@asynccontextmanager
-async def create_mcp_client(host: str = 'localhost', port: str = '10100', transport: str = 'sse'):
-    """
-    Create an MCP client session.
-    
-    Args:
-        host: MCP server hostname
-        port: MCP server port
-        transport: Transport type ('sse' or 'stdio')
         
-    Yields:
-        Initialized MCPAdapterClient
+    def get_tool(self, tool_name: str) -> Optional[BaseTool]:
+        """Get a specific tool by name."""
+        return self._tool_map.get(tool_name)
+
+    async def get_resources(self, uris: Optional[List[str]] = None, server_name: str = 'helm_mcp_server') -> List[Any]:
+        """
+        Fetch resources from valid MCP servers.
+        
+        Args:
+            uris: List of resource URIs to fetch. If None, fetch all available.
+            server_name: Which server to query (default: 'helm_mcp_server')
+        """
+        # Lazy init
+        if not self._sessions:
+            await self.initialize()
+
+        session = self._sessions.get(server_name)
+        if not session:
+            # Try finding any session if specific one not found (fallback)
+            if self._sessions:
+                session = next(iter(self._sessions.values()))
+            else:
+                raise K8sAutoPilotAgentError("MCP client not initialized or server not found")
+        
+        # Use low-level MCP session to list resources
+        # Result type: ListResourcesResult
+        result = await session.list_resources()
+        resources = result.resources
+            
+        if uris:
+            # Filter locally
+            target_uris = set(uris) # Works with list or tuple
+            return [r for r in resources if hasattr(r, 'uri') and r.uri in target_uris]
+            
+        return resources
+
+    async def get_prompt(self, prompt_name: str, arguments: Optional[Dict[str, Any]] = None, server_name: str = 'helm_mcp_server') -> List[BaseMessage]:
+        """
+        Fetch a prompt from a specific MCP server.
+        
+        Args:
+            prompt_name: Name of the prompt
+            arguments: Arguments for the prompt template
+            server_name: Which server to query (default: 'helm_mcp_server')
+        """
+        # Lazy init
+        if not self._sessions:
+            await self.initialize()
+
+        session = self._sessions.get(server_name)
+        if not session:
+             raise K8sAutoPilotAgentError(f"MCP server '{server_name}' not found or not initialized")
+        
+        # Use low-level MCP session to get prompt
+        # Result type: GetPromptResult
+        result = await session.get_prompt(prompt_name, arguments=arguments or {})
+        
+        # Convert MCP GetPromptResult to LangChain Messages
+        # result.messages is List[PromptMessage]
+        # PromptMessage has 'role' and 'content' (TextContent | ImageContent | EmbeddedResource)
+        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, BaseMessage
+        
+        lc_messages = []
+        for msg in result.messages:
+            content_str = ""
+            if hasattr(msg.content, 'text'):
+                 content_str = msg.content.text
+            elif isinstance(msg.content, list):
+                 # Handle list of content objects?
+                 # Assuming simple text for now based on typical usage
+                 pass
+            else:
+                 content_str = str(msg.content)
+                 
+            if msg.role == 'user':
+                lc_messages.append(HumanMessage(content=content_str))
+            elif msg.role == 'assistant':
+                lc_messages.append(AIMessage(content=content_str))
+            else:
+                lc_messages.append(SystemMessage(content=content_str))
+                
+        return lc_messages
+
+# Convenience function
+@asynccontextmanager
+async def create_mcp_client(config: Optional[Config] = None):
     """
-    client = MCPAdapterClient(host=host, port=port, transport=transport)
+    Create an MCP client session using the provided configuration.
+    """
+    client = MCPAdapterClient(config)
     async with client.session():
         yield client

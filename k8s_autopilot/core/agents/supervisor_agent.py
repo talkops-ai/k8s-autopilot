@@ -157,102 +157,55 @@ class k8sAutopilotSupervisorAgent(BaseAgent):
 
 
         return f"""
-You are a supervisor managing specialized swarms for Kubernetes Helm chart generation and deployment.
+You are a supervisor managing specialized swarms for Kubernetes Helm chart generation, management, and deployment.
 
-**IMPORTANT - REQUEST VALIDATION:**
-You ONLY handle requests related to Helm chart generation.
-Although you are part of a larger system, for this release, your primary and ONLY focus is generating Helm charts.
+**Capabilities:**
+1. **Generation:** Create new Helm charts, templates, and values files from scratch.
+2. **Management:** Install, upgrade, list, delete, and troubleshoot existing Helm releases on the cluster.
 
 **VALID REQUEST EXAMPLES:**
-- "Create a Helm chart for nginx"
-- "Help me write a Helm chart for a web application"
-- "Create a Helm chart with PostgreSQL and Redis"
-- "Generate Helm chart for my microservice"
+- "Create a Helm chart for nginx" (Generation)
+- "Install the nginx chart into the default namespace" (Management)
+- "Upgrade my-release to version 2.0" (Management)
+- "List all installed helm charts" (Management)
+- "Troubleshoot why my release is failing" (Management)
 
 **OUT-OF-SCOPE REQUEST HANDLING:**
-If a user request is NOT clearly related to Helm chart generation:
+If a request is NOT related to Helm usage (e.g. "Write a Python script", "Configure AWS VPC"):
 1. DO NOT reject immediately
-2. Use the request_human_feedback tool to reach out to the user
-3. Guide them about your capabilities
-4. Only accept questions about your capabilities
-
-**CAPABILITY GUIDANCE MESSAGE:**
-When using request_human_feedback for out-of-scope requests, use this guidance:
-"Right now I am capable of generating Helm charts.
-
-In future releases I will have support for:
-- Designing Kubernetes deployment configurations
-- Setting up CI/CD pipelines for Helm chart deployment
-- Deploying applications to Kubernetes clusters
-
-Your request appears to be about [topic], which is outside my scope. Would you like help with Helm chart generation?
-
-For example: 'Create a Helm chart for nginx'."
+2. Use the request_human_feedback tool to guide the user
+3. "I specialize in Kubernetes Helm charts (Generation and Management). How can I help with that?"
 
 **FEEDBACK TOOL USAGE:**
 - request_human_feedback: Use this tool when you need to:
   * Clarify ambiguous requirements
-  * Guide users about your capabilities for out-of-scope requests
   * Get approval for decisions
   * Request human input to proceed
-  * **Final Review**: Notify user of generated artifacts and complete workflow
+  * **Final Review**: Notify user of generated artifacts/successful operations
+  * **Status Updates**: Tell the user what you are doing if a step is taking time
 
 Available tools:
-- transfer_to_planning_swarm: Analyze requirements and create Helm chart architecture plans
-- transfer_to_template_supervisor: Generate Helm chart templates and values files
-- transfer_to_validator_deep_agent: Validate charts, perform security scanning, and prepare deployment configs
-- request_human_feedback: Request human feedback, clarification, or guide users about capabilities
+- transfer_to_planning_swarm: Analyze requirements and create Helm chart architecture plans (Generation)
+- transfer_to_template_supervisor: Generate Helm chart templates and values files (Generation)
+- transfer_to_validator_deep_agent: Validate charts, perform security scanning, and prepare deployment configs (Generation)
+- transfer_to_helm_management: Install, upgrade, list, delete, or troubleshoot Helm charts (Management)
+- request_human_feedback: Request human feedback or clarification
 
-HITL APPROVAL GATES (REQUIRED):
-- request_generation_review: Request human review of generated artifacts and workspace selection (call after template_supervisor completes)
+**HITL APPROVAL GATES (REQUIRED):**
+- request_generation_review: Call IMMEDIATELY after template_supervisor completes generation tasks.
 
-Your responsibilities:
-1. **FIRST**: Validate that the request is related to Helm chart generation
-   - If NOT related: Use request_human_feedback to guide user about your capabilities (Generation only)
-   - Only proceed with workflow if user confirms Helm chart generation request
-2. Analyze user requests and delegate to appropriate swarms using the transfer tools
-3. Coordinate workflow through phases: planning → generation → validation
-4. Finalize with Human Review
+**Workflow Logic:**
+1. **For Generation Requests** ("Create a chart..."):
+   - transfer_to_planning_swarm -> template_supervisor -> validator_deep_agent
+   
+2. **For Management/Operation Requests** ("Install...", "List...", "Fix..."):
+   - DIRECTLY call `transfer_to_helm_management(task_description=user_request)`
+   - Do NOT call planning or validation swarms unless the user asks to *modify* the chart code first.
 
-WORKFLOW SEQUENCE WITH HITL:
-1. For ANY Helm chart request → transfer_to_planning_swarm(task_description="...")
-2. When planning_complete → transfer_to_template_supervisor(task_description="...") [Proceeds automatically]
-3. When generation_complete (from template_supervisor) → STOP and call request_generation_review() IMMEDIATELY. [REQUIRED BLOCKING STEP]
-   - Do NOT proceed to validation.
-   - Do NOT ask for feedback yet.
-   - JUST call request_generation_review().
-4. When generation_approved → transfer_to_validator_deep_agent(task_description="...")
-5. When validation_complete → **MANUAL REVIEW STEP (Important)**:
-   - Call `request_human_feedback` with:
-     - question: "Chart has been generated and validated. Please follow along the readme for deployment instructions.\n\nIf you found this helpful, please support us by starring our repository: https://github.com/talkops-ai/k8s-autopilot 🌟"
-     - mark_deployment_complete: True
-   - This effectively completes the workflow as deployment is manual.
-6. When phase is complete (via feedback) → Workflow complete
-
-CRITICAL RULES:
-- Check workflow_state flags before each tool call
-- ALWAYS call HITL gate tools after phase completion (generation → request_generation_review)
-- Do NOT proceed to next phase without approval (check human_approval_status)
-- If approval status is "pending" or "rejected", wait or end workflow
-- Always call tools immediately, don't describe what you will do
-- Do NOT do any chart generation/validation yourself - ONLY delegate using tools
-- Template generation proceeds automatically after planning completes (no approval needed)
-- Validation proceeds automatically ONLY after generation is approved
-- **NO AUTOMATED DEPLOYMENT**: Use request_human_feedback with `mark_deployment_complete=True` for final step.
-
-STOP CONDITIONS (When to finish):
-- When workflow_state.workflow_complete == True → Respond with completion summary and end.
-- When any phase is rejected AND user doesn't request changes → End workflow with error message.
-- DO NOT keep calling tools if workflow is already complete - check workflow_state first.
-
-HITL GATE RULES:
-- request_generation_review: Call IMMEDIATELY after template_supervisor completes. Do NOT proceed to validation without approval. If generation_approved is False, you MUST call this tool. You cannot skip it.
-- Planning phase does NOT require approval - proceed directly to template generation
-
-IMPORTANT: For requests like "help me write nginx helm chart", immediately call:
-transfer_to_planning_swarm(task_description="create nginx helm chart")
-
-Do not do any work yourself - only delegate using the transfer tools and HITL gates.
+**CRITICAL RULES:**
+- Always check if the user wants to GENERATE a new chart or MANAGE an existing one.
+- For Management tasks, delegate to `transfer_to_helm_management` immediately.
+- Do NOT try to run helm commands yourself. Use the tools.
 """
 
     def _get_agent_description(self, agent_name: str) -> str:
@@ -458,6 +411,63 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 level="DEBUG",
                 message="Created validation swarm tool",
                 extra={"tool_name": "transfer_to_validator_deep_agent"}
+            )
+        
+        # Helm Management agent tool
+        if "helm_mgmt_deep_agent" in compiled_swarms:
+            helm_mgmt_agent = compiled_swarms["helm_mgmt_deep_agent"]
+            
+            @tool
+            async def transfer_to_helm_management(
+                task_description: str,
+                runtime: ToolRuntime[None, MainSupervisorState],
+                tool_call_id: Annotated[str, InjectedToolCallId]
+            ) -> Command:
+                """
+                Delegate to Helm Management Agent for existing chart operations.
+                
+                Use this when:
+                - User requests to INSTALL, UPGRADE, LIST, or DELETE Helm charts
+                - User asks for troubleshooting or status of installed releases
+                - User asks to search for charts (without generating new code)
+                
+                Args:
+                    task_description: Description of the management task (e.g., "Install nginx chart")
+                """
+                supervisor_logger.log_structured(
+                    level="INFO",
+                    message="Helm Management agent tool invoked",
+                    extra={"task_description": task_description}
+                )
+                
+                # 1. Transform State
+                mgmt_input = StateTransformer.supervisor_to_helm_mgmt(runtime.state)
+                # Overwrite user_request with task_description if provided, as it's more specific
+                if task_description:
+                   mgmt_input["user_request"] = task_description
+                   # Also update message content to reflect specific task
+                   mgmt_input["messages"] = [HumanMessage(content=task_description)]
+
+                # 2. Invoke Agent
+                mgmt_output = await helm_mgmt_agent.ainvoke(
+                    mgmt_input,
+                    config={"recursion_limit": 50} 
+                )
+                
+                # 3. Transform Back
+                supervisor_updates = StateTransformer.helm_mgmt_to_supervisor(
+                    mgmt_output,
+                    runtime.state,
+                    tool_call_id
+                )
+                
+                return Command(update=supervisor_updates)
+            
+            tools.append(transfer_to_helm_management)
+            supervisor_logger.log_structured(
+                level="DEBUG",
+                message="Created helm management agent tool",
+                extra={"tool_name": "transfer_to_helm_management"}
             )
         
         return tools

@@ -6,7 +6,8 @@ from k8s_autopilot.core.state.base import (
     GenerationSwarmState,
     ValidationSwarmState,
     WorkflowStatus,
-    SupervisorWorkflowState
+    SupervisorWorkflowState,
+    HelmAgentState
 )
 from k8s_autopilot.utils.logger import AgentLogger
 
@@ -515,3 +516,104 @@ Chart files should be at: {chart_path}"""
             return_dict["blocking_issues"] = blocking_issues
 
         return return_dict
+
+    # ============================================================================
+    # Helm Management Agent Transformations
+    # ============================================================================
+
+    @staticmethod
+    def supervisor_to_helm_mgmt(supervisor_state: MainSupervisorState) -> Dict:
+        """
+        Transform supervisor state to Helm Management Agent input state.
+        
+        Maps:
+        - user_query → user_request
+        - messages → messages (initialized with user query)
+        - Initializes all required HelmAgentState fields with defaults
+        """
+        user_query = supervisor_state.get("user_query", "")
+        messages = [HumanMessage(content=user_query)] if user_query else []
+        
+        return {
+            "messages": messages,
+            "user_request": user_query,
+            "user_id": "user",  # Default
+            "session_id": supervisor_state.get("session_id", "default"),
+            "cluster_context": {},
+            
+            # Chart discovery phase
+            "chart_metadata": {},
+            "chart_search_results": [],
+            
+            # Values and configuration
+            "user_provided_values": {},
+            "merged_values": {},
+            "validation_errors": [],
+            "validation_status": "pending",
+            
+            # Planning phase
+            "installation_plan": {},
+            "plan_validation_results": {},
+            "prerequisites_check_results": {},
+            
+            # Approval phase
+            "approval_checkpoints": [],
+            "pending_approval": False,
+            "approval_status": "pending",
+            
+            # Execution phase
+            "execution_started_at": None,
+            "execution_status": "not_started",
+            "execution_logs": [],
+            "helm_release_name": None,
+            "helm_release_namespace": None,
+            
+            # Monitoring and rollback
+            "deployment_status": {},
+            "rollback_available": False,
+            "rollback_executed": False,
+            
+            # Error tracking
+            "last_error": None,
+            "error_count": 0,
+            "recovery_attempts": [],
+            
+            # Audit trail
+            "audit_log": []
+        }
+
+    @staticmethod
+    def helm_mgmt_to_supervisor(
+        helm_state: HelmAgentState,
+        original_supervisor_state: MainSupervisorState,
+        tool_call_id: str
+    ) -> Dict:
+        """
+        Transform Helm Management Agent output back to supervisor state updates.
+        
+        Maps:
+        - messages → summary ToolMessage
+        """
+        # Get the last message from the agent to summarize the result
+        messages = helm_state.get("messages", [])
+        last_content = "No response from Helm Management Agent."
+        
+        # Find the last AIMessage
+        for msg in reversed(messages):
+            if msg.type == "ai":
+                last_content = msg.content
+                break
+        
+        # Create summary tool message
+        summary_msg = ToolMessage(
+            content=f"Helm Management Agent completed task. Result:\n{last_content}",
+            tool_call_id=tool_call_id
+        )
+        
+        # We might want to pass back the full human-readable response to the user
+        # by appending it to messages
+        
+        return {
+            "messages": [summary_msg],
+            "llm_input_messages": [summary_msg]
+        }

@@ -114,6 +114,15 @@ class Config:
         """
         return self.llm_deepagent_config
 
+    @property
+    def helm_mcp_config(self) -> Dict[str, Any]:
+        """Get Helm MCP server configuration."""
+        return {
+            'host': self._config.get('HELM_MCP_SERVER_HOST') or os.getenv('HELM_MCP_SERVER_HOST') or 'localhost',
+            'port': self._config.get('HELM_MCP_SERVER_PORT') or int(os.getenv('HELM_MCP_SERVER_PORT', '10100')),
+            'transport': self._config.get('HELM_MCP_SERVER_TRANSPORT') or os.getenv('HELM_MCP_SERVER_TRANSPORT') or 'sse',
+            'disabled': self._config.get('HELM_MCP_SERVER_DISABLED') or os.getenv('HELM_MCP_SERVER_DISABLED', 'False').lower() in ('true', '1')
+        }
 
     def set_llm_config(self, config: Dict[str, Any]) -> None:
         """Set the standard LLM configuration.

@@ -33,6 +33,12 @@ class DefaultConfig:
     ARGOCD_MCP_SERVER_TRANSPORT: str = "sse"
     ARGOCD_MCP_SERVER_DISABLED: bool = False
     AGENTS_MCP_SERVER_AUTO_APPROVE: list = []
+
+    # Helm MCP Server Configuration
+    HELM_MCP_SERVER_HOST: str = "localhost"
+    HELM_MCP_SERVER_PORT: int = 8765
+    HELM_MCP_SERVER_TRANSPORT: str = "sse"
+    HELM_MCP_SERVER_DISABLED: bool = False
     
     # LangGraph Configuration
     RECURSION_LIMIT: int = 50  # Maximum recursion depth for agent workflows (default: 25, increased for multi-phase workflows)
