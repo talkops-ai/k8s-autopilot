@@ -13,8 +13,8 @@ class DefaultConfig:
     LLM_HIGHER_MAX_TOKENS: int = 15000
 
     LLM_DEEPAGENT_PROVIDER: str = "openai"
-    LLM_DEEPAGENT_MODEL: str = "gpt-4.1-mini"
-    LLM_DEEPAGENT_TEMPERATURE: float = 0.0
+    LLM_DEEPAGENT_MODEL: str = "o4-mini"
+    LLM_DEEPAGENT_TEMPERATURE: float = 1
     LLM_DEEPAGENT_MAX_TOKENS: int = 25000
 
     
@@ -36,7 +36,7 @@ class DefaultConfig:
 
     # Helm MCP Server Configuration
     HELM_MCP_SERVER_HOST: str = "localhost"
-    HELM_MCP_SERVER_PORT: int = 8765
+    HELM_MCP_SERVER_PORT: int = 9000
     HELM_MCP_SERVER_TRANSPORT: str = "sse"
     HELM_MCP_SERVER_DISABLED: bool = False
     

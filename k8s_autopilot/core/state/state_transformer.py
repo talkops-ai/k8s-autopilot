@@ -578,6 +578,15 @@ Chart files should be at: {chart_path}"""
             "error_count": 0,
             "recovery_attempts": [],
             
+            # Request classification (for dual-path routing)
+            "request_classification": None,
+            "request_type": "unknown",
+            "operation_name": "",
+            
+            # Query-specific fields
+            "query_results": [],
+            "query_formatted_response": "",
+            
             # Audit trail
             "audit_log": []
         }
@@ -592,28 +601,72 @@ Chart files should be at: {chart_path}"""
         Transform Helm Management Agent output back to supervisor state updates.
         
         Maps:
-        - messages → summary ToolMessage
+        - messages → summary ToolMessage with actual response content
+        - Updates workflow_state.helm_mgmt_complete via set_phase_complete("helm_mgmt")
+        - Stores response in helm_mgmt_response field
         """
-        # Get the last message from the agent to summarize the result
+        
+        # Reconstruct workflow state object (similar to validation_to_supervisor)
+        current_workflow_state = original_supervisor_state.get("workflow_state")
+        if current_workflow_state:
+            # Ensure it's a SupervisorWorkflowState object
+            if isinstance(current_workflow_state, dict):
+                workflow_state_obj = SupervisorWorkflowState(**current_workflow_state)
+            else:
+                workflow_state_obj = current_workflow_state
+        else:
+            # Fallback if no workflow state exists
+            workflow_state_obj = SupervisorWorkflowState(
+                workflow_id=original_supervisor_state.get("task_id", ""),
+                current_phase="helm_mgmt"
+            )
+        
+        # Get the last message from the agent to extract the actual response
         messages = helm_state.get("messages", [])
         last_content = "No response from Helm Management Agent."
         
-        # Find the last AIMessage
+        # Find the last AIMessage (this is the agent's final response)
         for msg in reversed(messages):
-            if msg.type == "ai":
-                last_content = msg.content
+            if hasattr(msg, 'type') and msg.type == "ai":
+                last_content = msg.content if hasattr(msg, 'content') else str(msg)
+                break
+            elif isinstance(msg, dict) and msg.get("type") == "ai":
+                last_content = msg.get("content", str(msg))
                 break
         
-        # Create summary tool message
-        summary_msg = ToolMessage(
-            content=f"Helm Management Agent completed task. Result:\n{last_content}",
-            tool_call_id=tool_call_id
-        )
+        # If still no content, try to extract from any message with content
+        if last_content == "No response from Helm Management Agent.":
+            for msg in reversed(messages):
+                if hasattr(msg, 'content'):
+                    content = msg.content
+                    if content and content != "No response from Helm Management Agent.":
+                        last_content = str(content)
+                        break
         
-        # We might want to pass back the full human-readable response to the user
-        # by appending it to messages
+        # Mark helm_mgmt phase as complete (similar to validation_to_supervisor)
+        workflow_state_obj.set_phase_complete("helm_mgmt")
+        workflow_state_obj.last_swarm = "helm_mgmt_swarm"
         
-        return {
-            "messages": [summary_msg],
-            "llm_input_messages": [summary_msg]
+        # Return object directly to avoid Pydantic serialization warnings
+        updated_workflow_state = workflow_state_obj
+        
+        # Create summary messages (similar to validation_to_supervisor pattern)
+        summary_messages = [
+            ToolMessage(
+                content=last_content,  # Direct response, not wrapped
+                tool_call_id=tool_call_id
+            ),
+            HumanMessage(
+                content=f"Helm Management Agent completed successfully. Response: {last_content[:200]}..."
+            )
+        ]
+        
+        # Build return dictionary (similar to validation_to_supervisor)
+        return_dict = {
+            "messages": summary_messages,
+            "llm_input_messages": summary_messages,
+            "workflow_state": updated_workflow_state,
+            "helm_mgmt_response": last_content  # Store response for supervisor to extract
         }
+        
+        return return_dict

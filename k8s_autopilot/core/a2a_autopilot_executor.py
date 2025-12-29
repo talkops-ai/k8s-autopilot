@@ -241,12 +241,25 @@ class A2AAutoPilotExecutor(AgentExecutor, ExecutorValidationMixin):
                         message='Calling updater.complete()',
                         extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
                     )
-                    await updater.complete()
-                    logger.log_structured(
-                        level="INFO",
-                        message='Updater.complete() finished, breaking stream loop',
-                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
-                    )
+                    try:
+                        await updater.complete()
+                        logger.log_structured(
+                            level="INFO",
+                            message='Updater.complete() finished, breaking stream loop',
+                            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
+                        )
+                    except RuntimeError as e:
+                        # Handle case where task is already in terminal state
+                        # This can happen if update_status(..., final=True) already marked it as terminal
+                        if "already in a terminal state" in str(e):
+                            logger.log_structured(
+                                level="INFO",
+                                message='Task already in terminal state, skipping complete()',
+                                extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
+                            )
+                        else:
+                            # Re-raise if it's a different RuntimeError
+                            raise
                     break
                 if require_user_input:
                     logger.log_structured(

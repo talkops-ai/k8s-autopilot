@@ -1251,12 +1251,71 @@ Available tools:
                             # The graph execution is paused at the interrupt point
                             # No more items will be streamed until resume with Command(resume=...)
                             break                    
-                    # 2. Check for workflow completion to prevent infinite loops
+                    # 2. Check for Helm Management Agent completion (separate workflow from helm generation)
                     workflow_state = item.get('workflow_state', {})
+                    helm_mgmt_complete = False
+                    
+                    # Extract helm_mgmt_complete flag from workflow_state
+                    if isinstance(workflow_state, dict):
+                        helm_mgmt_complete = workflow_state.get('helm_mgmt_complete', False)
+                    elif hasattr(workflow_state, 'helm_mgmt_complete'):
+                        # Handle Pydantic object
+                        helm_mgmt_complete = workflow_state.helm_mgmt_complete
+                    
+                    # Check if helm_mgmt agent completed (query or workflow operation)
+                    # This is a separate workflow from helm generation (planning/generation/validation)
+                    if helm_mgmt_complete:
+                        # Extract the helm_mgmt response (set by state_transformer.helm_mgmt_to_supervisor)
+                        helm_mgmt_response = item.get('helm_mgmt_response', '')
+                        
+                        if not helm_mgmt_response:
+                            supervisor_logger.log_structured(
+                                level="WARNING",
+                                message="Helm Management Agent completed but no response found",
+                                task_id=task_id,
+                                context_id=context_id
+                            )
+                            helm_mgmt_response = 'Helm Management Agent completed successfully.'
+                        
+                        supervisor_logger.log_structured(
+                            level="INFO",
+                            message="Helm Management Agent completed - yielding response",
+                            task_id=task_id,
+                            context_id=context_id,
+                            extra={}
+                        )
+                        
+                        # Yield the helm_mgmt response and mark task as complete
+                        # Format matches helm generation workflow completion pattern
+                        yield AgentResponse(
+                            response_type='data',
+                            is_task_complete=True,  # Helm mgmt operations are complete when agent finishes
+                            require_user_input=False,
+                            content={
+                                "status": "completed",
+                                "message": "✅ Helm Management Agent completed successfully.",
+                                "helm_mgmt_response": helm_mgmt_response,
+                                "completion_metrics": {
+                                    'step_count': step_count,
+                                    'helm_mgmt_complete': True
+                                }
+                            },
+                            metadata={
+                                'session_id': context_id,
+                                'task_id': task_id,
+                                'agent_name': self.name,
+                                'step_count': step_count,
+                                'status': 'completed',
+                                'helm_mgmt_complete': True
+                            }
+                        )
+                        break  # Stop streaming - helm_mgmt operation is complete
+                    
+                    # 3. Check for Helm Generation workflow completion (planning/generation/validation)
+                    # This is separate from helm_mgmt operations
                     human_approval_status = item.get('human_approval_status', {})
                     
-                    # Check if workflow is complete (all phases done and deployment approved)
-                    is_workflow_complete = False
+                    # Extract phase completion flags for helm generation workflow
                     planning_complete = False
                     generation_complete = False
                     validation_complete = False
@@ -1295,7 +1354,7 @@ Available tools:
                             deployment_approved
                         )
                     
-                    # If workflow is complete, stop execution
+                    # If helm generation workflow is complete, stop execution
                     if is_workflow_complete:
                         # Check if we should wait for the agent's final response
                         # If the last message was a ToolMessage (state update), let the agent respond first

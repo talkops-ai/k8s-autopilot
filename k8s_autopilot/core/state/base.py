@@ -156,6 +156,7 @@ class SupervisorWorkflowState(BaseModel):
         "planning",
         "generation",
         "validation",
+        "helm_mgmt",
         "error",
         "complete"
     ] = Field(default="requirements", description="Current workflow phase")
@@ -164,7 +165,7 @@ class SupervisorWorkflowState(BaseModel):
     planning_complete: bool = Field(default=False, description="Planning phase complete (planning_output exists)")
     generation_complete: bool = Field(default=False, description="Generation phase complete (generated_artifacts exists)")
     validation_complete: bool = Field(default=False, description="Validation phase complete (validation_results populated)")
-    
+    helm_mgmt_complete: bool = Field(default=False, description="Helm Management Agent phase complete (helm_mgmt_response populated)")
     # HITL approval tracking (mirrors human_approval_status)
     planning_approved: bool = Field(default=False, description="Planning approved by human")
     generation_approved: bool = Field(default=False, description="Generation (Artifacts) approved by human")
@@ -195,7 +196,8 @@ class SupervisorWorkflowState(BaseModel):
             self.planning_approved,
             self.generation_complete,
             self.generation_approved,
-            self.validation_complete
+            self.validation_complete,
+            self.helm_mgmt_complete
         ])
     
     @property
@@ -211,6 +213,8 @@ class SupervisorWorkflowState(BaseModel):
             return "generation"  # Wait for artifact approval
         elif not self.validation_complete:
             return "validation"
+        elif not self.helm_mgmt_complete:
+            return "helm_mgmt"
         else:
             return "complete"
     
@@ -232,6 +236,9 @@ class SupervisorWorkflowState(BaseModel):
         elif phase == "validation":
             self.validation_complete = True
             self.current_phase = "validation"
+        elif phase == "helm_mgmt":
+            self.helm_mgmt_complete = True
+            self.current_phase = "helm_mgmt"
         
         # Update transition timestamp
         self.last_phase_transition = datetime.now(timezone.utc)
@@ -267,6 +274,7 @@ class SupervisorWorkflowState(BaseModel):
             "generation_complete": self.generation_complete,
             "generation_approved": self.generation_approved,
             "validation_complete": self.validation_complete,
+            "helm_mgmt_complete": self.helm_mgmt_complete,
             "workflow_complete": self.workflow_complete,
             "loop_counter": self.loop_counter,
             "last_swarm": self.last_swarm,
@@ -312,6 +320,7 @@ class MainSupervisorState(AgentState):
         "planning", 
         "generation", 
         "validation", 
+        "helm_mgmt",
         "error"
     ]]
     
@@ -320,7 +329,7 @@ class MainSupervisorState(AgentState):
     planner_output:  NotRequired[Dict[str, Any]]
     helm_chart_artifacts: NotRequired[Dict[str, str]]  # filepath -> content
     validation_results: Annotated[List[ValidationResult], add]
-    
+    helm_mgmt_response: NotRequired[str]
     # HITL tracking - initialized with defaults
     human_approval_status: NotRequired[Dict[str, ApprovalStatus]]
     
@@ -598,6 +607,39 @@ class ApprovalCheckpoint(TypedDict, total=False):
     feedback: str
     required_changes: list[str]
 
+class RequestClassification(BaseModel):
+    """Structured classification of user request for routing"""
+    intent_type: Literal["workflow", "query", "unclear"] = Field(
+        description="Type of request: workflow (state-changing) or query (read-only)"
+    )
+    operation: Literal[
+        # Workflow operations
+        "install",
+        "upgrade",
+        "rollback",
+        "uninstall",
+        # Query operations
+        "list_releases",
+        "get_release_status",
+        "get_chart_info",
+        "search_charts",
+        "list_namespaces",
+        "list_charts",
+        "describe_release",
+        "get_values",
+        # Unknown
+        "unknown",
+    ] = Field(description="Specific operation requested")
+    requires_approval: bool = Field(
+        description="Does operation need human approval?"
+    )
+    confidence_level: Literal["high", "medium", "low"] = Field(
+        description="Confidence in classification"
+    )
+    reasoning: str = Field(
+        description="Brief explanation of classification"
+    )
+
 class HelmAgentState(AgentState):
     """Master state schema for the agent"""
     # Message history (auto-managed by LangGraph)
@@ -645,6 +687,15 @@ class HelmAgentState(AgentState):
     last_error: Annotated[str | None, lambda x, y: y]
     error_count: Annotated[int, add]
     recovery_attempts: Annotated[list[dict], add]
+    
+    # Request classification (for dual-path routing)
+    request_classification: Annotated[Optional[RequestClassification], lambda x, y: y]
+    request_type: Annotated[Literal["workflow", "query", "unknown"], lambda x, y: y]
+    operation_name: Annotated[str, lambda x, y: y]
+    
+    # Query-specific fields (for read-only operations)
+    query_results: Annotated[list[dict], add]
+    query_formatted_response: Annotated[str, lambda x, y: y]
     
     # Audit trail
     audit_log: Annotated[list[dict], add]

@@ -47,6 +47,7 @@ from k8s_autopilot.core.agents.helm_mgmt.helm_mgmt_prompts import (
     HELM_MGMT_SUPERVISOR_PROMPT,
     DISCOVERY_SUBAGENT_PROMPT,
     PLANNER_SUBAGENT_PROMPT,
+    QUERY_SUBAGENT_PROMPT,
     HELM_BEST_PRACTICES,
 )
 
@@ -806,6 +807,16 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
         "kubernetes_get_cluster_info",
     }
     
+    QUERY_TOOL_NAMES = {
+        "kubernetes_get_helm_releases",
+        "helm_get_release_status",
+        "helm_get_chart_info",
+        "kubernetes_get_cluster_info",
+        "kubernetes_list_namespaces",
+        "helm_search_charts",
+        "helm_list_chart_versions",
+    }
+    
     EXECUTION_TOOL_NAMES = {
         "helm_install_chart",
         "helm_upgrade_release",
@@ -1015,7 +1026,31 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
             runnable=self.planner_agent,
         )
         
-        self._sub_agents = [self.discovery_subagent, self.planner_subagent]
+        # Create Query Agent for read-only operations
+        query_tools = self._filter_tools_by_names(self.QUERY_TOOL_NAMES)
+        
+        self.query_agent = create_agent(
+            model=self.model,
+            system_prompt=QUERY_SUBAGENT_PROMPT,
+            tools=query_tools + [resource_tool],
+            state_schema=HelmAgentState,
+            middleware=[
+                HelmAgentStateMiddleware(),  # Track state
+                ErrorRecoveryMiddleware(
+                    max_retries=3,
+                    retry_tools=self.QUERY_TOOL_NAMES
+                ),
+                # NO HITL middleware - queries don't need approval
+            ],
+        )
+        
+        self.query_subagent = CompiledSubAgent(
+            name="query_agent",
+            description="Answers questions about Helm releases, charts, and cluster state. Handles read-only queries with immediate responses.",
+            runnable=self.query_agent,
+        )
+        
+        self._sub_agents = [self.discovery_subagent, self.planner_subagent, self.query_subagent]
     
     def _create_resource_tool(self) -> BaseTool:
         """Create a tool that allows the agent to read MCP resources by URI."""
@@ -1110,6 +1145,13 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
     def build_graph(self) -> StateGraph:
         """
         Build the deep agent graph.
+        
+        The supervisor LLM intelligently delegates to sub-agents:
+        - query_agent: For read-only queries (list, status, describe, search)
+        - discovery_agent: For gathering chart information
+        - planner_agent: For validation and planning
+        
+        No separate classifier node needed - the supervisor prompt guides routing decisions.
         """
         # Connection might be closed by factory for safe transport across loops,
         # but tools should be loaded.
@@ -1125,11 +1167,12 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
         
         enriched_prompt = self._build_system_prompt_with_context()
         
+        # Create deep agent - supervisor will intelligently route to query_agent, discovery_agent, or planner_agent
         self.helm_mgmt_agent = create_deep_agent(
             model=self.deep_agent_model,
             system_prompt=enriched_prompt,
             tools=supervisor_tools,
-            subagents=self._sub_agents,
+            subagents=self._sub_agents,  # Includes query_agent, discovery_agent, planner_agent
             checkpointer=self.memory,
             context_schema=HelmAgentState,
             middleware=[
