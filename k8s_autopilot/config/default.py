@@ -27,6 +27,10 @@ class DefaultConfig:
     LOG_TO_FILE: bool = True
     LOG_STRUCTURED_JSON: bool = False
     
+    # A2A Server Configuration
+    A2A_SERVER_HOST: str = "localhost"
+    A2A_SERVER_PORT: int = 10102
+    
     # MCP Server Configuration
     ARGOCD_MCP_SERVER_HOST: str = "localhost"
     ARGOCD_MCP_SERVER_PORT: int = 8000

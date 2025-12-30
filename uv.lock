@@ -23,6 +23,17 @@ wheels = [
 ]
 
 [[package]]
+name = "a2ui"
+version = "0.1.0"
+source = { directory = "a2ui_extenstion" }
+dependencies = [
+    { name = "a2a-sdk" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "a2a-sdk", specifier = ">=0.3.10" }]
+
+[[package]]
 name = "annotated-types"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -802,6 +813,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "a2a-sdk" },
+    { name = "a2ui" },
     { name = "colorama" },
     { name = "deepagents" },
     { name = "langchain" },
@@ -834,6 +846,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "a2a-sdk", specifier = ">=0.3.10" },
+    { name = "a2ui", directory = "a2ui_extenstion" },
     { name = "colorama", specifier = ">=0.4.6" },
     { name = "deepagents", specifier = ">=0.2.4" },
     { name = "langchain", specifier = ">=1.0.3" },

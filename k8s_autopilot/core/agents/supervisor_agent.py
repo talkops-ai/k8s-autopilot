@@ -162,6 +162,7 @@ You are a supervisor managing specialized swarms for Kubernetes Helm chart gener
 **Capabilities:**
 1. **Generation:** Create new Helm charts, templates, and values files from scratch.
 2. **Management:** Install, upgrade, list, delete, and troubleshoot existing Helm releases on the cluster.
+3. **Cluster/Context Management:** List Kubernetes contexts, switch between clusters, and query Helm releases across different clusters.
 
 **VALID REQUEST EXAMPLES:**
 - "Create a Helm chart for nginx" (Generation)
@@ -169,15 +170,26 @@ You are a supervisor managing specialized swarms for Kubernetes Helm chart gener
 - "Upgrade my-release to version 2.0" (Management)
 - "List all installed helm charts" (Management)
 - "Troubleshoot why my release is failing" (Management)
+- "List all Kubernetes contexts" (Management - Cluster/Context)
+- "Switch to production cluster" (Management - Cluster/Context)
+- "Show Helm releases in the production cluster" (Management - Cluster/Context)
+- "What clusters do I have access to?" (Management - Cluster/Context)
 
 **OUT-OF-SCOPE REQUEST HANDLING:**
-If a request is NOT related to Helm usage (e.g. "Write a Python script", "Configure AWS VPC"):
-1. DO NOT reject immediately
-2. Use the request_human_feedback tool to guide the user
-3. "I specialize in Kubernetes Helm charts (Generation and Management). How can I help with that?"
+If a request is NOT related to Helm usage (e.g. "Write a Python script", "Configure AWS VPC", greetings like "hello", "how are you"):
+1. **CRITICAL: You MUST use the request_human_feedback tool** - DO NOT output text directly
+2. **Create dynamic, contextual messages** based on the user's input:
+   - For greetings (hello, hi, how are you): Greet them naturally first, then explain your capabilities
+   - For out-of-scope requests: Acknowledge their request, then guide them to Helm-related tasks
+   - Example for "hello how are you": "Hello! I'm doing well, thank you for asking. I'm specialized in Kubernetes Helm charts - I can help you generate new charts or manage existing ones. What would you like to work on today?"
+   - Example for "what is Jenkins": "I can help with Kubernetes Helm charts, but Jenkins configuration is outside my scope. I specialize in Helm chart generation and management. Would you like help creating a Helm chart for deploying Jenkins instead?"
+3. **NEVER output conversational text without calling request_human_feedback tool first**
+4. **Make your messages natural and conversational** - adapt to the user's tone and context
 
 **FEEDBACK TOOL USAGE:**
 - request_human_feedback: Use this tool when you need to:
+  * **MANDATORY for greetings** (hello, hi, how are you, etc.) - ALWAYS call this tool with a friendly, contextual greeting
+  * **MANDATORY for out-of-scope requests** - ALWAYS call this tool with a helpful, contextual response that guides the user
   * Clarify ambiguous requirements
   * Get approval for decisions
   * Request human input to proceed
@@ -188,7 +200,7 @@ Available tools:
 - transfer_to_planning_swarm: Analyze requirements and create Helm chart architecture plans (Generation)
 - transfer_to_template_supervisor: Generate Helm chart templates and values files (Generation)
 - transfer_to_validator_deep_agent: Validate charts, perform security scanning, and prepare deployment configs (Generation)
-- transfer_to_helm_management: Install, upgrade, list, delete, or troubleshoot Helm charts (Management)
+- transfer_to_helm_management: Install, upgrade, list, delete, or troubleshoot Helm charts (Management). Also handles Kubernetes context management (list contexts, switch contexts, query across clusters).
 - request_human_feedback: Request human feedback or clarification
 
 **HITL APPROVAL GATES (REQUIRED):**
@@ -198,13 +210,18 @@ Available tools:
 1. **For Generation Requests** ("Create a chart..."):
    - transfer_to_planning_swarm -> template_supervisor -> validator_deep_agent
    
-2. **For Management/Operation Requests** ("Install...", "List...", "Fix..."):
+2. **For Management/Operation Requests** ("Install...", "List...", "Fix...", "Show contexts...", "Switch to cluster..."):
    - DIRECTLY call `transfer_to_helm_management(task_description=user_request)`
+   - This includes:
+     * Helm release operations (install, upgrade, list, delete, troubleshoot)
+     * Kubernetes context operations (list contexts, switch contexts, query across clusters)
+     * Chart queries and information requests
    - Do NOT call planning or validation swarms unless the user asks to *modify* the chart code first.
 
 **CRITICAL RULES:**
 - Always check if the user wants to GENERATE a new chart or MANAGE an existing one.
-- For Management tasks, delegate to `transfer_to_helm_management` immediately.
+- For Management tasks (Helm operations, context management, cluster queries), delegate to `transfer_to_helm_management` immediately.
+- Kubernetes context queries (list contexts, switch contexts, query releases in specific clusters) are Management operations - route to `transfer_to_helm_management`.
 - Do NOT try to run helm commands yourself. Use the tools.
 """
 
@@ -556,9 +573,22 @@ Available tools:
         - You need clarification on ambiguous requirements
         - You need approval for a decision
         - You need human input to proceed
+        - **For greetings**: Create a friendly, contextual greeting that acknowledges the user's message
+        - **For out-of-scope requests**: Create a helpful response that guides the user to Helm-related tasks
+        
+        **IMPORTANT for greetings and out-of-scope requests:**
+        - Create dynamic, contextual messages based on what the user said
+        - For greetings: Greet naturally first, then explain your capabilities
+        - For out-of-scope: Acknowledge their request, then guide them appropriately
+        - Make messages natural and conversational - adapt to the user's tone
+        - DO NOT use static messages - personalize based on the user's input
+        
+        Examples:
+        - User: "hello how are you" → question="Hello! I'm doing well, thank you. I specialize in Kubernetes Helm charts - I can help you generate new charts or manage existing ones. What would you like to work on?"
+        - User: "what is Jenkins" → question="I can help with Kubernetes Helm charts, but Jenkins configuration is outside my scope. I specialize in Helm chart generation and management. Would you like help creating a Helm chart for deploying Jenkins instead?"
         
         Args:
-            question: The question or request for the human
+            question: The question or request for the human (should be dynamic and contextual, not static)
             context: Optional context about why feedback is needed
             phase: Optional current workflow phase
             mark_deployment_complete: If True, marks deployment phase as complete/approved when user replies
@@ -1147,7 +1177,8 @@ Available tools:
         self,
         query_or_command,
         context_id: str,
-        task_id: str
+        task_id: str,
+        use_ui: bool = False
     ) -> AsyncGenerator[AgentResponse, None]:
         """
         Simplified async stream method following the reference pattern.
@@ -1174,20 +1205,68 @@ Available tools:
             # Resume call: pass Command directly to graph
             # LangGraph will restore state from checkpoint using thread_id
             # The resume value becomes the return value of interrupt() inside nodes
-            graph_input = query_or_command
             thread_id = context_id  # Reuse for HITL resume - must match original thread_id
             
-            supervisor_logger.log_structured(
-                level="INFO",
-                message="Resuming graph execution from checkpoint",
-                task_id=task_id,
-                context_id=context_id,
-                extra={
-                    "thread_id": thread_id,
-                    "resume_value_type": type(query_or_command.resume).__name__,
-                    "has_resume_value": query_or_command.resume is not None
-                }
-            )
+            # Verify checkpoint exists before resuming
+            # If no checkpoint exists, treat as new conversation to avoid resume failures
+            try:
+                checkpoint_state = self.compiled_graph.get_state(
+                    {"configurable": {"thread_id": thread_id}}
+                )
+                has_checkpoint = checkpoint_state is not None and checkpoint_state.values is not None
+                has_interrupt = checkpoint_state and checkpoint_state.next and len(checkpoint_state.next) > 0
+                
+                if not has_checkpoint:
+                    supervisor_logger.log_structured(
+                        level="WARNING",
+                        message="Resume attempted but no checkpoint found - treating as new conversation",
+                        task_id=task_id,
+                        context_id=context_id,
+                        extra={
+                            "thread_id": thread_id,
+                            "resume_value": str(query_or_command.resume)[:100] if query_or_command.resume else None
+                        }
+                    )
+                    # No checkpoint exists - treat as new conversation
+                    user_query = str(query_or_command.resume) if query_or_command.resume else "Continue"
+                    graph_input = self._create_initial_state(
+                        user_query=user_query,
+                        context_id=context_id,
+                        task_id=task_id
+                    )
+                    # graph_input is now a state dict, not a Command
+                else:
+                    # Checkpoint exists - use Command to resume
+                    graph_input = query_or_command
+                    supervisor_logger.log_structured(
+                        level="INFO",
+                        message="Resuming graph execution from checkpoint",
+                        task_id=task_id,
+                        context_id=context_id,
+                        extra={
+                            "thread_id": thread_id,
+                            "resume_value_type": type(query_or_command.resume).__name__,
+                            "has_resume_value": query_or_command.resume is not None,
+                            "has_interrupt": has_interrupt,
+                            "next_nodes": checkpoint_state.next if checkpoint_state else None
+                        }
+                    )
+            except Exception as e:
+                supervisor_logger.log_structured(
+                    level="WARNING",
+                    message=f"Error checking checkpoint state, treating as new conversation: {e}",
+                    task_id=task_id,
+                    context_id=context_id,
+                    extra={"error": str(e), "thread_id": thread_id}
+                )
+                # Error checking checkpoint - treat as new conversation
+                user_query = str(query_or_command.resume) if query_or_command.resume else "Continue"
+                graph_input = self._create_initial_state(
+                    user_query=user_query,
+                    context_id=context_id,
+                    task_id=task_id
+                )
+                # graph_input is now a state dict, not a Command
         else:
             # Initial call: create full state with Pydantic models
             user_query = str(query_or_command)
@@ -1250,7 +1329,50 @@ Available tools:
                             # Pause streaming until client resumes with feedback
                             # The graph execution is paused at the interrupt point
                             # No more items will be streamed until resume with Command(resume=...)
-                            break                    
+                            break
+                    
+                    # 1.5 Check for final text response (model output text without tool calls)
+                    # NOTE: This should ideally not happen - the model should use request_human_feedback tool
+                    # However, if it does, we yield it but DON'T break - let the graph complete naturally
+                    # Breaking without an interrupt checkpoint causes resume failures
+                    messages = item.get('messages', [])
+                    if messages:
+                        last_message = messages[-1]
+                        if isinstance(last_message, AIMessage):
+                            has_tool_calls = bool(getattr(last_message, 'tool_calls', None))
+                            has_content = bool(last_message.content and str(last_message.content).strip())
+                            
+                            # If it's pure text (no tool calls), log warning and yield but continue
+                            # The model should have used request_human_feedback tool instead
+                            if has_content and not has_tool_calls:
+                                supervisor_logger.log_structured(
+                                    level="WARNING",
+                                    message="Model output text without tool calls - should have used request_human_feedback",
+                                    task_id=task_id,
+                                    context_id=context_id,
+                                    extra={
+                                        "content_preview": str(last_message.content)[:100],
+                                        "note": "This may cause resume issues - model should use request_human_feedback tool"
+                                    }
+                                )
+                                # Yield the text response but continue streaming
+                                # Don't break - let graph complete naturally to avoid resume checkpoint issues
+                                yield AgentResponse(
+                                    response_type='text',
+                                    is_task_complete=False,
+                                    require_user_input=False,  # Don't require input - let graph complete
+                                    content=str(last_message.content),
+                                    metadata={
+                                        'session_id': context_id,
+                                        'task_id': task_id,
+                                        'agent_name': self.name,
+                                        'step_count': step_count,
+                                        'status': 'working',
+                                        'warning': 'Text response without tool call - should use request_human_feedback'
+                                    }
+                                )
+                                # Continue streaming - don't break to avoid checkpoint issues
+                    
                     # 2. Check for Helm Management Agent completion (separate workflow from helm generation)
                     workflow_state = item.get('workflow_state', {})
                     helm_mgmt_complete = False
@@ -1293,7 +1415,7 @@ Available tools:
                             require_user_input=False,
                             content={
                                 "status": "completed",
-                                "message": "✅ Helm Management Agent completed successfully.",
+                                "message": helm_mgmt_response,
                                 "helm_mgmt_response": helm_mgmt_response,
                                 "completion_metrics": {
                                     'step_count': step_count,

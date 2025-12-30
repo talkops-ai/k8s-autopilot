@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "a2a-sdk>=0.3.10",
+    "a2ui",
     "colorama>=0.4.6",
     "deepagents>=0.2.4",
     "langchain>=1.0.3",
@@ -99,3 +100,5 @@ markers = [
     "integration: marks tests as integration tests",
 ]
 
+[tool.uv.sources]
+a2ui = { path = "a2ui_extenstion" }

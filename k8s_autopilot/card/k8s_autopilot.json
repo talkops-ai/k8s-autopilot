@@ -8,7 +8,12 @@
     "capabilities": {
         "streaming": "True",
         "pushNotifications": "True",
-        "stateTransitionHistory": "False"
+        "stateTransitionHistory": "False",
+        "extensions": [
+            {
+                "uri": "https://a2ui.org/a2a-extension/a2ui/v0.8"
+            }
+        ]
     },
     "authentication": {
         "credentials": null,

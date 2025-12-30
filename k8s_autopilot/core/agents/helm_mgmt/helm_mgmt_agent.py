@@ -815,6 +815,9 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
         "kubernetes_list_namespaces",
         "helm_search_charts",
         "helm_list_chart_versions",
+        "helm_ensure_repository",
+        "kubernetes_list_contexts",
+        "kubernetes_set_context",
     }
     
     EXECUTION_TOOL_NAMES = {

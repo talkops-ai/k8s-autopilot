@@ -51,7 +51,8 @@ class BaseAgent(ABC):
         self, 
         query: str, 
         context_id: str, 
-        task_id: str
+        task_id: str,
+        use_ui: bool = False
     ) -> AsyncGenerator[AgentResponse, None]:
         """
         Stream responses for a given query.
@@ -63,6 +64,7 @@ class BaseAgent(ABC):
             query: The user query to process
             context_id: The A2A context ID
             task_id: The A2A task ID
+            use_ui: Whether to generate A2UI-formatted responses
             
         Yields:
             AgentResponse objects representing the agent's progress

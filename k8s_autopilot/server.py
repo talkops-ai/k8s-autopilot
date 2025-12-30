@@ -15,6 +15,7 @@ from a2a.server.tasks import (
 from a2a.types import (
     AgentCard,
 )
+from starlette.middleware.cors import CORSMiddleware
 from k8s_autopilot.config.config import Config
 from k8s_autopilot.core import A2AAutoPilotExecutor
 from k8s_autopilot.core.agents import (
@@ -152,8 +153,24 @@ def main(host: str, port: int, agent_card: str, config_file: str):
                 "supervisor_agents": supervisor_agent.list_agents()
             }
         )
+        
+        # Build app and add CORS middleware for A2UI client access
+        app = server.build()
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=[
+                "http://localhost:5173",
+                "https://localhost:5173",
+                "http://127.0.0.1:5173",
+                "https://127.0.0.1:5173",
+            ],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        
         uvicorn.run(
-            server.build(), 
+            app, 
             host=host,
             port=port,
             log_level=config.log_level.lower()
