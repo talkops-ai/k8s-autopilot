@@ -31,7 +31,7 @@ from k8s_autopilot.core.agents.helm_mgmt.helm_mgmt_agent import (
     # Middleware
     HelmAgentStateMiddleware,
     HelmApprovalHITLMiddleware,
-    ResourceContextMiddleware,
+    HelmApprovalHITLMiddleware,
     
     # HITL Tool
     request_human_input,
@@ -63,7 +63,7 @@ __all__ = [
     # Middleware
     "HelmAgentStateMiddleware",
     "HelmApprovalHITLMiddleware",
-    "ResourceContextMiddleware",
+    "HelmApprovalHITLMiddleware",
     
     # HITL Tool
     "request_human_input",

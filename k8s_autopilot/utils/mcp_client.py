@@ -242,17 +242,28 @@ class MCPAdapterClient:
             else:
                 raise K8sAutoPilotAgentError("MCP client not initialized or server not found")
         
+        if uris:
+            # If URIs are provided, fetch their actual content
+            # This allows the middleware to get the data (text/json) of the resource
+            results = []
+            for uri in uris:
+                try:
+                    # read_resource returns ReadResourceResult via some adapter
+                    # We accept that read_resource might fail if URI is invalid
+                    resource_content = await session.read_resource(uri)
+                    results.append(resource_content)
+                except Exception as e:
+                    # Log error but continue? Or raise?
+                    # For agent robustness, we might want to skip invalid ones or log
+                    print(f"Error reading resource {uri}: {e}")
+                    
+            return results
+
+        # If no URIs provided, return the discovery list (metadata only)
         # Use low-level MCP session to list resources
         # Result type: ListResourcesResult
         result = await session.list_resources()
-        resources = result.resources
-            
-        if uris:
-            # Filter locally
-            target_uris = set(uris) # Works with list or tuple
-            return [r for r in resources if hasattr(r, 'uri') and r.uri in target_uris]
-            
-        return resources
+        return result.resources
 
     async def get_prompt(self, prompt_name: str, arguments: Optional[Dict[str, Any]] = None, server_name: str = 'helm_mcp_server') -> List[BaseMessage]:
         """

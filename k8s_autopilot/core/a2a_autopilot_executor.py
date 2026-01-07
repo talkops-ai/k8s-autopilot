@@ -236,224 +236,238 @@ class A2AAutoPilotExecutor(AgentExecutor, ExecutorValidationMixin):
             if not inspect.isasyncgen(agent_stream):
                 agent_stream = await agent_stream  # type: ignore
             async for item in agent_stream:  # type: ignore
-                # Forward agent-to-agent events directly to the event queue
-                root = getattr(item, 'root', None)
-                if root is not None and isinstance(root, SendStreamingMessageSuccessResponse):
-                    event = root.result
-                    if isinstance(
-                        event,
-                        (TaskStatusUpdateEvent, TaskArtifactUpdateEvent),
-                    ):
-                        logger.log_structured(
-                            level="INFO",
-                            message=f'Enqueuing event from agent: {event}',
-                            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
-                        )
-                        await event_queue.enqueue_event(event)
-                    continue
-                
-                # Safely access AgentResponse fields with defaults
-                is_task_complete = getattr(item, 'is_task_complete', False)
-                require_user_input = getattr(item, 'require_user_input', False)
-                
-                logger.log_structured(
-                    level="DEBUG",
-                    message='Processing agent response item',
-                    extra={
-                        "agent_name": self.agent.name,
-                        "task_id": task.id,
-                        "context_id": task.context_id,
-                        "is_task_complete": is_task_complete,
-                        "require_user_input": require_user_input,
-                        "response_type": getattr(item, 'response_type', 'unknown'),
-                        "has_content": hasattr(item, 'content')
-                    }
-                )
-                
-                # Map custom status to A2A TaskState enum
-                custom_status = getattr(item, 'metadata', {}).get('status', 'working')
-                task_state = self._map_status_to_task_state(custom_status)
-                # logger.debug(f'Mapped custom status "{custom_status}" to task_state {task_state}')
-
-                if is_task_complete:
-                    logger.log_structured(
-                        level="INFO",
-                        message='Task is marked as complete by agent',
-                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id, "use_ui": use_ui}
-                    )
-                    
-                    # Handle A2UI response if client supports it
-                    if use_ui:
-                        # Use programmatic A2UI builder (no LLM parsing needed)
-                        final_parts = self._create_a2ui_parts(
-                            content=item.content,
-                            status="completed",
-                            is_task_complete=True,
-                            require_user_input=False,
-                            response_type=item.response_type,
-                            metadata=item.metadata
-                        )
-                        
-                        await updater.add_artifact(
-                            final_parts,
-                            name=f'{self.agent.name}-result',
-                        )
-                        await updater.update_status(
-                            TaskState.completed,
-                            new_agent_parts_message(
-                                final_parts,
-                                task.context_id,
-                                task.id,
-                            ),
-                            final=True,
-                        )
-                    else:
-                        # Standard text/data response
-                        if item.response_type == 'data':
-                            data_part: Part = cast(Part, DataPart(data=item.content))
-                        else:
-                            text_part: Part = cast(Part, TextPart(text=self._content_to_string(item.content)))
-
-                        logger.log_structured(
-                            level="INFO",
-                            message='Adding artifact to updater',
-                            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
-                        )
-                        if item.response_type == 'data':
-                            await updater.add_artifact(
-                                [data_part],
-                                name=f'{self.agent.name}-result',
-                            )
-                        else:
-                            await updater.add_artifact(
-                                [text_part],
-                                name=f'{self.agent.name}-result',
-                            )
-                        logger.log_structured(
-                            level="INFO",
-                            message='Sending final status update: TaskState.completed',
-                            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
-                        )
-                        await updater.update_status(
-                            TaskState.completed,
-                            new_agent_text_message(
-                                "Task completed successfully.",
-                                task.context_id,
-                                task.id,
-                            ),
-                            final=True,
-                        )
-                    logger.log_structured(
-                        level="INFO",
-                        message='Calling updater.complete()',
-                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
-                    )
-                    try:
-                        await updater.complete()
-                        logger.log_structured(
-                            level="INFO",
-                            message='Updater.complete() finished, breaking stream loop',
-                            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
-                        )
-                    except RuntimeError as e:
-                        # Handle case where task is already in terminal state
-                        # This can happen if update_status(..., final=True) already marked it as terminal
-                        if "already in a terminal state" in str(e):
+                    # Forward agent-to-agent events directly to the event queue
+                    root = getattr(item, 'root', None)
+                    if root is not None and isinstance(root, SendStreamingMessageSuccessResponse):
+                        event = root.result
+                        if isinstance(
+                            event,
+                            (TaskStatusUpdateEvent, TaskArtifactUpdateEvent),
+                        ):
                             logger.log_structured(
                                 level="INFO",
-                                message='Task already in terminal state, skipping complete()',
+                                message=f'Enqueuing event from agent: {event}',
                                 extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
                             )
-                        else:
-                            # Re-raise if it's a different RuntimeError
-                            raise
-                    break
-                if require_user_input:
+                            await event_queue.enqueue_event(event)
+                        continue
+                    
+                    # Safely access AgentResponse fields with defaults
+                    is_task_complete = getattr(item, 'is_task_complete', False)
+                    require_user_input = getattr(item, 'require_user_input', False)
+                    
                     logger.log_structured(
-                        level="INFO",
-                        message='Agent requires user input, updating status to input_required',
-                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id, "use_ui": use_ui}
+                        level="DEBUG",
+                        message='Processing agent response item',
+                        extra={
+                            "agent_name": self.agent.name,
+                            "task_id": task.id,
+                            "context_id": task.context_id,
+                            "is_task_complete": is_task_complete,
+                            "require_user_input": require_user_input,
+                            "response_type": getattr(item, 'response_type', 'unknown'),
+                            "has_content": hasattr(item, 'content')
+                        }
                     )
                     
-                    # Handle A2UI response if client supports it
-                    if use_ui:
-                        # Use programmatic A2UI builder with HITL approval template
-                        final_parts = self._create_a2ui_parts(
-                            content=item.content,
-                            status="input_required",
-                            is_task_complete=False,
-                            require_user_input=True,
-                            response_type=item.response_type,
-                            metadata=item.metadata
+                    # Map custom status to A2A TaskState enum
+                    custom_status = getattr(item, 'metadata', {}).get('status', 'working')
+                    task_state = self._map_status_to_task_state(custom_status)
+                    # logger.debug(f'Mapped custom status "{custom_status}" to task_state {task_state}')
+
+                    if is_task_complete:
+                        logger.log_structured(
+                            level="INFO",
+                            message='Task is marked as complete by agent',
+                            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id, "use_ui": use_ui}
                         )
                         
-                        await updater.update_status(
-                            TaskState.input_required,
-                            new_agent_parts_message(
+                        # Handle A2UI response if client supports it
+                        if use_ui:
+                            # Use programmatic A2UI builder (no LLM parsing needed)
+                            final_parts = self._create_a2ui_parts(
+                                content=item.content,
+                                status="completed",
+                                is_task_complete=True,
+                                require_user_input=False,
+                                response_type=item.response_type,
+                                metadata=item.metadata
+                            )
+                            
+                            await updater.add_artifact(
                                 final_parts,
-                                task.context_id,
-                                task.id,
-                            ),
-                            final=True,
+                                name=f'{self.agent.name}-result',
+                            )
+                            await updater.update_status(
+                                TaskState.completed,
+                                new_agent_parts_message(
+                                    final_parts,
+                                    task.context_id,
+                                    task.id,
+                                ),
+                                final=True,
+                            )
+                        else:
+                            # Standard text/data response
+                            if item.response_type == 'data':
+                                data_part: Part = cast(Part, DataPart(data=item.content))
+                            else:
+                                text_part: Part = cast(Part, TextPart(text=self._content_to_string(item.content)))
+
+                            logger.log_structured(
+                                level="INFO",
+                                message='Adding artifact to updater',
+                                extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
+                            )
+                            if item.response_type == 'data':
+                                await updater.add_artifact(
+                                    [data_part],
+                                    name=f'{self.agent.name}-result',
+                                )
+                            else:
+                                await updater.add_artifact(
+                                    [text_part],
+                                    name=f'{self.agent.name}-result',
+                                )
+                            logger.log_structured(
+                                level="INFO",
+                                message='Sending final status update: TaskState.completed',
+                                extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
+                            )
+                            await updater.update_status(
+                                TaskState.completed,
+                                new_agent_text_message(
+                                    "Task completed successfully.",
+                                    task.context_id,
+                                    task.id,
+                                ),
+                                final=True,
+                            )
+                        logger.log_structured(
+                            level="INFO",
+                            message='Calling updater.complete()',
+                            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
                         )
+                        try:
+                            await updater.complete()
+                            logger.log_structured(
+                                level="INFO",
+                                message='Updater.complete() finished, exiting stream naturally',
+                                extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
+                            )
+                        except RuntimeError as e:
+                            # Handle case where task is already in terminal state
+                            # This can happen if update_status(..., final=True) already marked it as terminal
+                            if "already in a terminal state" in str(e):
+                                logger.log_structured(
+                                    level="INFO",
+                                    message='Task already in terminal state, skipping complete()',
+                                    extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
+                                )
+                            else:
+                                # Re-raise if it's a different RuntimeError
+                                raise
+                        
+                        # CRITICAL FIX: Use return instead of break to allow generator to close naturally
+                        # Breaking closes the generator prematurely, causing GeneratorExit cascade that
+                        # interrupts LangGraph's checkpoint writes. Return allows the generator to exhaust
+                        # naturally, ensuring all async operations (including checkpoints) complete.
+                        # See: docs/langgraph-comprehensive-solution.md
+                        return
+                    elif require_user_input:
+                        logger.log_structured(
+                            level="INFO",
+                            message='Agent requires user input, updating status to input_required',
+                            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id, "use_ui": use_ui}
+                        )
+                        
+                        # Handle A2UI response if client supports it
+                        if use_ui:
+                            # Use programmatic A2UI builder with HITL approval template
+                            final_parts = self._create_a2ui_parts(
+                                content=item.content,
+                                status="input_required",
+                                is_task_complete=False,
+                                require_user_input=True,
+                                response_type=item.response_type,
+                                metadata=item.metadata
+                            )
+                            
+                            await updater.update_status(
+                                TaskState.input_required,
+                                new_agent_parts_message(
+                                    final_parts,
+                                    task.context_id,
+                                    task.id,
+                                ),
+                                final=True,
+                            )
+                        else:
+                            await updater.update_status(
+                                TaskState.input_required,
+                                new_agent_text_message(
+                                    self._content_to_string(item.content),
+                                    task.context_id,
+                                    task.id,
+                                ),
+                                final=True,
+                            )
+                        
+                        logger.log_structured(
+                            level="INFO",
+                            message='Status updated to input_required, stream will complete naturally',
+                            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
+                        )
+                        # When LangGraph's interrupt() is called (due to require_user_input), 
+                        # the graph stops yielding new items and the async for loop will naturally exhaust.
+                        # We must NOT break here - breaking would close the generator prematurely,
+                        # interrupting checkpoint writes and causing GeneratorExit cascades.
+                        # Instead, let the loop continue until the supervisor's generator naturally exhausts.
+                        # This allows LangGraph to complete checkpoint persistence before the generator closes.
+                        # On resume, the checkpoint will be found and execution will continue from the saved state.
                     else:
-                        await updater.update_status(
-                            TaskState.input_required,
-                            new_agent_text_message(
-                                self._content_to_string(item.content),
-                                task.context_id,
-                                task.id,
-                            ),
-                            final=True,
+                        # Normal status update (not complete, not requiring user input)
+                        # This code runs when neither is_task_complete nor require_user_input is True
+                        logger.log_structured(
+                            level="INFO",
+                            message=f'Updating status to {task_state}',
+                            extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id, "use_ui": use_ui}
                         )
-                    
-                    logger.log_structured(
-                        level="INFO",
-                        message='Status updated to input_required, breaking stream loop',
-                        extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
-                    )
-                    # Match reference executor - break the loop when input is required
-                    break
-                logger.log_structured(
-                    level="INFO",
-                    message=f'Updating status to {task_state}',
-                    extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id, "use_ui": use_ui}
-                )
-                
-                # Handle A2UI response if client supports it
-                if use_ui:
-                    # Use programmatic A2UI builder for working status
-                    final_parts = self._create_a2ui_parts(
-                        content=item.content,
-                        status=custom_status,
-                        is_task_complete=False,
-                        require_user_input=False,
-                        response_type=item.response_type,
-                        metadata=item.metadata
-                    )
-                    
-                    await updater.update_status(
-                        task_state,
-                        new_agent_parts_message(
-                            final_parts,
-                            task.context_id,
-                            task.id,
-                        ),
-                    )
-                else:
-                    await updater.update_status(
-                        task_state,
-                        new_agent_text_message(
-                            self._content_to_string(item.content),
-                            task.context_id,
-                            task.id,
-                        ),
-                    )
+                        
+                        # Handle A2UI response if client supports it
+                        if use_ui:
+                            # Use programmatic A2UI builder for working status
+                            final_parts = self._create_a2ui_parts(
+                                content=item.content,
+                                status=custom_status,
+                                is_task_complete=False,
+                                require_user_input=False,
+                                response_type=item.response_type,
+                                metadata=item.metadata
+                            )
+                            
+                            await updater.update_status(
+                                task_state,
+                                new_agent_parts_message(
+                                    final_parts,
+                                    task.context_id,
+                                    task.id,
+                                ),
+                            )
+                        else:
+                            await updater.update_status(
+                                task_state,
+                                new_agent_text_message(
+                                    self._content_to_string(item.content),
+                                    task.context_id,
+                                    task.id,
+                                ),
+                            )
         except Exception as e:
             logger.log_structured(
                 level="ERROR",
                 message=f'Exception in agent executor stream: {e}',
-                extra={"agent_name": self.agent.name}
+                extra={"agent_name": self.agent.name, "task_id": task.id, "context_id": task.context_id}
             )
             raise
 

@@ -259,6 +259,135 @@ def build_hitl_approval_a2ui(
     ]
 
 
+def build_values_confirmation_a2ui(
+    question: str,
+    context: str = ""
+) -> List[dict]:
+    """
+    Build A2UI for values confirmation with Accept Defaults button.
+    """
+    return [
+        {
+            "beginRendering": {
+                "surfaceId": "values-form",
+                "root": "values-root",
+                "styles": {"primaryColor": "#818cf8", "font": "Inter"}
+            }
+        },
+        {
+            "surfaceUpdate": {
+                "surfaceId": "values-form",
+                "components": [
+                    {
+                        "id": "values-root",
+                        "component": {"Card": {"child": "values-content"}}
+                    },
+                    {
+                        "id": "values-content",
+                        "component": {
+                            "Column": {
+                                "children": {
+                                    "explicitList": [
+                                        "values-header",
+                                        "divider1",
+                                        "question-text",
+                                        "context-text",
+                                        "divider2",
+                                        "action-row"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "values-header",
+                        "component": {
+                            "Row": {
+                                "children": {"explicitList": ["header-icon", "header-title"]},
+                                "alignment": "center"
+                            }
+                        }
+                    },
+                    {
+                        "id": "header-icon",
+                        "component": {"Icon": {"name": {"literalString": "settings"}}}
+                    },
+                    {
+                        "id": "header-title",
+                        "component": {
+                            "Text": {
+                                "usageHint": "h3",
+                                "text": {"literalString": "Values Confirmation"}
+                            }
+                        }
+                    },
+                    {"id": "divider1", "component": {"Divider": {}}},
+                    {
+                        "id": "question-text",
+                        "component": {
+                            "Text": {
+                                "usageHint": "body",
+                                "text": {"path": "question"}
+                            }
+                        }
+                    },
+                    {
+                         "id": "context-text",
+                         "component": {
+                             "Text": {
+                                 "usageHint": "caption",
+                                 "text": {"path": "context"}
+                             }
+                         }
+                    },
+                    {"id": "divider2", "component": {"Divider": {}}},
+                    {
+                        "id": "action-row",
+                        "component": {
+                            "Row": {
+                                "children": {"explicitList": ["accept-btn"]},
+                                "distribution": "end"
+                            }
+                        }
+                    },
+                    {
+                        "id": "accept-btn",
+                        "component": {
+                            "Button": {
+                                "child": "accept-text",
+                                "primary": True,
+                                "action": {
+                                    "name": "hitl_response",
+                                    "context": [
+                                        {"key": "decision", "value": {"literalString": "accept_defaults"}},
+                                        {"key": "phase", "value": {"literalString": "values_confirmation"}}
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "id": "accept-text",
+                        "component": {
+                            "Text": {"text": {"literalString": "✅ Accept Defaults"}}
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "dataModelUpdate": {
+                "surfaceId": "values-form",
+                "path": "/",
+                "contents": [
+                    {"key": "question", "valueString": question},
+                    {"key": "context", "valueString": context if context else "Please refer to content above"}
+                ]
+            }
+        }
+    ]
+
+
 def build_completion_a2ui(
     message: str,
     metrics: Optional[Dict[str, Any]] = None
@@ -528,7 +657,11 @@ def _is_approval_request(content: Any, metadata: Dict[str, Any]) -> bool:
     """
     # Check interrupt type from metadata
     interrupt_type = metadata.get('interrupt_type', '')
-    if interrupt_type in ('hitl_gate', 'planning_review', 'generation_review', 'tool_result_review'):
+    if interrupt_type in ('hitl_gate', 'planning_review', 'generation_review', 'tool_result_review', 'critical_tool_call_approval'):
+        return True
+    
+    # Check explicitly for tool_call_approval_request in content dict
+    if isinstance(content, dict) and content.get('type') == 'tool_call_approval_request':
         return True
     
     # Check for approval-related keywords in content
@@ -594,16 +727,55 @@ def build_a2ui_for_response(
     elif require_user_input:
         # HITL scenarios - determine if approval request or informational
         if isinstance(content, dict):
-            question = content.get('question', content_str)
-            phase = content.get('phase', metadata.get('phase', 'unknown'))
-            context = content.get('context', '')
+            # Handle wrapped content from interrupts
+            # Some executors/middleware might wrap the payload
+            target_content = content
+            
+            # Check for specific HITL types from Supervisor
+            if content.get('type') == 'tool_call_approval_request':
+                 # Direct Supervisor Output for Use Case 4
+                 # Format: {'type': 'tool_call_approval_request', 'reason': '...', 'tool_name': '...', 'phase': '...'}
+                 target_content = content
+                 # Remap keys for UI builder
+                 target_content['question'] = target_content.get('reason', 'Tool execution requires approval')
+                 target_content['context'] = f"Tool: {target_content.get('tool_name', 'unknown')}"
+                 
+            elif 'pending_feedback_requests' in content:
+                target_content = content['pending_feedback_requests']
+            elif 'pending_approval' in content:
+                target_content = content['pending_approval']
+            elif 'pending_tool_calls' in content:
+                # Use Case 4: Critical Tool Approval (Raw Payload)
+                # Format: {"pending_tool_calls": {"id": {"reason": "...", "phase": "..."}}}
+                tool_calls = content['pending_tool_calls']
+                if tool_calls and isinstance(tool_calls, dict):
+                    # Just take the first one for now (single interrupt)
+                    first_key = next(iter(tool_calls))
+                    target_content = tool_calls[first_key]
+                    # Remap keys for UI builder
+                    target_content['question'] = target_content.get('reason', 'Tool execution requires approval')
+                    target_content['context'] = f"Tool: {target_content.get('tool_name', 'unknown')}"
+            
+            # Extract fields with support for various schema variations
+            question = target_content.get('question', target_content.get('message', content_str))
+            
+            # Map phase/active_phase
+            phase = target_content.get('phase', target_content.get('active_phase', metadata.get('phase', 'unknown')))
+            
+            context = target_content.get('context', '')
         else:
             question = content_str
             phase = metadata.get('phase', 'unknown')
             context = ''
         
         # Check if this is an approval request or just an informational message
-        if _is_approval_request(question, metadata):
+        if phase == 'values_confirmation':
+            # Specific UI for values confirmation (Accept Defaults)
+            a2ui_messages = build_values_confirmation_a2ui(
+                question=question,
+                context=context
+            )
+        elif _is_approval_request(question, metadata):
             # True approval request - show Approve/Reject buttons
             a2ui_messages = build_hitl_approval_a2ui(
                 question=question,

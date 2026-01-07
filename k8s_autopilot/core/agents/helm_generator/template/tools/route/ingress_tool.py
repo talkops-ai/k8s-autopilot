@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional, Literal
 from k8s_autopilot.core.state.base import GenerationSwarmState
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.config.config import Config
-from k8s_autopilot.core.llm.llm_provider import LLMProvider
+from langchain.chat_models import init_chat_model
 from .ingress_prompts import (
     INGRESS_GENERATOR_SYSTEM_PROMPT,
     INGRESS_GENERATOR_USER_PROMPT,

@@ -295,103 +295,73 @@ User Request: "Create a Helm chart for nginx"
 
 - **OpenAI**: GPT-4, GPT-3.5-turbo
 - **Anthropic**: Claude Sonnet, Claude Opus
-- **Configurable**: Via centralized `LLMProvider`
+- **Configurable**: Via LangChain's `init_chat_model` with centralized config
 
 ### LLM Configuration
 
 #### Multi-Provider Architecture
 
-The system uses a modular, extensible LLM provider architecture built on an abstract base class pattern:
+The system uses LangChain's `init_chat_model` for LLM provider support:
 
-- **Multi-Provider Support**: Support for multiple LLM providers (Anthropic, OpenAI, Azure, etc.)
-- **Model Selection**: Configurable model selection per agent
+- **Multi-Provider Support**: Support for 12+ LLM providers via LangChain (OpenAI, Anthropic, Azure, Google Gemini, AWS Bedrock, etc.)
+- **Model Selection**: Configurable model selection per agent via config
 - **Parameter Tuning**: Adjustable temperature, max tokens, and other parameters
-- **Provider Switching**: Easy switching between different LLM providers
+- **Provider Switching**: Easy switching between different LLM providers via configuration
+- **Auto-Inference**: Automatic provider detection from model names
 
-#### Adding a New LLM Provider
+#### Using LLM Providers
 
-To add a new LLM provider to the system, follow these steps:
-
-##### 1. Implement the Provider Class
-
-**Location:** `k8s_autopilot/core/llm/llm_provider.py`
-
-Create a new provider class that inherits from `BaseLLMProvider`:
+The system uses LangChain's `init_chat_model` function directly:
 
 ```python
-from .base_llm_provider import BaseLLMProvider
-from langchain_core.runnables import Runnable
+from langchain.chat_models import init_chat_model
 
-class MyNewProvider(BaseLLMProvider):
-    """
-    Concrete LLM provider for MyNewProvider models.
-    Implements the BaseLLMProvider interface.
-    """
-    def create_llm(
-        self,
-        model: str,
-        temperature: float = 0.1,
-        max_tokens: Optional[int] = None,
-        timeout: int = 60,
-        **kwargs: Any
-    ) -> Runnable:
-        # Import your provider's SDK or LangChain integration
-        # from my_provider_sdk import MyProviderLLM
-        
-        # Build configuration dictionary
-        config = {
-            "model": model,
-            "temperature": temperature,
-            # ... other parameters ...
-        }
-        config.update(kwargs)
-        
-        # Return a LangChain-compatible Runnable
-        return MyProviderLLM(**config)
+# OpenAI (auto-inferred)
+model = init_chat_model("gpt-4o")
+
+# Anthropic (auto-inferred)
+model = init_chat_model("claude-3-opus-20240229")
+
+# Azure OpenAI
+model = init_chat_model("azure_openai:gpt-4.1", azure_deployment="gpt-4-deployment")
+
+# Google Gemini
+model = init_chat_model("google_genai:gemini-2.5-flash-lite")
+
+# AWS Bedrock
+model = init_chat_model(
+    "anthropic.claude-3-5-sonnet-20240620-v1:0",
+    model_provider="bedrock_converse"
+)
 ```
 
-##### 2. Register in the Factory
+#### Configuration
 
-Update the `_create_provider_instance` method in `LLMProvider`:
+LLM providers are configured via environment variables and the Config class:
 
 ```python
-elif provider == "mynewprovider":
-    return MyNewProvider().create_llm(
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        timeout=timeout,
-        **kwargs
-    )
+from k8s_autopilot.config.config import Config
+
+config = Config()
+llm_config = config.get_llm_config()  # Returns init_chat_model-compatible format
+
+from langchain.chat_models import init_chat_model
+model = init_chat_model(**llm_config)
 ```
 
-Add your provider to the `_SUPPORTED_PROVIDERS` set.
+#### Supported Providers
 
-##### 3. Add Environment Variables (Optional)
-
-If your provider requires API keys or endpoints, add them to your `.env` file:
-
-```bash
-MY_NEW_PROVIDER_API_KEY=your_api_key_here
-MY_NEW_PROVIDER_ENDPOINT=https://api.example.com
-```
-
-##### 4. Test Your Provider
-
-Ensure your provider works by running the agent with your provider selected in the configuration.
-
-#### Best Practices for Provider Implementation
-
-- Follow the structure and docstring style of existing providers
-- Use type hints and clear error messages
-- Keep all provider-specific logic encapsulated in your provider class
-- Do not modify agent or planner code—only the provider and factory
-- Handle API keys and endpoints securely
+- **OpenAI**: `gpt-4o`, `gpt-4-turbo`, `gpt-3.5-turbo`
+- **Anthropic**: `claude-3-opus-20240229`, `claude-3-sonnet-20240229`
+- **Azure OpenAI**: `azure_openai:model-name`
+- **Google Gemini**: `google_genai:gemini-2.5-flash-lite`
+- **AWS Bedrock**: Various models via `bedrock_converse` provider
 
 #### Reference Documentation
 
-- [Base LLM Provider](k8s_autopilot/core/llm/base_llm_provider.py)
-- [LLM Provider Factory](k8s_autopilot/core/llm/llm_provider.py)
+- [LangChain Models Documentation](https://docs.langchain.com/oss/python/langchain/models)
+- [init_chat_model API Reference](https://api.python.langchain.com/en/latest/chat_models/langchain.chat_models.base.init_chat_model.html)
+- [Migration Guide](docs/k8s-autopilot-migration.md)
 - [Complete Onboarding Guide](docs/ONBOARDING_LLM_PROVIDER.md)
 
 ---

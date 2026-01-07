@@ -40,7 +40,7 @@ from langchain_core.tools import StructuredTool
 from k8s_autopilot.core.state.base import HelmAgentState
 from k8s_autopilot.utils.logger import AgentLogger, log_sync
 from k8s_autopilot.config.config import Config
-from k8s_autopilot.core.llm.llm_provider import LLMProvider
+from langchain.chat_models import init_chat_model
 from k8s_autopilot.core.agents.base_agent import BaseSubgraphAgent
 from k8s_autopilot.utils.mcp_client import MCPAdapterClient
 from k8s_autopilot.core.agents.helm_mgmt.helm_mgmt_prompts import (
@@ -50,6 +50,7 @@ from k8s_autopilot.core.agents.helm_mgmt.helm_mgmt_prompts import (
     QUERY_SUBAGENT_PROMPT,
     HELM_BEST_PRACTICES,
 )
+from k8s_autopilot.core.agents.helm_mgmt.history_pruning import HistoryPruningMiddleware
 
 # Agent logger
 helm_mgmt_agent_logger = AgentLogger("k8sAutopilotHelmMgmtAgent")
@@ -90,10 +91,16 @@ def _update_execution_state(tool_name: str, tool_args: Dict[str, Any], content: 
     
     updates["execution_logs"] = [log_entry]
     
-    if status == "success" and tool_name == "helm_install_chart":
-        updates["execution_status"] = "completed"
-        updates["helm_release_name"] = safe_args.get("release_name")
-        updates["helm_release_namespace"] = safe_args.get("namespace")
+    if status == "success":
+        if tool_name == "helm_install_chart":
+            updates["execution_status"] = "completed"
+            updates["helm_release_name"] = safe_args.get("release_name")
+            updates["helm_release_namespace"] = safe_args.get("namespace")
+        elif tool_name == "helm_uninstall_release":
+            # Clear release info from state to prevent hallucinations
+            updates["execution_status"] = "completed"
+            updates["helm_release_name"] = None 
+            updates["helm_release_namespace"] = None
     
     return updates
 
@@ -252,14 +259,22 @@ class ToolRegistry:
             ))
         
         # Execution tools
-        for tool_name in ["helm_install_chart", "helm_upgrade_release", 
-                         "helm_rollback_release", "helm_uninstall_release"]:
+# Execution tools - Strict duplicate checking
+        for tool_name in ["helm_install_chart", "helm_upgrade_release", "helm_rollback_release"]:
             self.register(tool_name, ToolConfig(
                 duplicate_check_keys=("release_name", "namespace"),
                 state_updater=_update_execution_state,
                 message_formatter=_format_execution_message,
                 content_matcher=_match_execution_content,
             ))
+            
+        # Uninstall tool - No duplicate checking (idempotent/safe to retry)
+        self.register("helm_uninstall_release", ToolConfig(
+            duplicate_check_keys=(), # Explicitly empty to disable duplicate check
+            state_updater=_update_execution_state,
+            message_formatter=_format_execution_message,
+            content_matcher=_match_execution_content,
+        ))
         
         # Validation tools
         self.register("helm_validate_values", ToolConfig(
@@ -538,14 +553,19 @@ class HelmApprovalHITLMiddleware(AgentMiddleware):
                 extra={"tool_name": tool_name, "args": request.tool_call.get("args", {})}
             )
             
-            # Build interrupt payload for human approval
+            # Build interrupt payload for human approval - Use Case 4 (Critical Tool Approval)
+            # This follows the standard HITL schema for pre-execution approval
+            tool_call_id = request.tool_call.get("id", "unknown")
             interrupt_payload = {
-                "pending_approval": {
-                    "status": "approval_required",
-                    "tool_name": tool_name,
-                    "tool_args": request.tool_call.get("args", {}),
-                    "message": self._build_approval_message(tool_name, request.tool_call.get("args", {})),
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                "pending_tool_calls": {
+                    tool_call_id: {
+                        "tool_name": tool_name,
+                        "tool_args": request.tool_call.get("args", {}),
+                        "is_critical": True,
+                        "phase": "execution_approval",
+                        "reason": self._build_approval_message(tool_name, request.tool_call.get("args", {})),
+                        "status": "pending"
+                    }
                 }
             }
             
@@ -666,36 +686,7 @@ class ErrorRecoveryMiddleware(AgentMiddleware):
         )
 
 
-class ResourceContextMiddleware(AgentMiddleware):
-    """
-    Middleware to inject MCP resource context into agent conversations.
-    """
-    
-    def __init__(self, mcp_client: Optional[MCPAdapterClient] = None):
-        self.mcp_client = mcp_client
-    
-    async def awrap_model_call(self, request, handler):
-        """
-        Inject resource context before model invocation.
-        """
-        if self.mcp_client and hasattr(request, 'state'):
-            try:
-                # Need to use await since get_resources is async
-                # Pass tuple to avoid unhashable type: list error
-                resources = await self.mcp_client.get_resources(("kubernetes://cluster-info",))
-                if resources:
-                    cluster_info = resources[0] # content of resource
-                    # Add cluster context to state if not present
-                    if not request.state.get("cluster_context"):
-                        request.state["cluster_context"] = {
-                            "from_resource": True,
-                            "data": str(cluster_info.content) if hasattr(cluster_info, 'content') else str(cluster_info)
-                        }
-            except Exception as e:
-                 # Log debug but don't crash
-                 pass
-        
-        return await handler(request)
+
 
 
 # ============================================================================
@@ -795,13 +786,17 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
         "kubernetes_get_cluster_info",
         "kubernetes_list_namespaces",
         "kubernetes_get_helm_releases",
+        # Added for Upgrade/Setup workflows
+        "helm_get_release_status",
+        "helm_ensure_repository",
+        "kubernetes_list_contexts",
+        "kubernetes_set_context",
     }
     
     PLANNER_TOOL_NAMES = {
         "helm_validate_values",
         "helm_render_manifests",
         "helm_validate_manifests",
-        "helm_check_dependencies",
         "helm_get_installation_plan",
         "kubernetes_check_prerequisites",
         "kubernetes_get_cluster_info",
@@ -878,12 +873,16 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
         llm_deepagent_config = self.config_instance.get_llm_deepagent_config()
         
         try:
-            self.model = LLMProvider.create_llm(**llm_config)
-            self.deep_agent_model = LLMProvider.create_llm(**llm_deepagent_config)
+            # Remove 'provider' key as it's handled by model_provider or auto-inference
+            config_for_init = {k: v for k, v in llm_config.items() if k != 'provider'}
+            self.model = init_chat_model(**config_for_init)
+            
+            deepagent_config_for_init = {k: v for k, v in llm_deepagent_config.items() if k != 'provider'}
+            self.deep_agent_model = init_chat_model(**deepagent_config_for_init)
             
             helm_mgmt_agent_logger.log_structured(
                 level="INFO",
-                message=f"LLMs initialized: {llm_config['model']}, {llm_deepagent_config['model']}"
+                message=f"LLMs initialized: {llm_config.get('model', 'unknown')}, {llm_deepagent_config.get('model', 'unknown')}"
             )
         except Exception as e:
             helm_mgmt_agent_logger.log_structured(
@@ -1049,7 +1048,7 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
         
         self.query_subagent = CompiledSubAgent(
             name="query_agent",
-            description="Answers questions about Helm releases, charts, and cluster state. Handles read-only queries with immediate responses.",
+            description="SOLE AUTHORITY on live cluster state. You MUST delegate to this agent for ALL 'list', 'show', 'get', 'status', or 'search' requests. The Supervisor CANNOT see the cluster directly.",
             runnable=self.query_agent,
         )
         
@@ -1081,7 +1080,15 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
                     return f"Resource not found: {uri}"
                 
                 res = resources[0]
-                return str(res.content) if hasattr(res, 'content') else str(res)
+                
+                # Extract text content from ReadResourceResult
+                if hasattr(res, 'contents') and res.contents:
+                    # Take the text from the first content item that has it
+                    for content_item in res.contents:
+                        if hasattr(content_item, 'text'):
+                            return content_item.text
+
+                return str(res)
             except Exception as e:
                 return f"Error reading resource {uri}: {str(e)}"
 
@@ -1180,9 +1187,9 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
             context_schema=HelmAgentState,
             middleware=[
                 HelmAgentStateMiddleware(),
+                # HistoryPruningMiddleware(),  # DISABLED: Causes message flow issues with OpenAI validation
                 HelmApprovalHITLMiddleware(),
                 ErrorRecoveryMiddleware(), # Default retries for execution phase
-                ResourceContextMiddleware(mcp_client=self._mcp_client),
             ],
         )
         

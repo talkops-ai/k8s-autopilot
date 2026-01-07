@@ -646,6 +646,7 @@ Chart files should be at: {chart_path}"""
         # Mark helm_mgmt phase as complete (similar to validation_to_supervisor)
         workflow_state_obj.set_phase_complete("helm_mgmt")
         workflow_state_obj.last_swarm = "helm_mgmt_swarm"
+        workflow_state_obj.current_phase = "helm_mgmt"  # Ensure current_phase is set
         
         # Return object directly to avoid Pydantic serialization warnings
         updated_workflow_state = workflow_state_obj
@@ -662,11 +663,14 @@ Chart files should be at: {chart_path}"""
         ]
         
         # Build return dictionary (similar to validation_to_supervisor)
+        # IMPORTANT: Set status="completed" and active_phase to match last_swarm
         return_dict = {
             "messages": summary_messages,
             "llm_input_messages": summary_messages,
             "workflow_state": updated_workflow_state,
-            "helm_mgmt_response": last_content  # Store response for supervisor to extract
+            "helm_mgmt_response": last_content,  # Store response for supervisor to extract
+            "status": "completed",  # Mark as completed (was "pending")
+            "active_phase": "helm_mgmt_swarm"  # Match last_swarm value
         }
         
         return return_dict

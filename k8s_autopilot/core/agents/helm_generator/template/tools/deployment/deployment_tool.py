@@ -12,7 +12,7 @@ from enum import Enum
 from k8s_autopilot.core.state.base import GenerationSwarmState
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.config.config import Config
-from k8s_autopilot.core.llm.llm_provider import LLMProvider
+from langchain.chat_models import init_chat_model
 from .deployment_prompts import DEPLOYMENT_GENERATOR_SYSTEM_PROMPT, DEPLOYMENT_GENERATOR_USER_PROMPT
 
 deployment_generator_logger = AgentLogger("deployment_generator")
@@ -627,12 +627,9 @@ async def generate_deployment_yaml(
             }
         )
         
-        model = LLMProvider.create_llm(
-            provider=llm_config['provider'],
-            model=llm_config['model'],
-            temperature=llm_config['temperature'],
-            max_tokens=llm_config['max_tokens']
-        )
+        # Remove 'provider' key as it's handled by model_provider or auto-inference
+        config_for_init = {k: v for k, v in llm_config.items() if k != 'provider'}
+        model = init_chat_model(**config_for_init)
         
         chain = prompt | model | parser
         

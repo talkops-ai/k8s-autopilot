@@ -2,7 +2,7 @@ import uuid
 import ast
 import json
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional, Callable, AsyncGenerator, Annotated, Tuple
+from typing import Dict, Any, List, Optional, Callable, AsyncGenerator, Annotated, Tuple, Union
 from langchain_core.messages import AnyMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
@@ -10,7 +10,7 @@ from langgraph.graph.message import add_messages
 from langgraph.types import Send, Command, interrupt
 from langgraph.checkpoint.memory import MemorySaver
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, aclosing
 from .types import AgentResponse, BaseAgent
 from k8s_autopilot.core.state.base import (
     MainSupervisorState,
@@ -25,7 +25,7 @@ from langchain.tools import tool, ToolRuntime, InjectedToolCallId
 from .base_agent import BaseSubgraphAgent
 from k8s_autopilot.utils.logger import AgentLogger, log_async, log_sync
 from k8s_autopilot.config.config import Config
-from k8s_autopilot.core.llm.llm_provider import LLMProvider
+from langchain.chat_models import init_chat_model
 
 # Create agent logger for supervisor
 supervisor_logger = AgentLogger("k8sAutopilotSupervisorAgent")
@@ -103,18 +103,15 @@ class k8sAutopilotSupervisorAgent(BaseAgent):
         # Get LLM configuration from centralized config
         llm_config = self.config_instance.get_llm_config()
 
-        # Initialize the LLM model using the centralized provider
+        # Initialize the LLM model using init_chat_model
         try:
-            self.model = LLMProvider.create_llm(
-                provider=llm_config['provider'],
-                model=llm_config['model'],
-                temperature=llm_config['temperature'],
-                max_tokens=llm_config['max_tokens']
-            )
+            # Remove 'provider' key as it's handled by model_provider or auto-inference
+            config_for_init = {k: v for k, v in llm_config.items() if k != 'provider'}
+            self.model = init_chat_model(**config_for_init)
             supervisor_logger.log_structured(
                 level="INFO",
-                message=f"Initialized LLM model: {llm_config['provider']}:{llm_config['model']}",
-                extra={"llm_provider": llm_config['provider'], "llm_model": llm_config['model']}
+                message=f"Initialized LLM model: {llm_config.get('provider', 'auto')}:{llm_config.get('model', 'unknown')}",
+                extra={"llm_provider": llm_config.get('provider', 'auto'), "llm_model": llm_config.get('model', 'unknown')}
             )
         except Exception as e:
             supervisor_logger.log_structured(
@@ -859,16 +856,28 @@ Available tools:
                 
             elif "pending_tool_calls" in interrupt_payload:
                 # Handle critical tool call pre-approval interrupt (Use Case 4)
-                tool_call_data = interrupt_payload.get("pending_tool_calls", {})
+                # Schema: {"pending_tool_calls": {"tool_call_id": {"tool_name": ..., "is_critical": ...}}}
+                raw_tool_call_data = interrupt_payload.get("pending_tool_calls", {})
                 
-                # Extract tool call information
-                tool_call_id = tool_call_data.get("tool_call_id", "unknown")
-                tool_name = tool_call_data.get("tool_name", "unknown")
-                tool_args = tool_call_data.get("tool_args", {})
-                is_critical = tool_call_data.get("is_critical", False)
-                phase = tool_call_data.get("phase", "unknown")
-                reason = tool_call_data.get("reason", "Approval required for critical operation")
-                status = tool_call_data.get("status", "pending")
+                # Default values
+                tool_call_id = "unknown"
+                tool_call_item = {}
+                
+                # Extract the first tool call (current implementation assumes single interrupt)
+                if raw_tool_call_data and isinstance(raw_tool_call_data, dict):
+                    # Get the first key/value pair
+                    try:
+                        tool_call_id, tool_call_item = next(iter(raw_tool_call_data.items()))
+                    except StopIteration:
+                        pass
+                
+                # Extract tool call information from the nested item
+                tool_name = tool_call_item.get("tool_name", "unknown")
+                tool_args = tool_call_item.get("tool_args", {})
+                is_critical = tool_call_item.get("is_critical", False)
+                phase = tool_call_item.get("phase", "unknown")
+                reason = tool_call_item.get("reason", "Approval required for critical operation")
+                status = tool_call_item.get("status", "pending")
                 
                 content = {
                     'type': 'tool_call_approval_request',
@@ -879,7 +888,7 @@ Available tools:
                     'phase': phase,
                     'reason': reason,
                     'status': status,
-                    'session_id': tool_call_data.get('session_id', context_id)
+                    'session_id': tool_call_item.get('session_id', context_id)
                 }
                 
                 interrupt_metadata = {
@@ -894,7 +903,7 @@ Available tools:
                     'tool_name': tool_name,
                     'is_critical': is_critical,
                     'reason': reason,
-                    'interrupt_data': tool_call_data
+                    'interrupt_data': raw_tool_call_data
                 }
                 
                 supervisor_logger.log_structured(
@@ -1110,6 +1119,339 @@ Available tools:
         
         return is_complete, planning_status
 
+    def _handle_direct_model_text(
+        self,
+        messages: List[Any],
+        task_id: str,
+        context_id: str,
+        step_count: int
+    ) -> Optional[AgentResponse]:
+        """
+        Handle cases where the model generates direct text without using a tool.
+        This provides a fallback for "chatty" model behavior while strict tool usage
+        is preferred.
+        
+        Args:
+            messages: List of messages from the graph state
+            task_id: Current task identifier
+            context_id: Current context/session identifier
+            step_count: Current step count in execution
+            
+        Returns:
+            AgentResponse if a direct text message is found and needs yielding, None otherwise.
+        """
+        if not messages:
+            return None
+            
+        last_message = messages[-1]
+        
+        # Check if it's an AI message with content but NO tool calls
+        if isinstance(last_message, AIMessage):
+            has_tool_calls = bool(getattr(last_message, 'tool_calls', None))
+            content_str = str(last_message.content) if last_message.content else ""
+            has_content = bool(content_str and content_str.strip())
+            
+            if has_content and not has_tool_calls:
+                supervisor_logger.log_structured(
+                    level="WARNING",
+                    message="Model output text without tool calls - should have used request_human_feedback",
+                    task_id=task_id,
+                    context_id=context_id,
+                    extra={
+                        "content_preview": content_str[:100],
+                        "note": "This flows through but model should use request_human_feedback tool"
+                    }
+                )
+                
+                return AgentResponse(
+                    response_type='text',
+                    is_task_complete=False,
+                    require_user_input=False,  # Don't require input - let graph complete/loop
+                    content=content_str,
+                    metadata={
+                        'session_id': context_id,
+                        'task_id': task_id,
+                        'agent_name': self.name,
+                        'step_count': step_count,
+                        'status': 'working',
+                        'warning': 'Text response without tool call - should use request_human_feedback'
+                    }
+                )
+        
+        return None
+
+    def _check_helm_mgmt_completion(
+        self,
+        item: Dict[str, Any],
+        task_id: str,
+        context_id: str,
+        step_count: int
+    ) -> Optional[AgentResponse]:
+        """
+        Check if the Helm Management Agent workflow has completed and return the response if so.
+        
+        Args:
+            item: Current state item from the graph stream
+            task_id: Current task identifier
+            context_id: Current context/session identifier
+            step_count: Current step count in execution
+            
+        Returns:
+            AgentResponse if the Helm Management workflow is complete, None otherwise.
+        """
+        # Extract workflow state and status
+        workflow_state = item.get('workflow_state', {})
+        status = item.get('status', 'pending')
+        active_phase = item.get('active_phase', '')
+        
+        # Extract helm_mgmt_complete flag from workflow_state
+        helm_mgmt_complete = False
+        if isinstance(workflow_state, dict):
+            helm_mgmt_complete = workflow_state.get('helm_mgmt_complete', False)
+        elif hasattr(workflow_state, 'helm_mgmt_complete'):
+            # Handle Pydantic object
+            helm_mgmt_complete = workflow_state.helm_mgmt_complete
+            
+        if not helm_mgmt_complete:
+            return None
+            
+        # Extract the helm_mgmt response (set by state_transformer.helm_mgmt_to_supervisor)
+        helm_mgmt_response = item.get('helm_mgmt_response', '')
+        
+        if not helm_mgmt_response:
+            supervisor_logger.log_structured(
+                level="WARNING",
+                message="Helm Management Agent completed but no response found",
+                task_id=task_id,
+                context_id=context_id
+            )
+            helm_mgmt_response = 'Helm Management Agent completed successfully.'
+        
+        supervisor_logger.log_structured(
+            level="INFO",
+            message="Helm Management Agent completed - yielding response",
+            task_id=task_id,
+            context_id=context_id,
+            extra={
+                "status": status,
+                "active_phase": active_phase,
+                "helm_mgmt_complete": helm_mgmt_complete
+            }
+        )
+        
+        # Return the response to be yielded
+        return AgentResponse(
+            response_type='data',
+            is_task_complete=True,  # Helm mgmt operations are complete when agent finishes
+            require_user_input=False,
+            content={
+                "status": "completed",
+                "message": helm_mgmt_response,
+                "helm_mgmt_response": helm_mgmt_response,
+                "completion_metrics": {
+                    'step_count': step_count,
+                    'helm_mgmt_complete': True
+                }
+            },
+            metadata={
+                'session_id': context_id,
+                'task_id': task_id,
+                'agent_name': self.name,
+                'step_count': step_count,
+                'status': 'completed',
+                'helm_mgmt_complete': True,
+                'active_phase': active_phase or 'helm_mgmt_swarm'
+            }
+        )
+
+    def _check_helm_generation_completion(
+        self,
+        item: Dict[str, Any],
+        task_id: str,
+        context_id: str,
+        step_count: int
+    ) -> Union[Optional[AgentResponse], str]:
+        """
+        Check if the Helm Generation workflow (planning/generation/validation) has completed.
+        
+        Args:
+            item: Current state item from the graph stream
+            task_id: Current task identifier
+            context_id: Current context/session identifier
+            step_count: Current step count in execution
+            
+        Returns:
+            - AgentResponse: If workflow is complete and ready to return a final response
+            - "CONTINUE_LOOP": If workflow is complete but we need to wait for agent message (continue loop)
+            - None: If workflow is not complete
+        """
+        workflow_state = item.get('workflow_state', {})
+        human_approval_status = item.get('human_approval_status', {})
+        
+        # Extract phase completion flags for helm generation workflow
+        planning_complete = False
+        generation_complete = False
+        validation_complete = False
+        deployment_approved = False
+        
+        # Consolidate state extraction logic
+        if isinstance(workflow_state, dict):
+            planning_complete = workflow_state.get('planning_complete', False)
+            generation_complete = workflow_state.get('generation_complete', False)
+            validation_complete = workflow_state.get('validation_complete', False)
+            
+            if isinstance(human_approval_status, dict):
+                deployment_approval = human_approval_status.get('deployment')
+                if deployment_approval:
+                    if isinstance(deployment_approval, dict):
+                        deployment_approved = deployment_approval.get('status') == 'approved'
+                    elif hasattr(deployment_approval, 'status'):
+                        deployment_approved = deployment_approval.status == 'approved'
+        elif hasattr(workflow_state, 'planning_complete'):
+            # Handle Pydantic object
+            planning_complete = workflow_state.planning_complete
+            generation_complete = workflow_state.generation_complete
+            validation_complete = workflow_state.validation_complete
+            deployment_approved = self._check_approval_status(item, "deployment")
+        
+        is_workflow_complete = (
+            planning_complete and 
+            generation_complete and 
+            validation_complete and 
+            deployment_approved
+        )
+        
+        if not is_workflow_complete:
+            return None
+            
+        # If helm generation workflow is complete, check for final messages
+        messages = item.get("messages", [])
+        last_message = messages[-1] if messages else None
+        
+        # Check if we should wait for the agent's final response
+        if isinstance(last_message, ToolMessage):
+            supervisor_logger.log_structured(
+                level="INFO",
+                message="Workflow state complete, waiting for agent final response",
+                task_id=task_id,
+                context_id=context_id
+            )
+            # Signal to continue loop to allow Agent node to execute and generate final text
+            return "CONTINUE_LOOP"
+
+        # If there is a final message from the agent, we might want to prioritize it
+        # But this method is strictly for completion logic.
+        # The caller handles yielding specific messages if needed, this returns the FINAL completion event.
+        
+        # Note: In the original logic, there was a check to yield last_message if it was text.
+        # We can handle that by returning a list or handling it in the caller, but to keep it simple
+        # and match the requested streamlining, we will return the completion response.
+        # If the caller sees a valid response object, it yields it.
+        
+        # Actually, to EXACTLY semantic match the previous logic where it might YIELD TWICE
+        # (once for text, once for completion), we should let the caller handle the text check
+        # OR we package it all here. 
+        # But the request is to "streamline".
+        
+        supervisor_logger.log_structured(
+            level="INFO",
+            message="Workflow complete - stopping execution",
+            task_id=task_id,
+            context_id=context_id,
+            extra={
+                'step_count': step_count,
+                'planning_complete': planning_complete,
+                'generation_complete': generation_complete,
+                'validation_complete': validation_complete,
+                'deployment_approved': deployment_approved
+            }
+        )
+        
+        return AgentResponse(
+            response_type='data',
+            is_task_complete=True,
+            require_user_input=False,
+            content={
+                "status": "completed",
+                "message": "✅ Workflow complete: All phases finished and deployment approved.",
+                "completion_metrics": {
+                    'step_count': step_count,
+                    'planning_complete': planning_complete,
+                    'generation_complete': generation_complete,
+                    'validation_complete': validation_complete,
+                    'deployment_approved': deployment_approved
+                }
+            },
+            metadata={
+                'session_id': context_id,
+                'task_id': task_id,
+                'agent_name': self.name,
+                'step_count': step_count,
+                'status': 'completed'
+            }
+        )
+
+    def _check_planning_completion(
+        self,
+        item: Dict[str, Any],
+        task_id: str,
+        context_id: str,
+        step_count: int
+    ) -> Optional[AgentResponse]:
+        """
+        Check if the Planning phase has completed and return the planning data response.
+        This allows the UI to show planning artifacts before the full generation workflow completes.
+        
+        Args:
+            item: Current state item from the graph stream
+            task_id: Current task identifier
+            context_id: Current context/session identifier
+            step_count: Current step count in execution
+            
+        Returns:
+            AgentResponse if planning is complete and data is available, None otherwise.
+        """
+        status = item.get('status')
+        if status != 'completed':
+            return None
+            
+        # Get planning data and status for individual agent completion
+        is_complete, planning_status = self._validate_planner_agent_completion(item)
+            
+        if not is_complete:
+            # Individual agent completed, but supervisor workflow not fully complete
+            # We can log this but usually we just want to show "Processing..."
+            return None
+            
+        # Extract the actual planning data
+        planning_data = planning_status.get('data_values', {})
+        completion_metrics = planning_status.get('completion_metrics', {})
+            
+         # Create comprehensive content with real planning data
+        content_data = {
+            'status': 'planning_complete',
+            'completion_metrics': completion_metrics,
+            'requirements_data': planning_data.get('requirements_data', ''),
+            'execution_data': planning_data.get('execution_data', ''),
+            'planning_state': planning_status.get('planning_state', {}),
+            'validation_result': planning_status.get('validation_result', 'PASS')
+        }
+            
+        return AgentResponse(
+            response_type='text',
+            is_task_complete=True,
+            require_user_input=False,
+            content=str(content_data),
+            metadata={
+                'session_id': context_id,
+                'task_id': task_id,
+                'agent_name': self.name,
+                'step_count': step_count,
+                'status': 'planning_data_available',
+                'planning_complete': True
+            }
+        )
+
     def _create_initial_state(
         self,
         user_query: str,
@@ -1172,6 +1514,130 @@ Available tools:
         
         return state
 
+        return AgentResponse(
+            response_type='text',
+            is_task_complete=True,
+            require_user_input=False,
+            content=str(content_data),
+            metadata={
+                'session_id': context_id,
+                'task_id': task_id,
+                'agent_name': self.name,
+                'step_count': step_count,
+                'status': 'planning_data_available',
+                'planning_complete': True
+            }
+        )
+
+    def _prepare_graph_input(
+        self,
+        query_or_command: Union[str, Command],
+        context_id: str,
+        task_id: str
+    ) -> Union[Dict[str, Any], Command]:
+        """
+        Prepare input for the graph execution, handling both new starts and resumes (Command).
+        
+        Args:
+            query_or_command: Initial user query (str) or resume command (Command)
+            context_id: Context/Thread identifier
+            task_id: Task identifier
+            
+        Returns:
+            Input for graph.astream() - either state dict or Command object
+        """
+        # Case 1: Start new conversation
+        if not isinstance(query_or_command, Command):
+            user_query = str(query_or_command)
+            graph_input = self._create_initial_state(
+                user_query=user_query,
+                context_id=context_id,
+                task_id=task_id
+            )
+            
+            supervisor_logger.log_structured(
+                level="INFO",
+                message="Created initial supervisor state",
+                task_id=task_id,
+                context_id=context_id,
+                extra={
+                    "workflow_id": graph_input["workflow_state"].workflow_id,
+                    "initial_phase": graph_input.get("active_phase", "planning"),
+                    "user_requirements_set": graph_input.get("user_requirements") is not None
+                }
+            )
+            return graph_input
+
+        # Case 2: Resume existing conversation (Command)
+        thread_id = context_id
+        try:
+            checkpoint_state = self.compiled_graph.get_state(
+                {"configurable": {"thread_id": thread_id}}
+            )
+            has_checkpoint = checkpoint_state is not None and checkpoint_state.values is not None
+            has_interrupt = checkpoint_state and checkpoint_state.next and len(checkpoint_state.next) > 0
+            
+            if not has_checkpoint:
+                # Critical Warning: Resuming without checkpoint
+                supervisor_logger.log_structured(
+                    level="ERROR",
+                    message="Resume attempted but no checkpoint found - this should not happen after interrupt",
+                    task_id=task_id,
+                    context_id=context_id,
+                    extra={
+                        "thread_id": thread_id,
+                        "resume_value": str(query_or_command.resume)[:100] if query_or_command.resume else None,
+                        "checkpoint_state": str(checkpoint_state)[:200] if checkpoint_state else None
+                    }
+                )
+                supervisor_logger.log_structured(
+                    level="WARNING",
+                    message="Attempting resume without checkpoint - may cause issues",
+                    task_id=task_id,
+                    context_id=context_id,
+                    extra={"thread_id": thread_id}
+                )
+                # Attempt to proceed with Command anyway, as creating new state creates duplicates
+                return query_or_command
+            else:
+                # Checkpoint exists - normal resume
+                resume_preview = None
+                if query_or_command.resume is not None:
+                    resume_str = str(query_or_command.resume)
+                    resume_preview = resume_str[:200] if len(resume_str) > 200 else resume_str
+                
+                supervisor_logger.log_structured(
+                    level="INFO",
+                    message="Resuming graph execution from checkpoint",
+                    task_id=task_id,
+                    context_id=context_id,
+                    extra={
+                        "thread_id": thread_id,
+                        "resume_value_type": type(query_or_command.resume).__name__,
+                        "resume_value_preview": resume_preview,
+                        "has_resume_value": query_or_command.resume is not None,
+                        "has_interrupt": has_interrupt,
+                        "next_nodes": checkpoint_state.next if checkpoint_state else None
+                    }
+                )
+                return query_or_command
+                
+        except Exception as e:
+            supervisor_logger.log_structured(
+                level="WARNING",
+                message=f"Error checking checkpoint state, treating as new conversation: {e}",
+                task_id=task_id,
+                context_id=context_id,
+                extra={"error": str(e), "thread_id": thread_id}
+            )
+            # Fallback: Treat as new conversation if checkpoint check fails entirely
+            user_query = str(query_or_command.resume) if query_or_command.resume else "Continue"
+            return self._create_initial_state(
+                user_query=user_query,
+                context_id=context_id,
+                task_id=task_id
+            )
+
     @log_async
     async def stream(
         self,
@@ -1200,94 +1666,15 @@ Available tools:
                 "is_resume": isinstance(query_or_command, Command)
             }
         )
-        # Simple init/resume handling
-        if isinstance(query_or_command, Command):
-            # Resume call: pass Command directly to graph
-            # LangGraph will restore state from checkpoint using thread_id
-            # The resume value becomes the return value of interrupt() inside nodes
-            thread_id = context_id  # Reuse for HITL resume - must match original thread_id
-            
-            # Verify checkpoint exists before resuming
-            # If no checkpoint exists, treat as new conversation to avoid resume failures
-            try:
-                checkpoint_state = self.compiled_graph.get_state(
-                    {"configurable": {"thread_id": thread_id}}
-                )
-                has_checkpoint = checkpoint_state is not None and checkpoint_state.values is not None
-                has_interrupt = checkpoint_state and checkpoint_state.next and len(checkpoint_state.next) > 0
-                
-                if not has_checkpoint:
-                    supervisor_logger.log_structured(
-                        level="WARNING",
-                        message="Resume attempted but no checkpoint found - treating as new conversation",
-                        task_id=task_id,
-                        context_id=context_id,
-                        extra={
-                            "thread_id": thread_id,
-                            "resume_value": str(query_or_command.resume)[:100] if query_or_command.resume else None
-                        }
-                    )
-                    # No checkpoint exists - treat as new conversation
-                    user_query = str(query_or_command.resume) if query_or_command.resume else "Continue"
-                    graph_input = self._create_initial_state(
-                        user_query=user_query,
-                        context_id=context_id,
-                        task_id=task_id
-                    )
-                    # graph_input is now a state dict, not a Command
-                else:
-                    # Checkpoint exists - use Command to resume
-                    graph_input = query_or_command
-                    supervisor_logger.log_structured(
-                        level="INFO",
-                        message="Resuming graph execution from checkpoint",
-                        task_id=task_id,
-                        context_id=context_id,
-                        extra={
-                            "thread_id": thread_id,
-                            "resume_value_type": type(query_or_command.resume).__name__,
-                            "has_resume_value": query_or_command.resume is not None,
-                            "has_interrupt": has_interrupt,
-                            "next_nodes": checkpoint_state.next if checkpoint_state else None
-                        }
-                    )
-            except Exception as e:
-                supervisor_logger.log_structured(
-                    level="WARNING",
-                    message=f"Error checking checkpoint state, treating as new conversation: {e}",
-                    task_id=task_id,
-                    context_id=context_id,
-                    extra={"error": str(e), "thread_id": thread_id}
-                )
-                # Error checking checkpoint - treat as new conversation
-                user_query = str(query_or_command.resume) if query_or_command.resume else "Continue"
-                graph_input = self._create_initial_state(
-                    user_query=user_query,
-                    context_id=context_id,
-                    task_id=task_id
-                )
-                # graph_input is now a state dict, not a Command
-        else:
-            # Initial call: create full state with Pydantic models
-            user_query = str(query_or_command)
-            graph_input = self._create_initial_state(
-                user_query=user_query,
-                context_id=context_id,
-                task_id=task_id
-            )
-            thread_id = context_id  # Use context_id as thread_id for checkpoint consistency
-            
-            supervisor_logger.log_structured(
-                level="INFO",
-                message="Created initial supervisor state",
-                task_id=task_id,
-                context_id=context_id,
-                extra={
-                    "workflow_id": graph_input["workflow_state"].workflow_id,
-                    "initial_phase": graph_input.get("active_phase", "planning"),
-                    "user_requirements_set": graph_input.get("user_requirements") is not None
-                }
-            )
+
+        # Prepare graph input (handles both new conversations and resumes)
+        graph_input = self._prepare_graph_input(
+            query_or_command=query_or_command,
+            context_id=context_id,
+            task_id=task_id
+        )
+        thread_id = context_id  # Ensure thread_id is consistent
+
 
         config: RunnableConfig = {
             'configurable': {
@@ -1303,198 +1690,90 @@ Available tools:
             "durability": "async",
             "subgraphs": True
         }
+        graph_stream = None
         try:
             # Use astream with values mode and subgraphs=True for proper handoff processing
-            # This ensures proper subgraph handoff processing and prevents NoneType iteration errors
+            # Wrap with aclosing() for deterministic async generator cleanup
+            # This prevents GeneratorExit exceptions during LangSmith trace writing
             async with isolation_shield():
-                async for item in self.compiled_graph.astream(graph_input, config_with_durability, stream_mode='values', subgraphs=True):
-                    step_count += 1
-                    
-                    # When subgraphs=True, items are tuples (namespace, state)
-                    # Unpack to get the actual state dictionary
-                    if isinstance(item, tuple) and len(item) == 2:
-                        namespace, state = item
-                        item = state  # Use the state dict for processing
-                    
-                    # 1. Handle human-in-the-loop interrupt (enhanced HITL support)
-                    if '__interrupt__' in item:
-                        interrupt_response = self._handle_hitl_interrupt(
-                            item=item,
-                            context_id=context_id,
+                async with aclosing(
+                    self.compiled_graph.astream(
+                        graph_input, 
+                        config_with_durability, 
+                        stream_mode='values', 
+                        subgraphs=True
+                    )
+                ) as graph_stream:
+                    async for item in graph_stream:
+                        step_count += 1
+                            
+                        # When subgraphs=True, items are tuples (namespace, state)
+                        # Unpack to get the actual state dictionary
+                        if isinstance(item, tuple) and len(item) == 2:
+                            namespace, state = item
+                            item = state  # Use the state dict for processing
+                            
+                        # 1. Handle human-in-the-loop interrupt (enhanced HITL support)
+                        if '__interrupt__' in item:
+                            interrupt_response = self._handle_hitl_interrupt(
+                                item=item,
+                                context_id=context_id,
+                                task_id=task_id,
+                                step_count=step_count
+                            )
+                            if interrupt_response:
+                                yield interrupt_response
+                            
+
+                            
+                            
+                            # When interrupt occurs, graph pauses and stops yielding.
+                            # Let the loop naturally exit when StopAsyncIteration is raised.
+                            continue
+                        
+
+                        # 1.5 Check for final text response (model output text without tool calls)
+                        # NOTE: This flows through using helper method
+                        direct_text_response = self._handle_direct_model_text(
+                            messages=item.get('messages', []),
                             task_id=task_id,
+                            context_id=context_id,
                             step_count=step_count
                         )
-                        if interrupt_response:
-                            yield interrupt_response
-                            # Pause streaming until client resumes with feedback
-                            # The graph execution is paused at the interrupt point
-                            # No more items will be streamed until resume with Command(resume=...)
-                            break
-                    
-                    # 1.5 Check for final text response (model output text without tool calls)
-                    # NOTE: This should ideally not happen - the model should use request_human_feedback tool
-                    # However, if it does, we yield it but DON'T break - let the graph complete naturally
-                    # Breaking without an interrupt checkpoint causes resume failures
-                    messages = item.get('messages', [])
-                    if messages:
-                        last_message = messages[-1]
-                        if isinstance(last_message, AIMessage):
-                            has_tool_calls = bool(getattr(last_message, 'tool_calls', None))
-                            has_content = bool(last_message.content and str(last_message.content).strip())
-                            
-                            # If it's pure text (no tool calls), log warning and yield but continue
-                            # The model should have used request_human_feedback tool instead
-                            if has_content and not has_tool_calls:
-                                supervisor_logger.log_structured(
-                                    level="WARNING",
-                                    message="Model output text without tool calls - should have used request_human_feedback",
-                                    task_id=task_id,
-                                    context_id=context_id,
-                                    extra={
-                                        "content_preview": str(last_message.content)[:100],
-                                        "note": "This may cause resume issues - model should use request_human_feedback tool"
-                                    }
-                                )
-                                # Yield the text response but continue streaming
-                                # Don't break - let graph complete naturally to avoid resume checkpoint issues
-                                yield AgentResponse(
-                                    response_type='text',
-                                    is_task_complete=False,
-                                    require_user_input=False,  # Don't require input - let graph complete
-                                    content=str(last_message.content),
-                                    metadata={
-                                        'session_id': context_id,
-                                        'task_id': task_id,
-                                        'agent_name': self.name,
-                                        'step_count': step_count,
-                                        'status': 'working',
-                                        'warning': 'Text response without tool call - should use request_human_feedback'
-                                    }
-                                )
-                                # Continue streaming - don't break to avoid checkpoint issues
-                    
-                    # 2. Check for Helm Management Agent completion (separate workflow from helm generation)
-                    workflow_state = item.get('workflow_state', {})
-                    helm_mgmt_complete = False
-                    
-                    # Extract helm_mgmt_complete flag from workflow_state
-                    if isinstance(workflow_state, dict):
-                        helm_mgmt_complete = workflow_state.get('helm_mgmt_complete', False)
-                    elif hasattr(workflow_state, 'helm_mgmt_complete'):
-                        # Handle Pydantic object
-                        helm_mgmt_complete = workflow_state.helm_mgmt_complete
-                    
-                    # Check if helm_mgmt agent completed (query or workflow operation)
-                    # This is a separate workflow from helm generation (planning/generation/validation)
-                    if helm_mgmt_complete:
-                        # Extract the helm_mgmt response (set by state_transformer.helm_mgmt_to_supervisor)
-                        helm_mgmt_response = item.get('helm_mgmt_response', '')
+                        if direct_text_response:
+                            yield direct_text_response
+
                         
-                        if not helm_mgmt_response:
-                            supervisor_logger.log_structured(
-                                level="WARNING",
-                                message="Helm Management Agent completed but no response found",
-                                task_id=task_id,
-                                context_id=context_id
-                            )
-                            helm_mgmt_response = 'Helm Management Agent completed successfully.'
-                        
-                        supervisor_logger.log_structured(
-                            level="INFO",
-                            message="Helm Management Agent completed - yielding response",
+
+                        # 2. Check for Helm Management Agent completion (separate workflow from helm generation)
+                        helm_mgmt_response = self._check_helm_mgmt_completion(
+                            item=item,
                             task_id=task_id,
                             context_id=context_id,
-                            extra={}
+                            step_count=step_count
+                        )
+                        if helm_mgmt_response:
+                            yield helm_mgmt_response
+                            
+
+                        # 3. Check for Helm Generation workflow completion (planning/generation/validation)
+                        helm_generation_result = self._check_helm_generation_completion(
+                            item=item,
+                            task_id=task_id,
+                            context_id=context_id,
+                            step_count=step_count
                         )
                         
-                        # Yield the helm_mgmt response and mark task as complete
-                        # Format matches helm generation workflow completion pattern
-                        yield AgentResponse(
-                            response_type='data',
-                            is_task_complete=True,  # Helm mgmt operations are complete when agent finishes
-                            require_user_input=False,
-                            content={
-                                "status": "completed",
-                                "message": helm_mgmt_response,
-                                "helm_mgmt_response": helm_mgmt_response,
-                                "completion_metrics": {
-                                    'step_count': step_count,
-                                    'helm_mgmt_complete': True
-                                }
-                            },
-                            metadata={
-                                'session_id': context_id,
-                                'task_id': task_id,
-                                'agent_name': self.name,
-                                'step_count': step_count,
-                                'status': 'completed',
-                                'helm_mgmt_complete': True
-                            }
-                        )
-                        break  # Stop streaming - helm_mgmt operation is complete
-                    
-                    # 3. Check for Helm Generation workflow completion (planning/generation/validation)
-                    # This is separate from helm_mgmt operations
-                    human_approval_status = item.get('human_approval_status', {})
-                    
-                    # Extract phase completion flags for helm generation workflow
-                    planning_complete = False
-                    generation_complete = False
-                    validation_complete = False
-                    deployment_approved = False
-                    
-                    if isinstance(workflow_state, dict):
-                        planning_complete = workflow_state.get('planning_complete', False)
-                        generation_complete = workflow_state.get('generation_complete', False)
-                        validation_complete = workflow_state.get('validation_complete', False)
-                        
-                        if isinstance(human_approval_status, dict):
-                            deployment_approval = human_approval_status.get('deployment')
-                            if deployment_approval:
-                                if isinstance(deployment_approval, dict):
-                                    deployment_approved = deployment_approval.get('status') == 'approved'
-                                elif hasattr(deployment_approval, 'status'):
-                                    deployment_approved = deployment_approval.status == 'approved'
-                        
-                        is_workflow_complete = (
-                            planning_complete and 
-                            generation_complete and 
-                            validation_complete and 
-                            deployment_approved
-                        )
-                    elif hasattr(workflow_state, 'planning_complete'):
-                        # Handle Pydantic object
-                        planning_complete = workflow_state.planning_complete
-                        generation_complete = workflow_state.generation_complete
-                        validation_complete = workflow_state.validation_complete
-                        deployment_approved = self._check_approval_status(item, "deployment")
-                        
-                        is_workflow_complete = (
-                            planning_complete and
-                            generation_complete and
-                            validation_complete and
-                            deployment_approved
-                        )
-                    
-                    # If helm generation workflow is complete, stop execution
-                    if is_workflow_complete:
-                        # Check if we should wait for the agent's final response
-                        # If the last message was a ToolMessage (state update), let the agent respond first
-                        messages = item.get("messages", [])
-                        last_message = messages[-1] if messages else None
-                        
-                        if isinstance(last_message, ToolMessage):
-                            supervisor_logger.log_structured(
-                                level="INFO",
-                                message="Workflow state complete, waiting for agent final response",
-                                task_id=task_id,
-                                context_id=context_id
-                            )
-                            # Continue loop to allow Agent node to execute and generate final text
-                            # processing message will be yielded by the 'else' block below
-                        else:
-                            # If there is a final message from the agent, yield it first
-                            if isinstance(last_message, (AIMessage, HumanMessage)) and last_message.content:
+                        if helm_generation_result == "CONTINUE_LOOP":
+                            # Allow graph loop to continue for final agent response
+                            pass 
+                        elif helm_generation_result:
+                            # It's a completion response
+                            
+                            # Validating original logic: Check for generic text message to yield BEFORE completion
+                            messages = item.get("messages", [])
+                            last_message = messages[-1] if messages else None
+                            if isinstance(last_message, (AIMessage, HumanMessage)) and last_message.content and not isinstance(last_message, ToolMessage):
                                 supervisor_logger.log_structured(
                                     level="INFO",
                                     message="Yielding final agent message before completion",
@@ -1514,113 +1793,39 @@ Available tools:
                                         'status': 'working'
                                     }
                                 )
+                                
+                            yield helm_generation_result
+                            continue
 
+                        
+                        # 3. Check recursion limit warning
+                        recursion_limit = config_with_durability.get('configurable', {}).get('recursion_limit', 50)
+                        if step_count >= (recursion_limit - 10):  # Warn 10 steps before hitting limit
                             supervisor_logger.log_structured(
-                                level="INFO",
-                                message="Workflow complete - stopping execution",
+                                level="WARNING",
+                                message="Approaching recursion limit",
                                 task_id=task_id,
                                 context_id=context_id,
                                 extra={
                                     'step_count': step_count,
-                                    'planning_complete': planning_complete,
-                                    'generation_complete': generation_complete,
-                                    'validation_complete': validation_complete,
-                                    'deployment_approved': deployment_approved
+                                    'recursion_limit': recursion_limit,
+                                    'remaining_steps': recursion_limit - step_count
                                 }
                             )
-                            yield AgentResponse(
-                                response_type='data',
-                                is_task_complete=True,
-                                require_user_input=False,
-                                content={
-                                    "status": "completed",
-                                    "message": "✅ Workflow complete: All phases finished and deployment approved.",
-                                    "completion_metrics": {
-                                        'step_count': step_count,
-                                        'planning_complete': planning_complete,
-                                        'generation_complete': generation_complete,
-                                        'validation_complete': validation_complete,
-                                        'deployment_approved': deployment_approved
-                                    }
-                                },
-                                metadata={
-                                    'session_id': context_id,
-                                    'task_id': task_id,
-                                    'agent_name': self.name,
-                                    'step_count': step_count,
-                                    'status': 'completed'
-                                }
-                            )
-                            break  # Stop streaming
-                    
-                    # 3. Check recursion limit warning
-                    recursion_limit = config_with_durability.get('configurable', {}).get('recursion_limit', 50)
-                    if step_count >= (recursion_limit - 10):  # Warn 10 steps before hitting limit
-                        supervisor_logger.log_structured(
-                            level="WARNING",
-                            message="Approaching recursion limit",
+                        
+
+                        # 4. Check for intermediate Planning Phase completion
+                        planning_phase_response = self._check_planning_completion(
+                            item=item,
                             task_id=task_id,
                             context_id=context_id,
-                            extra={
-                                'step_count': step_count,
-                                'recursion_limit': recursion_limit,
-                                'remaining_steps': recursion_limit - step_count
-                            }
+                            step_count=step_count
                         )
-                    
-                    # 4. Handle normal state updates (direct status-based responses like reference)
-                    status = item.get('status')
-                    if status == 'completed':
-                        # Get planning data and status for individual agent completion
-                        is_complete, planning_status = self._validate_planner_agent_completion(item)
-                            
-                        if is_complete:
-                            # Extract the actual planning data
-                            planning_data = planning_status.get('data_values', {})
-                            completion_metrics = planning_status.get('completion_metrics', {})
-                                
-                             # Create comprehensive content with real planning data
-                            content_data = {
-                                'status': 'planning_complete',
-                                'completion_metrics': completion_metrics,
-                                'requirements_data': planning_data.get('requirements_data', ''),
-                                'execution_data': planning_data.get('execution_data', ''),
-                                'planning_state': planning_status.get('planning_state', {}),
-                                'validation_result': planning_status.get('validation_result', 'PASS')
-                            }
-                                
-                            yield AgentResponse(
-                                response_type='text',
-                                is_task_complete=True,
-                                require_user_input=False,
-                                content=str(content_data),
-                                metadata={
-                                    'session_id': context_id,
-                                    'task_id': task_id,
-                                    'agent_name': self.name,
-                                    'step_count': step_count,
-                                    'status': 'planning_data_available',
-                                    'planning_complete': True
-                                }
-                            )
-                            continue  # Continue to allow handoff tool execution
-                        else:
-                            # Individual agent completed, but supervisor workflow not fully complete
-                            yield AgentResponse(
-                                response_type='text',
-                                is_task_complete=False,
-                                require_user_input=False,
-                                content=f'Agent completed - continuing supervisor workflow...',
-                                metadata={
-                                    'session_id': context_id,
-                                    'task_id': task_id,
-                                    'agent_name': self.name,
-                                    'step_count': step_count,
-                                    'status': 'agent_completed_workflow_continuing'
-                                }
-                            )
-                    else:
-                        # Default processing response
+                        if planning_phase_response:
+                            yield planning_phase_response
+                            continue
+                        
+                        # 5. Default processing response
                         yield AgentResponse(
                             response_type='text',
                             is_task_complete=False,
@@ -1661,7 +1866,32 @@ Available tools:
                     'status': 'error'
                 }
             )
-        
+        finally:
+            # Ensure all LangSmith traces are submitted before generator cleanup
+            # This prevents GeneratorExit interrupting trace writing
+            try:
+                from langchain_core.tracers.langchain import wait_for_all_tracers
+                wait_for_all_tracers()
+                supervisor_logger.log_structured(
+                    level="INFO",
+                    message="Trace submission complete",
+                    task_id=task_id,
+                    context_id=context_id
+                )
+            except ImportError:
+                # LangChain not available or old version
+                pass
+            except Exception as e:
+                supervisor_logger.log_structured(
+                    level="DEBUG",
+                    message=f"Trace wait incomplete: {type(e).__name__}",
+                    task_id=task_id,
+                    context_id=context_id,
+                    extra={"error": str(e)}
+                )
+            
+            # Note: aclosing() automatically handles graph_stream.aclose(), no manual cleanup needed
+            
             supervisor_logger.log_structured(
                 level="INFO",
                 message=f"[stream] END",
@@ -1670,7 +1900,8 @@ Available tools:
                 extra={
                     "agent_name": self.__class__.__name__,
                     "thread_id": thread_id,
-                    "step_count": step_count
+                    "step_count": step_count,
+                    "is_resume": isinstance(query_or_command, Command)
                 }
             )
 

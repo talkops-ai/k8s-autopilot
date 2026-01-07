@@ -10,7 +10,7 @@ from enum import Enum
 from toon import encode
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.config.config import Config
-from k8s_autopilot.core.llm.llm_provider import LLMProvider
+from langchain.chat_models import init_chat_model
 from k8s_autopilot.core.state.base import PlanningSwarmState
 from .req_parser_prompts import (
     REQUIREMENT_PARSER_SYSTEM_PROMPT, 
@@ -402,19 +402,11 @@ async def parse_requirements(
             }
         ) 
 
-        model = LLMProvider.create_llm(
-            provider=llm_config['provider'],
-            model=llm_config['model'],
-            temperature=llm_config['temperature'],
-            max_tokens=llm_config['max_tokens']
-        )
-
-        higher_model = LLMProvider.create_llm(
-            provider=higher_llm_config['provider'],
-            model=higher_llm_config['model'],
-            temperature=higher_llm_config['temperature'],
-            max_tokens=higher_llm_config['max_tokens']
-        )
+        # Remove 'provider' key as it's handled by model_provider or auto-inference
+        config_for_init = {k: v for k, v in llm_config.items() if k != 'provider'}
+        model = init_chat_model(**config_for_init)
+        higher_config_for_init = {k: v for k, v in higher_llm_config.items() if k != 'provider'}
+        higher_model = init_chat_model(**higher_config_for_init)
 
         chain = prompt | higher_model | parser
 
@@ -523,12 +515,9 @@ async def classify_complexity(
                 "llm_max_tokens": llm_config.get('max_tokens')
             }
         )
-        model = LLMProvider.create_llm(
-            provider=llm_config['provider'],
-            model=llm_config['model'],
-            temperature=llm_config['temperature'],
-            max_tokens=llm_config['max_tokens']
-        )
+        # Remove 'provider' key as it's handled by model_provider or auto-inference
+        config_for_init = {k: v for k, v in llm_config.items() if k != 'provider'}
+        model = init_chat_model(**config_for_init)
         chain = prompt | model | parser
         requirement_parser_logger.log_structured(
             level="DEBUG",
@@ -639,18 +628,11 @@ async def validate_requirements(
                 "llm_max_tokens": llm_config.get('max_tokens')
             }
         )
-        model = LLMProvider.create_llm(
-            provider=llm_config['provider'],
-            model=llm_config['model'],
-            temperature=llm_config['temperature'],
-            max_tokens=llm_config['max_tokens']
-        )
-        higher_model = LLMProvider.create_llm(
-            provider=higher_llm_config['provider'],
-            model=higher_llm_config['model'],
-            temperature=higher_llm_config['temperature'],
-            max_tokens=higher_llm_config['max_tokens']
-        )
+        # Remove 'provider' key as it's handled by model_provider or auto-inference
+        config_for_init = {k: v for k, v in llm_config.items() if k != 'provider'}
+        model = init_chat_model(**config_for_init)
+        higher_config_for_init = {k: v for k, v in higher_llm_config.items() if k != 'provider'}
+        higher_model = init_chat_model(**higher_config_for_init)
         chain = prompt | higher_model | parser
         requirement_parser_logger.log_structured(
             level="DEBUG",
