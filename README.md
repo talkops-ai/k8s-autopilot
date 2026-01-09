@@ -1,22 +1,33 @@
 # k8s-autopilot
 
-> **Production-Grade Multi-Agent Framework for Kubernetes Helm Chart Generation**
+> **Multi-Agent Framework for Kubernetes Automation (Generation & Management)**
 
 [![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/hFt5DAYEVx) [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-sandeep2014/k8s--autopilot-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://hub.docker.com/r/sandeep2014/k8s-autopilot) [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge)](LICENSE) [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/) [![LangGraph](https://img.shields.io/badge/LangGraph-Multi--Agent-FF6B6B?style=for-the-badge)](https://github.com/langchain-ai/langgraph) [![A2A Protocol](https://img.shields.io/badge/Google%20A2A-Protocol-4285F4?style=for-the-badge)](https://github.com/google/a2a)
 
-**k8s-autopilot** is an intelligent, multi-agent framework that automates the complete lifecycle of Kubernetes Helm chart generation. Built on LangChain and LangGraph, it transforms natural language requirements into production-ready Helm charts following Bitnami-quality standards.
+**k8s-autopilot** is an intelligent, multi-agent framework that automates the complete lifecycle of Kubernetes operations. Built on LangChain and LangGraph, it acts as a unified platform for both **Helm Chart Generation** (transforming natural language requirements into production-ready charts) and **Active Cluster Management** (installing, upgrading, and maintaining releases with Human-in-the-loop safety).
+
+---
+
+## 🎬 Demo
+
+See k8s-autopilot in action! Watch how it generates production-ready Helm charts and manages cluster deployments through natural language conversations:
+
+<video src="demo/autopilot_demo.mov" width="100%" controls></video>
+
+> **💡 Quick Overview**: The demo showcases installing ArgoCD from a public Helm repository through natural language. Watch the agent discover the chart, plan the installation, and deploy to a Kubernetes cluster with interactive UI components and Human-in-the-Loop approval gates.
 
 ---
 
 ## 🎯 What It Does
 
-k8s-autopilot automates the end-to-end process of creating enterprise-grade Helm charts:
+k8s-autopilot automates the end-to-end lifecycle of Kubernetes operations, from initial design to active cluster management:
 
 1. **📋 Planning**: Analyzes requirements, validates completeness, and designs Kubernetes architecture
 2. **⚙️ Generation**: Generates Helm templates, values files, and documentation
 3. **✅ Validation**: Validates charts, performs security scanning, and ensures production readiness
-4. **🔄 Self-Healing**: Automatically fixes common errors (YAML indentation, deprecated APIs, missing fields)
-5. **👤 Human-in-the-Loop**: Requests approvals at critical workflow points
+4. **� Management**: Installs, upgrades, and rolls back releases on active clusters via a dual-path agent
+5. **�🔄 Self-Healing**: Automatically fixes common errors (YAML indentation, deprecated APIs, missing fields)
+6. **👤 Human-in-the-Loop**: Requests approvals at critical workflow points (Plan, Template, Execution)
 
 ### Current Capabilities
 
@@ -26,7 +37,10 @@ k8s-autopilot automates the end-to-end process of creating enterprise-grade Helm
 - Traefik IngressRoute generation (modern CRD-based routing)
 - Helm chart validation (lint, template rendering, cluster compatibility)
 - Self-healing validation errors
+- Self-healing validation errors
 - Human-in-the-loop approvals
+- **Active Helm Management**: Install, Upgrade, Rollback, Uninstall charts
+- **Cluster Discovery**: Inspect releases and cluster state
 
 **🚧 Planned** (Future Releases):
 - Automated deployment to Kubernetes clusters
@@ -61,6 +75,14 @@ k8s-autopilot follows a **hierarchical supervisor-with-swarms** pattern, leverag
 │ (Deep       │    │ (LangGraph   │  │ (Deep        │   │ (Interrupt  │
 │  Agent)     │    │  StateGraph) │  │  Agent)      │   │  Tools)     │
 └─────────────┘    └──────────────┘  └──────────────┘   └─────────────┘
+       ▲
+       │ (Generative Flow)
+       │
+┌─────────────┐
+│  Helm Mgmt  │ (Operational Flow)
+│  Agent      │◀───────────────────
+│ (Deep Agent)│
+└─────────────┘
 ```
 
 ### Architecture Components
@@ -109,6 +131,20 @@ Deep agent that validates, self-heals, and ensures charts are production-ready.
 
 📖 **[Generator Agent Documentation](./docs/generator/README.md)**
 
+#### 5. **Helm Management Deep Agent**
+Specialized operational agent for managing Helm releases on active clusters.
+
+**Key Features**:
+- **Dual-Path Architecture**: Query Path (Fast) vs Workflow Path (Safe)
+- **5-Phase Workflow**: Discovery → Confirmation → Planning → Approval → Execution
+- **Context Awareness**: Upgrade detection and diffing
+- **Safety**: Strict HITL gates for all state-changing operations
+
+**Dependencies**:
+- **Helm MCP Server**: The Helm Management agent requires the [Helm MCP Server](./docs/mcp/helm-mcp-server.md) to be running and configured. The MCP server provides the underlying tools and resources for Helm operations (chart discovery, installation, validation, monitoring, etc.).
+
+📖 **[Helm Management Documentation](./docs/helm_mgmt/README.md)** | 📖 **[Helm MCP Server Documentation](./docs/mcp/helm-mcp-server.md)**
+
 ---
 
 ## 🚀 Quick Start
@@ -122,7 +158,39 @@ Deep agent that validates, self-heals, and ensures charts are production-ready.
 
 ### Installation
 
-#### Option 1: Standalone Installation
+#### Option 1: Docker Hub (Recommended for Quick Start)
+
+**Pull and run the pre-built image from Docker Hub:**
+
+```bash
+# Pull the latest version
+docker pull sandeep2014/k8s-autopilot:latest
+
+# Run the A2A server
+docker run -d -p 10102:10102 \
+  -e OPENAI_API_KEY=your_openai_key_here \
+  --name k8s-autopilot \
+  sandeep2014/k8s-autopilot:latest
+```
+
+> **Note:** It's recommended to mount a local volume to persist generated Helm charts. By default, the agent writes charts to `/tmp/helm-charts` inside the container. You can mount a local directory and optionally configure the agent to write to a different directory:
+>
+> ```bash
+> docker run -d -p 10102:10102 \
+>   -e OPENAI_API_KEY=your_openai_key_here \
+>   -v /path/to/local/charts:/tmp/helm-charts \
+>   --name k8s-autopilot \
+>   sandeep2014/k8s-autopilot:latest
+> ```
+>
+> This allows you to access the generated Helm charts from your host machine and use them to install applications on your Kubernetes cluster.
+
+**Available Docker tags:**
+
+- `latest` - Latest stable release
+- `v0.2.0` - Specific version
+
+#### Option 2: Standalone Installation
 
 1. **Install [uv](https://docs.astral.sh/uv/getting-started/installation/)** for dependency management
 
@@ -158,53 +226,43 @@ Deep agent that validates, self-heals, and ensures charts are production-ready.
      --agent-card k8s_autopilot/card/k8s_autopilot.json
    ```
 
-#### Option 2: Docker Hub (Recommended for Quick Start)
-
-**Pull and run the pre-built image from Docker Hub:**
-
-```bash
-# Pull the latest version
-docker pull sandeep2014/k8s-autopilot:latest
-
-# Run the A2A server
-docker run -d -p 10102:10102 \
-  -e OPENAI_API_KEY=your_openai_key_here \
-  --name k8s-autopilot \
-  sandeep2014/k8s-autopilot:latest
-```
-
-> **Note:** It's recommended to mount a local volume to persist generated Helm charts. By default, the agent writes charts to `/tmp/helm-charts` inside the container. You can mount a local directory and optionally configure the agent to write to a different directory:
->
-> ```bash
-> docker run -d -p 10102:10102 \
->   -e OPENAI_API_KEY=your_openai_key_here \
->   -v /path/to/local/charts:/tmp/helm-charts \
->   --name k8s-autopilot \
->   sandeep2014/k8s-autopilot:latest
-> ```
->
-> This allows you to access the generated Helm charts from your host machine and use them to install applications on your Kubernetes cluster.
-
-**Available Docker tags:**
-
-- `latest` - Latest stable release
-- `v0.1.0` - Specific version
-
 ### Working with Agents
 
-Once you have the agent running (using either Option 1 or Option 2 above), you can interact with it using the TalkOps client:
+The easiest way to interact with k8s-autopilot is using the **TalkOps Web UI** via Docker Compose, which sets up the complete stack including the k8s-autopilot agent, Helm MCP Server, and TalkOps Web UI.
 
-1. **Start the agent** using one of the installation methods above
-
-2. **Connect to the agent** using the TalkOps client:
+1. **Create a `.env` file** in the project root with your LLM provider API key:
 
    ```bash
-   talkops
+   # Required: LLM Provider API Key
+   OPENAI_API_KEY=your_openai_api_key_here
+   
+   # Optional: Customize LLM models (defaults shown below)
+   # LLM_PROVIDER=openai
+   # LLM_MODEL=gpt-4o-mini
+   # LLM_HIGHER_MODEL=gpt-4o
+   # LLM_DEEPAGENT_MODEL=o1-mini
    ```
 
-   > **Note:** Make sure you have installed the TalkOps client: `pip install talkops-client` (or `uv pip install talkops-client` if using uv)
+   > **Note:** For other LLM providers (Anthropic, Google Gemini, Azure, etc.), see the [LLM Provider Configuration Guide](docs/ONBOARDING_LLM_PROVIDER.md) for detailed setup instructions and supported models.
 
-3. **Ask questions** about creating Helm charts for any application:
+2. **Start the services** using Docker Compose:
+
+   ```bash
+   docker-compose up -d
+   ```
+
+   This will start three services:
+   - **k8s-autopilot**: The main agent (port 10102)
+   - **helm-mcp-server**: Helm operations backend (port 9000)
+   - **talkops-ui**: Web interface (port 8080)
+
+3. **Access the Web UI** by opening your browser to:
+
+   ```
+   http://localhost:8080
+   ```
+
+4. **Start chatting** with the agent to create Helm charts, manage releases, or query your cluster:
 
    ```
    Create a Helm chart for nginx
@@ -213,16 +271,28 @@ Once you have the agent running (using either Option 1 or Option 2 above), you c
    or
 
    ```
-   Generate a Helm chart for a Node.js application
+   List all Helm releases in my cluster
    ```
 
-   The agent will guide you through the process, asking for clarifications if needed, and generate production-ready Helm charts.
+   or
+
+   ```
+   Install argo-cd helm chart from this repository - https://argoproj.github.io/argo-helm
+   ```
+
+   The agent will guide you through the process, asking for clarifications if needed, and generate production-ready Helm charts or perform cluster operations via MCP server.
+
+5. **Access generated charts**: Charts are saved to `./helm_output` directory on your host machine.
 
 ---
 
-## 🔄 Workflow
+## 🔄 Workflows
 
-### Complete Workflow Sequence
+k8s-autopilot supports two primary workflows: **Helm Chart Generation** (creating new charts from scratch) and **Helm Management** (managing releases on active clusters).
+
+### Workflow 1: Helm Chart Generation
+
+For creating production-ready Helm charts from natural language requirements:
 
 ```
 User Request: "Create a Helm chart for nginx"
@@ -256,6 +326,57 @@ User Request: "Create a Helm chart for nginx"
    - Workflow complete
    - Deployment instructions provided
 ```
+
+### Workflow 2: Helm Management (via MCP Server)
+
+For managing Helm releases on active Kubernetes clusters:
+
+```
+User Request: "Install argo-cd from https://argoproj.github.io/argo-helm"
+    ↓
+1. Supervisor → Helm Management Agent (Discovery Phase)
+   - Connects to Helm MCP Server
+   - Searches for chart in repository
+   - Retrieves chart metadata, README, and values schema
+   - Analyzes cluster context (existing releases, namespaces)
+    ↓
+2. Helm Management Agent → HITL Gate (Confirmation)
+   - Presents chart information and options
+   - Requests user confirmation for installation
+   - Collects custom values (if needed)
+    ↓
+3. Helm Management Agent → Planning Phase
+   - Generates installation plan via MCP server
+   - Validates values against schema
+   - Renders manifests for preview
+   - Checks dependencies and prerequisites
+    ↓
+4. Helm Management Agent → HITL Gate (Approval)
+   - Shows installation plan and resource estimates
+   - Displays rendered manifests
+   - Requests final approval before execution
+    ↓
+5. Helm Management Agent → Execution Phase
+   - Executes helm install via MCP server
+   - Monitors deployment health
+   - Reports status and next steps
+    ↓
+6. Supervisor → Final Notification
+   - Installation complete
+   - Release status and access instructions provided
+```
+
+**Key Differences**:
+- **Generation Workflow**: Creates new Helm charts from scratch, outputs to local filesystem
+- **Management Workflow**: Uses Helm MCP Server to interact with live clusters, performs actual deployments
+- **Both workflows**: Include multiple HITL gates for safety and human oversight
+
+**Supported Operations** (Management Workflow):
+- 🔍 **Query**: List releases, get release status, inspect cluster state
+- 📦 **Install**: Deploy new Helm releases with validation
+- ⬆️ **Upgrade**: Update existing releases with diff preview
+- ⏮️ **Rollback**: Revert to previous revisions
+- 🗑️ **Uninstall**: Remove releases from cluster
 
 ### Human-in-the-Loop Gates
 
@@ -291,63 +412,54 @@ User Request: "Create a Helm chart for nginx"
 - **MemorySaver**: In-memory checkpointing (fallback)
 - **State Reducers**: Concurrent update handling
 
-### LLM Providers
+### User Interface & Integration
 
-- **OpenAI**: GPT-4, GPT-3.5-turbo
-- **Anthropic**: Claude Sonnet, Claude Opus
-- **Configurable**: Via LangChain's `init_chat_model` with centralized config
+- **A2UI (Agent-to-Agent UI)**: Rich interactive UI components (cards, buttons, forms) for enhanced user experience
+- **A2A Protocol**: Google's Agent-to-Agent communication protocol for enterprise agent ecosystems
+- **Programmatic UI Builders**: Type-safe UI generation without LLM hallucination
+- **Interactive HITL Gates**: Button-based approvals and structured input forms
+
+## LLM Providers
+
+k8s-autopilot supports a wide range of LLM providers including OpenAI, Anthropic, Google Gemini, Azure, and AWS Bedrock. The framework is designed to be provider-agnostic, allowing you to choose the best models for your specific requirements and budget.
 
 ### LLM Configuration
 
 #### Multi-Provider Architecture
 
-The system uses LangChain's `init_chat_model` for LLM provider support:
+The system utilizes a provider-agnostic abstraction layer to support various LLM backends:
 
-- **Multi-Provider Support**: Support for 12+ LLM providers via LangChain (OpenAI, Anthropic, Azure, Google Gemini, AWS Bedrock, etc.)
+- **Multi-Provider Support**: Unified interface for 12+ LLM providers (OpenAI, Anthropic, Azure, Google Gemini, AWS Bedrock, etc.)
 - **Model Selection**: Configurable model selection per agent via config
 - **Parameter Tuning**: Adjustable temperature, max tokens, and other parameters
 - **Provider Switching**: Easy switching between different LLM providers via configuration
 - **Auto-Inference**: Automatic provider detection from model names
 
-#### Using LLM Providers
-
-The system uses LangChain's `init_chat_model` function directly:
-
-```python
-from langchain.chat_models import init_chat_model
-
-# OpenAI (auto-inferred)
-model = init_chat_model("gpt-4o")
-
-# Anthropic (auto-inferred)
-model = init_chat_model("claude-3-opus-20240229")
-
-# Azure OpenAI
-model = init_chat_model("azure_openai:gpt-4.1", azure_deployment="gpt-4-deployment")
-
-# Google Gemini
-model = init_chat_model("google_genai:gemini-2.5-flash-lite")
-
-# AWS Bedrock
-model = init_chat_model(
-    "anthropic.claude-3-5-sonnet-20240620-v1:0",
-    model_provider="bedrock_converse"
-)
-```
-
 #### Configuration
 
-LLM providers are configured via environment variables and the Config class:
+LLM providers are configured via environment variables. The system supports a **Multi-Model Strategy**, allowing you to optimize for cost and performance by using different models for different roles.
 
-```python
-from k8s_autopilot.config.config import Config
-
-config = Config()
-llm_config = config.get_llm_config()  # Returns init_chat_model-compatible format
-
-from langchain.chat_models import init_chat_model
-model = init_chat_model(**llm_config)
+**Basic Configuration (.env):**
+```bash
+LLM_PROVIDER="openai"
+LLM_MODEL="gpt-4o"
+OPENAI_API_KEY="sk-..."
 ```
+
+**Advanced / Hybrid Configuration:**
+You can mix providers to use high-reasoning models (like `o1-mini` or `claude-3-opus`) for the Supervisor and faster/cheaper models (like `gemini-1.5-flash` or `gpt-4o-mini`) for Sub-Agents.
+
+```bash
+# Supervisor (High Reasoning)
+LLM_DEEPAGENT_PROVIDER="openai"
+LLM_DEEPAGENT_MODEL="o1-mini"
+
+# Sub-Agents (High Speed/Low Cost)
+LLM_PROVIDER="google_genai"
+LLM_MODEL="gemini-1.5-flash"
+```
+
+For detailed configuration instructions, supported status, and API key setup for all 12+ providers (OpenAI, Anthropic, Gemini, Azure, Bedrock, etc.), please refer to the **[Onboarding Guide: Configuring LLM Providers](docs/ONBOARDING_LLM_PROVIDER.md)**.
 
 #### Supported Providers
 
@@ -357,18 +469,11 @@ model = init_chat_model(**llm_config)
 - **Google Gemini**: `google_genai:gemini-2.5-flash-lite`
 - **AWS Bedrock**: Various models via `bedrock_converse` provider
 
-#### Reference Documentation
-
-- [LangChain Models Documentation](https://docs.langchain.com/oss/python/langchain/models)
-- [init_chat_model API Reference](https://api.python.langchain.com/en/latest/chat_models/langchain.chat_models.base.init_chat_model.html)
-- [Migration Guide](docs/k8s-autopilot-migration.md)
-- [Complete Onboarding Guide](docs/ONBOARDING_LLM_PROVIDER.md)
-
 ---
 
 ## 📋 Roadmap
 
-### Current Release (v0.1.0)
+### Past Releases (v0.1.0)
 
 **✅ Implemented**:
 - [x] Multi-agent architecture with supervisor pattern
@@ -378,15 +483,23 @@ model = init_chat_model(**llm_config)
 - [x] HITL gates for approval workflows
 - [x] State transformation and persistence
 - [x] Traefik IngressRoute support
+- [x] **Helm Management Agent**: Live cluster operations
 - [x] Comprehensive documentation
+
+### Current Release (v0.2.0)
+
+**✅ Implemented**:
+- [x] **Helm Management Agent**: Full lifecycle management (Install, Upgrade, Rollback) with active cluster state awareness
+- [x] **Multi-LLM Model Support**: Provider-agnostic architecture supporting a mix of models (OpenAI, Anthropic, Gemini, Bedrock) optimized for cost and performance
+- [x] **A2UI & A2A Protocol**: Seamless integration with Google's Agent-to-Agent (A2A) protocol and rich UI components via A2UI
+
 
 ### Future Releases
 
-**v0.2.0 - Enhanced Validation** (Planned):
-- [ ] Security scanning integration (Kubesec, Trivy)
+**v0.3.0 - Enhanced Validation** (Planned):
 - [ ] Policy compliance checking
 - [ ] Helm unit test generation
-- [ ] ArgoCD Application manifest generation
+- [ ] ArgoCD Application Onboarding
 - [ ] Traefik IngressRoute improvements and enhanced features
 
 **v0.3.0 - Deployment Automation** (Planned):

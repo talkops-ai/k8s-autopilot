@@ -1,0 +1,72 @@
+services:
+  k8s-autopilot:
+    image: k8s-autopilot:latest
+    container_name: k8s-autopilot
+    ports:
+      - "10102:10102"
+    environment:
+      # Required: OpenAI API Key (loaded from .env file in the same directory)
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+      # Helm MCP Server Configuration
+      # Connects to the 'helm-mcp-server' service defined below
+      - HELM_MCP_SERVER_HOST=helm-mcp-server
+      - HELM_MCP_SERVER_PORT=9000
+      - HELM_MCP_SERVER_TRANSPORT=sse
+      - HELM_MCP_SERVER_DISABLED=false
+
+      # LLM Configuration
+      - LLM_PROVIDER=openai
+      - LLM_MODEL=gpt-4o-mini
+      - LLM_HIGHER_PROVIDER=openai
+      - LLM_HIGHER_MODEL=gpt-5-mini
+      - LLM_DEEPAGENT_PROVIDER=openai
+      - LLM_DEEPAGENT_MODEL=o4-mini
+
+      # Optional: Logging level
+      - LOG_LEVEL=INFO
+    volumes:
+      # Persist generated Helm charts to a local 'helm_output' directory
+      - ./helm_output:/tmp/helm-charts
+    depends_on:
+      - helm-mcp-server
+    restart: unless-stopped
+    networks:
+      - k8s-autopilot-net
+
+  helm-mcp-server:
+    image: helm-mcp-server:latest
+    container_name: helm-mcp-server
+    environment:
+      - MCP_PORT=9000
+      - MCP_ALLOW_WRITE=true
+      - MCP_LOG_LEVEL=INFO
+      # Explicitly set KUBECONFIG location to match the volume mount
+      - KUBECONFIG=/app/.kube/config
+    volumes:
+      # Mount your local kubeconfig so the server can access your cluster
+      # NOTE: Ensure this path points to your valid kubeconfig file
+      - ${HOME}/.kube/config:/app/.kube/config:ro
+    ports:
+      # Expose port 9000 for local debugging/direct access if needed
+      - "9000:9000"
+    restart: unless-stopped
+    networks:
+      - k8s-autopilot-net
+
+  talkops-ui:
+    image: talkops-ui
+    container_name: talkops-ui
+    environment:
+      - K8S_AGENT_URL=http://localhost:10102
+    ports:
+      - "8080:80"
+    depends_on:
+      - k8s-autopilot
+    restart: unless-stopped
+    networks:
+      - k8s-autopilot-net
+
+networks:
+  k8s-autopilot-net:
+    driver: bridge

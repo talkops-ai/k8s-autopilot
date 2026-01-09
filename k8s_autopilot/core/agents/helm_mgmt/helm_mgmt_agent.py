@@ -50,7 +50,6 @@ from k8s_autopilot.core.agents.helm_mgmt.helm_mgmt_prompts import (
     QUERY_SUBAGENT_PROMPT,
     HELM_BEST_PRACTICES,
 )
-from k8s_autopilot.core.agents.helm_mgmt.history_pruning import HistoryPruningMiddleware
 
 # Agent logger
 helm_mgmt_agent_logger = AgentLogger("k8sAutopilotHelmMgmtAgent")
@@ -499,10 +498,10 @@ class HelmAgentStateMiddleware(AgentMiddleware):
         tool_args = request.tool_call.get("args", {})
         
         # Check for duplicate calls using registry
-        messages = self._get_messages_from_request(request)
-        duplicate_error = self._check_duplicate(request, messages)
-        if duplicate_error:
-            return duplicate_error
+        # messages = self._get_messages_from_request(request)
+        # duplicate_error = self._check_duplicate(request, messages)
+        # if duplicate_error:
+        #     return duplicate_error
         
         # Execute the tool
         response = await handler(request)
@@ -599,10 +598,22 @@ class HelmApprovalHITLMiddleware(AgentMiddleware):
         namespace = args.get('namespace', 'default')
 
         if tool_name == "helm_install_chart":
-            repo = args.get('repository', 'bitnami')
+            # Extract repository from chart_name if in "repo/chart" format
+            # Otherwise try to get from args, or use chart_name as fallback
+            repo = args.get('repository')
+            if not repo and '/' in chart_name:
+                # chart_name is in "repo/chart" format, extract repo part
+                repo = chart_name.split('/')[0]
+            elif not repo:
+                # Fallback: use chart_name if no repository specified
+                repo = chart_name
+            
+            # Format chart display name (show full repo/chart or just chart)
+            chart_display = chart_name if '/' in chart_name else f"{repo}/{chart_name}"
+            
             return (
                 f"⚠️ **INSTALLATION APPROVAL REQUIRED**\n\n"
-                f"**Chart**: {chart_name}\n"
+                f"**Chart**: {chart_display}\n"
                 f"**Release**: {release_name}\n"
                 f"**Namespace**: {namespace}\n"
                 f"**Repository**: {repo}\n\n"
@@ -800,6 +811,8 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
         "helm_get_installation_plan",
         "kubernetes_check_prerequisites",
         "kubernetes_get_cluster_info",
+        "helm_ensure_repository",  # Needed to add repositories before validation
+        "helm_get_release_history",  # Needed for rollback scenarios
     }
     
     QUERY_TOOL_NAMES = {
@@ -821,7 +834,7 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
         "helm_rollback_release",
         "helm_uninstall_release",
         "helm_dry_run_install",
-        "helm_monitor_deployment",
+        # "helm_monitor_deployment",
         "helm_get_release_status",
     }
     

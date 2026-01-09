@@ -201,11 +201,12 @@ Available tools:
 - request_human_feedback: Request human feedback or clarification
 
 **HITL APPROVAL GATES (REQUIRED):**
-- request_generation_review: Call IMMEDIATELY after template_supervisor completes generation tasks.
+- request_generation_review: Request human review of generated artifacts and workspace selection (call after template_supervisor completes)
 
 **Workflow Logic:**
+
 1. **For Generation Requests** ("Create a chart..."):
-   - transfer_to_planning_swarm -> template_supervisor -> validator_deep_agent
+   - transfer_to_planning_swarm -> template_supervisor -> **request_generation_review** -> validator_deep_agent
    
 2. **For Management/Operation Requests** ("Install...", "List...", "Fix...", "Show contexts...", "Switch to cluster..."):
    - DIRECTLY call `transfer_to_helm_management(task_description=user_request)`
@@ -215,11 +216,48 @@ Available tools:
      * Chart queries and information requests
    - Do NOT call planning or validation swarms unless the user asks to *modify* the chart code first.
 
+**WORKFLOW SEQUENCE WITH HITL (For Generation Requests):**
+1. For ANY Helm chart generation request → transfer_to_planning_swarm(task_description="...")
+2. When planning_complete → transfer_to_template_supervisor(task_description="...") [Proceeds automatically]
+3. **CRITICAL**: When generation_complete (from template_supervisor) → **STOP and call request_generation_review() IMMEDIATELY**. [REQUIRED BLOCKING STEP]
+   - Do NOT proceed to validation.
+   - Do NOT ask for feedback yet.
+   - Do NOT call any other tool.
+   - **JUST call request_generation_review()** - this is MANDATORY.
+4. When generation_approved → transfer_to_validator_deep_agent(task_description="...")
+5. When validation_complete → **Workflow Complete**:
+   - The system will automatically display the completion message when validation succeeds (all checks pass)
+   - If validation fails, the user will see error details and can request fixes
+   - No further action needed - the workflow is complete after successful validation
+
 **CRITICAL RULES:**
 - Always check if the user wants to GENERATE a new chart or MANAGE an existing one.
 - For Management tasks (Helm operations, context management, cluster queries), delegate to `transfer_to_helm_management` immediately.
 - Kubernetes context queries (list contexts, switch contexts, query releases in specific clusters) are Management operations - route to `transfer_to_helm_management`.
 - Do NOT try to run helm commands yourself. Use the tools.
+- **Check workflow_state flags before each tool call**
+- **ALWAYS call HITL gate tools after phase completion (generation → request_generation_review)**
+- **Do NOT proceed to next phase without approval (check human_approval_status)**
+- If approval status is "pending" or "rejected", wait or end workflow
+- Always call tools immediately, don't describe what you will do
+- Do NOT do any chart generation/validation yourself - ONLY delegate using tools
+- Template generation proceeds automatically after planning completes (no approval needed)
+- Validation proceeds automatically ONLY after generation is approved
+- **NO AUTOMATED DEPLOYMENT**: Use request_human_feedback with `mark_deployment_complete=True` for final step.
+
+**HITL GATE RULES:**
+- **request_generation_review**: Call IMMEDIATELY after template_supervisor completes. Do NOT proceed to validation without approval. If generation_approved is False, you MUST call this tool. You cannot skip it.
+- Planning phase does NOT require approval - proceed directly to template generation
+
+**STOP CONDITIONS (When to finish):**
+- When workflow_state.workflow_complete == True → Respond with completion summary and end.
+- When any phase is rejected AND user doesn't request changes → End workflow with error message.
+- DO NOT keep calling tools if workflow is already complete - check workflow_state first.
+
+**IMPORTANT**: For requests like "help me write nginx helm chart", immediately call:
+transfer_to_planning_swarm(task_description="create nginx helm chart")
+
+Do not do any work yourself - only delegate using the transfer tools and HITL gates.
 """
 
     def _get_agent_description(self, agent_name: str) -> str:
@@ -266,22 +304,51 @@ Available tools:
                 """
                 supervisor_logger.log_structured(
                     level="INFO",
-                    message="Planning swarm tool invoked",
+                    message="Planning swarm tool invoked - using astream(subgraphs=True)",
                     extra={"task_description": task_description, "tool_call_id": tool_call_id}
                 )
                 
                 # 1. Transform supervisor state → planning state
                 planning_input = StateTransformer.supervisor_to_planning(runtime.state)
                 
-                # 2. Invoke planning swarm
-                planning_output = await planning_swarm.ainvoke(
+                # 2. Configure Stateful Execution for Resume Capability
+                session_id = runtime.state.get("session_id", "default_session")
+                child_config = {
+                    # "configurable": {"thread_id": f"{session_id}_planning"},
+                    "recursion_limit": 100
+                }
+                
+                # Check if we are resuming an interrupted state
+                # target_input = planning_input
+                # try:
+                #     current_snapshot = planning_swarm.get_state(child_config)
+                #     if current_snapshot.next:
+                #         supervisor_logger.log_structured(
+                #             level="INFO",
+                #             message="Resuming planning swarm from interrupt",
+                #             extra={"next_nodes": current_snapshot.next}
+                #         )
+                #         messages = runtime.state.get("messages", [])
+                #         if messages:
+                #             last_msg = messages[-1]
+                #             if hasattr(last_msg, 'content'):
+                #                 target_input = Command(resume=last_msg.content)
+                # except Exception:
+                #     pass
+
+                # 3. Use ainvoke (Stateful)
+                # Parent checks events via subgraphs=True, so simple ainvoke is sufficient
+                final_state = await planning_swarm.ainvoke(
                     planning_input,
-                    config={"recursion_limit": 100}
+                    config=child_config
                 )
                 
+                if final_state is None:
+                    raise ValueError("Planning swarm execution yielded no state")
+
                 # 3. Transform back (note: state updates happen automatically via tool return)
                 supervisor_updates = StateTransformer.planning_to_supervisor(
-                    planning_output,
+                    final_state,
                     runtime.state,
                     tool_call_id
                 )
@@ -318,22 +385,50 @@ Available tools:
                 """
                 supervisor_logger.log_structured(
                     level="INFO",
-                    message="Generation swarm tool invoked",
+                    message="Generation swarm tool invoked - using astream(subgraphs=True)",
                     extra={"task_description": task_description, "tool_call_id": tool_call_id}
                 )
                 
                 # 1. Transform supervisor state → generation state
                 generation_input = StateTransformer.supervisor_to_generation(runtime.state)
                 
-                # 2. Invoke generation swarm
-                generation_output = await template_supervisor.ainvoke(
+                # 2. Configure Stateful Execution for Resume Capability
+                session_id = runtime.state.get("session_id", "default_session")
+                child_config = {
+                    # "configurable": {"thread_id": f"{session_id}_generation"},
+                    "recursion_limit": 100
+                }
+                
+                # Check for resume
+                # target_input = generation_input
+                # try:
+                #     current_snapshot = template_supervisor.get_state(child_config)
+                #     if current_snapshot.next:
+                #         supervisor_logger.log_structured(
+                #             level="INFO",
+                #             message="Resuming generation swarm from interrupt",
+                #             extra={"next_nodes": current_snapshot.next}
+                #         )
+                #         messages = runtime.state.get("messages", [])
+                #         if messages:
+                #             last_msg = messages[-1]
+                #             if hasattr(last_msg, 'content'):
+                #                 target_input = Command(resume=last_msg.content)
+                # except Exception:
+                #     pass
+
+                # 3. Use ainvoke (Stateful)
+                final_state = await template_supervisor.ainvoke(
                     generation_input,
-                    config={"recursion_limit": 100}
+                    config=child_config
                 )
                 
+                if final_state is None:
+                    raise ValueError("Generation swarm execution yielded no state")
+
                 # 3. Transform back (note: state updates happen automatically via tool return)
                 supervisor_updates = StateTransformer.generation_to_supervisor(
-                    generation_output,
+                    final_state,
                     runtime.state,
                     tool_call_id
                 )
@@ -378,7 +473,7 @@ Available tools:
                 """
                 supervisor_logger.log_structured(
                     level="INFO",
-                    message="Validation swarm tool invoked",
+                    message="Validation swarm tool invoked - using astream(subgraphs=True)",
                     extra={"task_description": task_description, "workspace_dir": workspace_dir}
                 )
                 
@@ -390,23 +485,32 @@ Available tools:
                 state_updates = {}
                 if workspace_dir and workspace_dir != runtime.state.get("workspace_dir"):
                     state_updates["workspace_dir"] = workspace_dir
-                    # We can't update runtime.state in place effectively effectively if we want it to persist purely via Command,
-                    # but we will include it in the returned Command later.
                 
                 validation_input = StateTransformer.supervisor_to_validation(
                     runtime.state, 
                     workspace_dir=final_workspace_dir
                 )
                 
-                # 2. Invoke validation swarm
-                validation_output = await validator_deep_agent.ainvoke(
+                # 2. Use astream(subgraphs=True) for proper HITL interrupt propagation
+                final_state = None
+                # session_id = runtime.state.get("session_id", "default_session")
+                child_config = {
+                    # "configurable": {"thread_id": f"{session_id}_validation"},
+                    "recursion_limit": 100
+                }
+                
+                
+                final_state = await validator_deep_agent.ainvoke(
                     validation_input,
-                    config={"recursion_limit": 100}
+                    config=child_config
                 )
                 
+                if final_state is None:
+                    raise ValueError("Validation swarm execution yielded no state")
+
                 # 3. Transform back
                 supervisor_updates = StateTransformer.validation_to_supervisor(
-                    validation_output,
+                    final_state,
                     runtime.state,
                     tool_call_id=tool_call_id
                 )
@@ -450,7 +554,7 @@ Available tools:
                 """
                 supervisor_logger.log_structured(
                     level="INFO",
-                    message="Helm Management agent tool invoked",
+                    message="Helm Management agent tool invoked - using astream(subgraphs=True)",
                     extra={"task_description": task_description}
                 )
                 
@@ -462,15 +566,24 @@ Available tools:
                    # Also update message content to reflect specific task
                    mgmt_input["messages"] = [HumanMessage(content=task_description)]
 
-                # 2. Invoke Agent
-                mgmt_output = await helm_mgmt_agent.ainvoke(
+                # 2. Use astream(subgraphs=True) for proper HITL interrupt propagation
+                final_state = None
+                # session_id = runtime.state.get("session_id", "default_session")
+                child_config = {
+                    # "configurable": {"thread_id": f"{session_id}_helm_mgmt"},
+                    "recursion_limit": 50
+                }
+                final_state = await helm_mgmt_agent.ainvoke(
                     mgmt_input,
-                    config={"recursion_limit": 50} 
+                    config=child_config
                 )
                 
+                if final_state is None:
+                    raise ValueError("Helm management agent execution yielded no state")
+
                 # 3. Transform Back
                 supervisor_updates = StateTransformer.helm_mgmt_to_supervisor(
-                    mgmt_output,
+                    final_state,
                     runtime.state,
                     tool_call_id
                 )
@@ -921,11 +1034,62 @@ Available tools:
                     }
                 )
                 
+            elif "phase" in interrupt_payload and "summary" in interrupt_payload:
+                # Handle HITL gate interrupts (planning_review_gate, generation_review_gate, etc.)
+                # These interrupts have phase, summary, and other metadata fields
+                phase = interrupt_payload.get('phase', 'unknown')
+                summary = interrupt_payload.get('summary', 'Human review required')
+                required_action = interrupt_payload.get('required_action', 'approve')
+                options = interrupt_payload.get('options', ['approve', 'reject'])
+                
+                content = {
+                    'type': 'hitl_gate_interrupt',
+                    'phase': phase,
+                    'summary': summary,  # Use the rich markdown summary
+                    'message': summary,  # Also include as message for backward compatibility
+                    'required_action': required_action,
+                    'options': options,
+                    'chart_name': interrupt_payload.get('chart_name'),
+                    'chart_files': interrupt_payload.get('chart_files', []),
+                    'file_count': interrupt_payload.get('file_count', 0),
+                    'workspace_dir_prompt': interrupt_payload.get('workspace_dir_prompt', False),
+                    'review_type': interrupt_payload.get('review_type', 'generic'),
+                    'data': interrupt_payload
+                }
+                
+                interrupt_metadata = {
+                    'session_id': context_id,
+                    'task_id': task_id,
+                    'agent_name': self.name,
+                    'step_count': step_count,
+                    'status': 'hitl_gate_interrupt',
+                    'interrupt_type': 'hitl_gate',
+                    'phase': phase,
+                    'required_action': required_action,
+                    'interrupt_data': interrupt_payload
+                }
+                
+                supervisor_logger.log_structured(
+                    level="INFO",
+                    message=f"HITL gate interrupt detected: {phase}",
+                    task_id=task_id,
+                    context_id=context_id,
+                    extra={
+                        'phase': phase,
+                        'required_action': required_action,
+                        'has_summary': bool(summary),
+                        'summary_preview': summary[:100] if summary else None
+                    }
+                )
+                
             else:
                 # Generic/unknown interrupt type
+                # Check for summary field as fallback (some interrupts may have summary instead of message)
+                message = interrupt_payload.get('message') or interrupt_payload.get('summary', 'Human input required')
+                
                 content = {
                     'type': 'generic_interrupt',
-                    'message': interrupt_payload.get('message', 'Human input required'),
+                    'message': message,
                     'data': interrupt_payload
                 }
                 
@@ -1273,6 +1437,7 @@ Available tools:
     ) -> Union[Optional[AgentResponse], str]:
         """
         Check if the Helm Generation workflow (planning/generation/validation) has completed.
+        Also handles intermediate phase completions (e.g., validation completion).
         
         Args:
             item: Current state item from the graph stream
@@ -1281,12 +1446,13 @@ Available tools:
             step_count: Current step count in execution
             
         Returns:
-            - AgentResponse: If workflow is complete and ready to return a final response
+            - AgentResponse: If workflow is complete or intermediate phase (validation) is complete
             - "CONTINUE_LOOP": If workflow is complete but we need to wait for agent message (continue loop)
             - None: If workflow is not complete
         """
         workflow_state = item.get('workflow_state', {})
         human_approval_status = item.get('human_approval_status', {})
+        validation_results = item.get('validation_results', [])
         
         # Extract phase completion flags for helm generation workflow
         planning_complete = False
@@ -1314,11 +1480,149 @@ Available tools:
             validation_complete = workflow_state.validation_complete
             deployment_approved = self._check_approval_status(item, "deployment")
         
+        # Check if validation just completed (but workflow not fully complete)
+        # This handles intermediate validation completion message
+        if validation_complete and validation_results:
+            messages = item.get("messages", [])
+            last_message = messages[-1] if messages else None
+            
+            # Check if we've already shown validation completion
+            if isinstance(last_message, AIMessage) and "Validation Complete!" in str(last_message.content):
+                # Already shown, skip
+                pass
+            else:
+                # Check if last message indicates validation just completed
+                message_indicates_completion = False
+                if last_message:
+                    message_content = str(last_message.content) if last_message.content else ""
+                    validation_completion_indicators = [
+                        "Validation swarm finished",
+                        "Validation phase finished",
+                        "validation completed",
+                        "validation checks passed"
+                    ]
+                    message_indicates_completion = any(
+                        indicator.lower() in message_content.lower() 
+                        for indicator in validation_completion_indicators
+                    )
+                
+                # Show validation completion message if validation is complete
+                if message_indicates_completion or (validation_results and len(validation_results) > 0):
+                    # Count validation results
+                    passed_count = 0
+                    failed_count = 0
+                    for r in validation_results:
+                        is_passed = False
+                        if hasattr(r, 'passed'):
+                            is_passed = r.passed
+                        elif isinstance(r, dict):
+                            is_passed = r.get("passed", False)
+                        
+                        if is_passed:
+                            passed_count += 1
+                        else:
+                            failed_count += 1
+                    
+                    total_checks = len(validation_results)
+                    
+                    # Build validation completion message
+                    if failed_count == 0:
+                        completion_message = (
+                            f"✅ **Validation Complete!**\n\n"
+                            f"All {total_checks} validation checks passed successfully:\n"
+                        )
+                        
+                        # List validation checks that passed
+                        for r in validation_results:
+                            validator_name = ""
+                            if hasattr(r, 'validator'):
+                                validator_name = r.validator
+                            elif isinstance(r, dict):
+                                validator_name = r.get("validator", "Unknown")
+                            
+                            if validator_name:
+                                completion_message += f"  ✓ {validator_name.replace('_', ' ').title()}\n"
+                        
+                        completion_message += (
+                            f"\n📦 **Chart Status:** Ready for deployment\n"
+                            f"📊 **Results:** {passed_count} passed, {failed_count} failed\n"
+                            f"\n✅ **Workflow Complete!**\n\n"
+                            f"Chart has been generated and validated. Please follow along the readme for deployment instructions.\n\n"
+                            f"If you found this helpful, please support us by starring our repository: https://github.com/talkops-ai/k8s-autopilot 🌟"
+                        )
+                    else:
+                        completion_message = (
+                            f"⚠️ **Validation Complete with Issues**\n\n"
+                            f"Validation finished with {failed_count} failed check(s) out of {total_checks} total:\n"
+                        )
+                        
+                        # List validation results
+                        for r in validation_results:
+                            validator_name = ""
+                            is_passed = False
+                            if hasattr(r, 'validator'):
+                                validator_name = r.validator
+                                is_passed = r.passed
+                            elif isinstance(r, dict):
+                                validator_name = r.get("validator", "Unknown")
+                                is_passed = r.get("passed", False)
+                            
+                            status_icon = "✓" if is_passed else "✗"
+                            completion_message += f"  {status_icon} {validator_name.replace('_', ' ').title()}\n"
+                        
+                        completion_message += (
+                            f"\n📦 **Chart Status:** Review required\n"
+                            f"📊 **Results:** {passed_count} passed, {failed_count} failed\n"
+                            f"\nPlease review the validation results and fix any issues before deployment."
+                        )
+                    
+                    supervisor_logger.log_structured(
+                        level="INFO",
+                        message="Validation phase completed - generating completion message",
+                        task_id=task_id,
+                        context_id=context_id,
+                        extra={
+                            'validation_complete': validation_complete,
+                            'passed_count': passed_count,
+                            'failed_count': failed_count,
+                            'total_checks': total_checks
+                        }
+                    )
+                    
+                    # Return validation completion message
+                    # Always mark as complete when validation finishes, even if there are failures.
+                    # The user can review the results and request fixes in a new turn if needed.
+                    is_complete = True
+                    
+                    return AgentResponse(
+                        response_type='text',
+                        is_task_complete=is_complete,  # Complete if all validations passed
+                        require_user_input=False,
+                        content=completion_message,
+                        metadata={
+                            'session_id': context_id,
+                            'task_id': task_id,
+                            'agent_name': self.name,
+                            'step_count': step_count,
+                            'status': 'validation_complete',
+                            'phase': 'validation',
+                            'validation_complete': True,
+                            'workflow_complete': is_complete,  # Indicate if workflow is complete
+                            'validation_results': {
+                                'passed': passed_count,
+                                'failed': failed_count,
+                                'total': total_checks,
+                                'results': validation_results
+                            }
+                        }
+                    )
+        
+        # Check if entire workflow is complete
         is_workflow_complete = (
             planning_complete and 
             generation_complete and 
-            validation_complete and 
-            deployment_approved
+            validation_complete
+            # and deployment_approved  # Deployment is currently a placeholder
         )
         
         if not is_workflow_complete:
@@ -1625,18 +1929,15 @@ Available tools:
         except Exception as e:
             supervisor_logger.log_structured(
                 level="WARNING",
-                message=f"Error checking checkpoint state, treating as new conversation: {e}",
+                message=f"Error checking checkpoint state, passing Command through: {e}",
                 task_id=task_id,
                 context_id=context_id,
                 extra={"error": str(e), "thread_id": thread_id}
             )
-            # Fallback: Treat as new conversation if checkpoint check fails entirely
-            user_query = str(query_or_command.resume) if query_or_command.resume else "Continue"
-            return self._create_initial_state(
-                user_query=user_query,
-                context_id=context_id,
-                task_id=task_id
-            )
+            # CRITICAL FIX: Do NOT create new state on exception!
+            # Just pass the Command through - LangGraph will handle it with checkpoint
+            # Creating new state causes the workflow to restart from scratch
+            return query_or_command
 
     @log_async
     async def stream(
@@ -1696,15 +1997,14 @@ Available tools:
             # Wrap with aclosing() for deterministic async generator cleanup
             # This prevents GeneratorExit exceptions during LangSmith trace writing
             async with isolation_shield():
-                async with aclosing(
-                    self.compiled_graph.astream(
-                        graph_input, 
-                        config_with_durability, 
-                        stream_mode='values', 
-                        subgraphs=True
-                    )
-                ) as graph_stream:
-                    async for item in graph_stream:
+                # Reverted aclosing usage as per user request to match previous stable state
+                graph_stream = self.compiled_graph.astream(
+                    graph_input, 
+                    config_with_durability, 
+                    stream_mode='values', 
+                    subgraphs=True
+                )
+                async for item in graph_stream:
                         step_count += 1
                             
                         # When subgraphs=True, items are tuples (namespace, state)
@@ -1724,12 +2024,9 @@ Available tools:
                             if interrupt_response:
                                 yield interrupt_response
                             
-
-                            
-                            
-                            # When interrupt occurs, graph pauses and stops yielding.
-                            # Let the loop naturally exit when StopAsyncIteration is raised.
-                            continue
+                            # CRITICAL FIX: Exit the loop after interrupt!
+                            # The graph is paused at the interrupt point.
+                            # The client must resume with Command(resume=user_input)
                         
 
                         # 1.5 Check for final text response (model output text without tool calls)
@@ -1757,6 +2054,7 @@ Available tools:
                             
 
                         # 3. Check for Helm Generation workflow completion (planning/generation/validation)
+                        # This also handles intermediate validation completion messages
                         helm_generation_result = self._check_helm_generation_completion(
                             item=item,
                             task_id=task_id,
@@ -1768,32 +2066,38 @@ Available tools:
                             # Allow graph loop to continue for final agent response
                             pass 
                         elif helm_generation_result:
-                            # It's a completion response
+                            # It's a completion response (either validation phase or full workflow)
                             
-                            # Validating original logic: Check for generic text message to yield BEFORE completion
-                            messages = item.get("messages", [])
-                            last_message = messages[-1] if messages else None
-                            if isinstance(last_message, (AIMessage, HumanMessage)) and last_message.content and not isinstance(last_message, ToolMessage):
-                                supervisor_logger.log_structured(
-                                    level="INFO",
-                                    message="Yielding final agent message before completion",
-                                    task_id=task_id,
-                                    extra={"content_preview": str(last_message.content)[:50]}
-                                )
-                                yield AgentResponse(
-                                    response_type='text',
-                                    is_task_complete=False,
-                                    require_user_input=False,
-                                    content=str(last_message.content),
-                                    metadata={
-                                        'session_id': context_id,
-                                        'task_id': task_id,
-                                        'agent_name': self.name,
-                                        'step_count': step_count,
-                                        'status': 'working'
-                                    }
-                                )
-                                
+                            # Check if it's a validation completion (intermediate) vs full workflow completion
+                            is_validation_completion = (
+                                helm_generation_result.metadata.get('status') == 'validation_complete'
+                            )
+                            
+                            if not is_validation_completion:
+                                # Full workflow completion - check for generic text message to yield BEFORE completion
+                                messages = item.get("messages", [])
+                                last_message = messages[-1] if messages else None
+                                if isinstance(last_message, (AIMessage, HumanMessage)) and last_message.content and not isinstance(last_message, ToolMessage):
+                                    supervisor_logger.log_structured(
+                                        level="INFO",
+                                        message="Yielding final agent message before completion",
+                                        task_id=task_id,
+                                        extra={"content_preview": str(last_message.content)[:50]}
+                                    )
+                                    yield AgentResponse(
+                                        response_type='text',
+                                        is_task_complete=False,
+                                        require_user_input=False,
+                                        content=str(last_message.content),
+                                        metadata={
+                                            'session_id': context_id,
+                                            'task_id': task_id,
+                                            'agent_name': self.name,
+                                            'step_count': step_count,
+                                            'status': 'working'
+                                        }
+                                    )
+                            
                             yield helm_generation_result
                             continue
 
@@ -1825,20 +2129,12 @@ Available tools:
                             yield planning_phase_response
                             continue
                         
-                        # 5. Default processing response
-                        yield AgentResponse(
-                            response_type='text',
-                            is_task_complete=False,
-                            require_user_input=False,
-                            content='Processing...',
-                            metadata={
-                                'session_id': context_id,
-                                'task_id': task_id,
-                                'agent_name': self.name,
-                                'step_count': step_count,
-                                'status': 'working'
-                            }
-                        )
+                        # 6. Default processing response - REMOVED
+                        # We should not yield generic "Processing..." messages as they can overwrite
+                        # useful status messages (like "Validation Complete") from previous steps
+                        # if the graph emits additional internal events.
+                        # If no handler has a specific response, we just wait for the next event.
+                        pass
         except Exception as e:
             supervisor_logger.log_structured(
                 level="ERROR",

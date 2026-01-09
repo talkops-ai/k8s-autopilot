@@ -69,9 +69,16 @@ class A2AAutoPilotExecutor(AgentExecutor, ExecutorValidationMixin):
             String representation of the content
         """
         if isinstance(content, dict):
-            # For interrupt responses, prefer the 'question' field if available
-            if 'question' in content:
+            # For interrupt responses, prefer rich content fields in order:
+            # 1. summary (rich markdown for HITL gate interrupts)
+            # 2. question (for feedback requests)
+            # 3. message (generic message)
+            if 'summary' in content:
+                return content['summary']
+            elif 'question' in content:
                 return content['question']
+            elif 'message' in content:
+                return content['message']
             else:
                 # Otherwise serialize the entire dict to JSON
                 return json.dumps(content, indent=2)
@@ -420,11 +427,12 @@ class A2AAutoPilotExecutor(AgentExecutor, ExecutorValidationMixin):
                         )
                         # When LangGraph's interrupt() is called (due to require_user_input), 
                         # the graph stops yielding new items and the async for loop will naturally exhaust.
-                        # We must NOT break here - breaking would close the generator prematurely,
-                        # interrupting checkpoint writes and causing GeneratorExit cascades.
-                        # Instead, let the loop continue until the supervisor's generator naturally exhausts.
-                        # This allows LangGraph to complete checkpoint persistence before the generator closes.
-                        # On resume, the checkpoint will be found and execution will continue from the saved state.
+                        # breaking closes the generator prematurely, causing GeneratorExit cascade that
+                        # interrupts LangGraph's checkpoint writes.
+                        # However, since we have sent final=True to the updater, we MUST stop 
+                        # processing this turn. The `supervisor_agent.stream` should have already
+                        # handled the interrupt checkpointing before yielding this item.
+                        break
                     else:
                         # Normal status update (not complete, not requiring user input)
                         # This code runs when neither is_task_complete nor require_user_input is True

@@ -158,12 +158,7 @@ def main(host: str, port: int, agent_card: str, config_file: str):
         app = server.build()
         app.add_middleware(
             CORSMiddleware,
-            allow_origins=[
-                "http://localhost:5173",
-                "https://localhost:5173",
-                "http://127.0.0.1:5173",
-                "https://127.0.0.1:5173",
-            ],
+            allow_origins=["*"],
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],

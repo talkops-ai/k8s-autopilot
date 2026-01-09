@@ -79,12 +79,23 @@ class ValidateRequirementsHITLMiddleware(AgentMiddleware):
                 # Check if clarifications are needed
                 clarifications = validation_result.get("clarifications_needed", [])
                 if clarifications:
+                    # Format clarifications as a numbered list for better readability
+                    formatted_clarifications = []
+                    for idx, clarification in enumerate(clarifications, start=1):
+                        # Clean up the clarification text (remove extra whitespace, ensure proper formatting)
+                        cleaned_clarification = clarification.strip()
+                        # Format as numbered list item
+                        formatted_clarifications.append(f"{idx}. {cleaned_clarification}")
+                    
+                    # Join with single newline for readable list format
+                    formatted_questions = "\n".join(formatted_clarifications)
+                    
                     # Prepare interrupt payload
                     interrupt_payload = {
                         "pending_feedback_requests": {
                             "status": "input_required",
                             "session_id": request.runtime.state.get("session_id", "unknown"),
-                            "question": "I apologize, but I missed asking a few details in our previous conversation. Could you please clarify the following items so I can finalize the plan?\n\n" + "\n".join(clarifications),
+                            "question": f"I apologize, but I missed asking a few details in our previous conversation. Could you please clarify the following items so I can finalize the plan?\n\n{formatted_questions}",
                             "context": "Requirements validation identified missing information.",
                             "active_phase": "planning",
                             "tool_name": "validate_requirements",
@@ -106,7 +117,8 @@ class ValidateRequirementsHITLMiddleware(AgentMiddleware):
                         # Append feedback to updated_user_requirements
                         first_question = request.runtime.state.get("question_asked", "Initial Clarification Request")
                         first_response = request.runtime.state.get("updated_user_requirements", "No response recorded")
-                        validation_question = "\n".join(clarifications)
+                        # Use the same formatted questions that were shown to the user
+                        validation_question = formatted_questions
                         
                         new_requirements = (
                             f"Discussion happened so far:\n\n"

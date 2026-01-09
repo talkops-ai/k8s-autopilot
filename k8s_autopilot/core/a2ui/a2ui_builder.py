@@ -664,8 +664,13 @@ def _is_approval_request(content: Any, metadata: Dict[str, Any]) -> bool:
     if isinstance(content, dict) and content.get('type') == 'tool_call_approval_request':
         return True
     
-    # Check for approval-related keywords in content
+    # Remove generic keyword matching as it causes confusion for conversational requests.
+    # We only want to show Approve/Reject buttons for explicit System Gates (hitl_gate, etc.)
+    # or formal Tool Approval requests.
+    # Conversational requests (e.g. "Would you like to review...?") should rely on text input.
     content_str = str(content).lower() if content else ""
+
+    """
     approval_keywords = [
         'approve', 'reject', 'confirm', 'review plan', 'review the',
         'proceed with', 'should i continue', 'ready to proceed',
@@ -675,6 +680,7 @@ def _is_approval_request(content: Any, metadata: Dict[str, Any]) -> bool:
     for keyword in approval_keywords:
         if keyword in content_str:
             return True
+    """
     
     # Check for informational patterns (redirects, capability explanations)
     info_keywords = [
@@ -732,7 +738,15 @@ def build_a2ui_for_response(
             target_content = content
             
             # Check for specific HITL types from Supervisor
-            if content.get('type') == 'tool_call_approval_request':
+            if content.get('type') == 'hitl_gate_interrupt':
+                # HITL gate interrupts (planning_review_gate, generation_review_gate, etc.)
+                # Format: {'type': 'hitl_gate_interrupt', 'summary': '...', 'phase': '...', 'chart_name': '...', etc.}
+                target_content = content
+                # Use summary as the question/message (it contains the rich markdown formatted content)
+                target_content['question'] = target_content.get('summary', target_content.get('message', 'Human review required'))
+                target_content['context'] = target_content.get('data', {})
+                
+            elif content.get('type') == 'tool_call_approval_request':
                  # Direct Supervisor Output for Use Case 4
                  # Format: {'type': 'tool_call_approval_request', 'reason': '...', 'tool_name': '...', 'phase': '...'}
                  target_content = content
@@ -757,7 +771,8 @@ def build_a2ui_for_response(
                     target_content['context'] = f"Tool: {target_content.get('tool_name', 'unknown')}"
             
             # Extract fields with support for various schema variations
-            question = target_content.get('question', target_content.get('message', content_str))
+            # Check for summary first (rich markdown content), then question, then message
+            question = target_content.get('summary', target_content.get('question', target_content.get('message', content_str)))
             
             # Map phase/active_phase
             phase = target_content.get('phase', target_content.get('active_phase', metadata.get('phase', 'unknown')))

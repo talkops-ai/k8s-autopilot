@@ -50,11 +50,14 @@ class StateTransformer:
         else:
             status_value = str(status)  # Ensure it's a string
         
+        # Preserve existing plan/requirements if available to prevent loop
+        existing_plan = supervisor_state.get("planner_output")
+
         return {
             "messages": messages,
             "remaining_steps": None,  # Required by Deep Agent TodoListMiddleware
             "active_agent": "requirement_analyzer",  # Start with supervisor
-            "chart_plan": None,
+            "chart_plan": existing_plan,
             "status": status_value,  # Use string value to avoid serialization warnings
             "todos": [],
             "workspace_files": {},
@@ -101,6 +104,9 @@ class StateTransformer:
                 "current_phase": "planning"
             }
 
+        # Extract planning output (chart_plan)
+        planning_output = planning_state.get("chart_plan") or planning_state.get("handoff_data")
+        
         # Create summary of the plan for the LLM context
         try:
              # Convert to dict for summary extraction
@@ -129,7 +135,7 @@ class StateTransformer:
         return {
             "messages": summary_messages,
             "llm_input_messages": summary_messages,
-            "planner_output": planning_state.get("chart_plan") or planning_state.get("handoff_data"),
+            "planner_output": planning_output,
             "workflow_state": updated_workflow_state
         }
     
@@ -278,52 +284,58 @@ class StateTransformer:
         if generated_chart:
             import os
             try:
-                os.makedirs(chart_path, exist_ok=True)
-                os.makedirs(f"{chart_path}/templates", exist_ok=True)
-                
-                # Write all files as-is (content already has proper newlines)
-                for filename, content in generated_chart.items():
-                    try:
-                        # Content already has actual newline characters (\n) - no decoding needed
-                        # Just ensure it's a string type
-                        if not isinstance(content, str):
-                            content = str(content)
-                        
-                        # Determine file path and create directory structure
-                        file_path = f"{chart_path}/{filename}"
-                        
-                        # Handle templates/ subdirectory
-                        if filename.startswith("templates/"):
-                            template_name = filename.replace("templates/", "")
-                            file_path = f"{chart_path}/templates/{template_name}"
-                        elif "/" in filename and not filename.startswith("templates/"):
-                            # Handle other subdirectories (e.g., "charts/", "crds/")
-                            dir_path = f"{chart_path}/{os.path.dirname(filename)}"
-                            os.makedirs(dir_path, exist_ok=True)
+                # Directory-Level Check (The Better Approach)
+                # If the chart directory already exists, assume it's initialized and modified.
+                # Do NOT overwrite anything. This preserves agent fixes during resume loops.
+                if os.path.exists(chart_path) and os.path.exists(f"{chart_path}/Chart.yaml"):
+                    files_written.append("(skipped, chart directory exists)")
+                    # We skip the entire writing loop
+                else:
+                    # Initialize: Create chart from state
+                    os.makedirs(chart_path, exist_ok=True)
+                    os.makedirs(f"{chart_path}/templates", exist_ok=True)
+                    
+                    # Write all files as-is
+                    for filename, content in generated_chart.items():
+                        try:
+                            # Content already has actual newline characters (\n) - no decoding needed
+                            if not isinstance(content, str):
+                                content = str(content)
+                            
+                            # Determine file path and create directory structure
                             file_path = f"{chart_path}/{filename}"
-                        
-                        # Ensure parent directory exists (double-check)
-                        parent_dir = os.path.dirname(file_path)
-                        if parent_dir and parent_dir != chart_path:
-                            os.makedirs(parent_dir, exist_ok=True)
-                        
-                        # Write file with proper encoding and newline handling
-                        # Use newline="" to preserve original line endings
-                        with open(file_path, "w", encoding="utf-8", newline="") as f:
-                            f.write(content)
-                        files_written.append(filename)
-                    except Exception as e:
-                        # Log but continue - agent can write files itself if needed
-                        state_transformer_logger.log_structured(
-                            level="WARNING",
-                            message=f"Failed to pre-write chart file: {filename}",
-                            extra={
-                                "filename": filename,
-                                "error": str(e),
-                                "error_type": type(e).__name__,
-                                "chart_path": chart_path
-                            }
-                        )
+                            
+                            # Handle templates/ subdirectory
+                            if filename.startswith("templates/"):
+                                template_name = filename.replace("templates/", "")
+                                file_path = f"{chart_path}/templates/{template_name}"
+                            elif "/" in filename and not filename.startswith("templates/"):
+                                # Handle other subdirectories
+                                dir_path = f"{chart_path}/{os.path.dirname(filename)}"
+                                os.makedirs(dir_path, exist_ok=True)
+                                file_path = f"{chart_path}/{filename}"
+                            
+                            # Ensure parent directory exists
+                            parent_dir = os.path.dirname(file_path)
+                            if parent_dir and parent_dir != chart_path:
+                                os.makedirs(parent_dir, exist_ok=True)
+                            
+                            # Write file with proper encoding and newline handling
+                            with open(file_path, "w", encoding="utf-8", newline="") as f:
+                                f.write(content)
+                            files_written.append(filename)
+                        except Exception as e:
+                            # Log but continue
+                            state_transformer_logger.log_structured(
+                                level="WARNING",
+                                message=f"Failed to pre-write chart file: {filename}",
+                                extra={
+                                    "filename": filename,
+                                    "error": str(e),
+                                    "error_type": type(e).__name__,
+                                    "chart_path": chart_path
+                                }
+                            )
             except Exception as e:
                 # If directory creation fails, agent will handle it
                 state_transformer_logger.log_structured(
