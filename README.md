@@ -12,7 +12,7 @@
 
 See k8s-autopilot in action! Watch how it generates production-ready Helm charts and manages cluster deployments through natural language conversations:
 
-<video src="demo/autopilot_demo.mov" width="100%" controls></video>
+**▶️ [Watch Demo Video](demo/autopilot_demo.mp4)** *(Click to download/view)*
 
 > **💡 Quick Overview**: The demo showcases installing ArgoCD from a public Helm repository through natural language. Watch the agent discover the chart, plan the installation, and deploy to a Kubernetes cluster with interactive UI components and Human-in-the-Loop approval gates.
 
