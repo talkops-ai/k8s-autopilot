@@ -98,7 +98,7 @@ Central orchestrator that coordinates workflow phases and manages state flow bet
 - HITL gate management
 - Stream processing with interrupt detection
 
-📖 **[Supervisor Agent Documentation](./docs/supervisor/README.md)**
+📖 **[Supervisor Agent Documentation](./docs/helm_generation/supervisor/README.md)**
 
 #### 2. **Planner Agent**
 Deep agent that analyzes requirements and designs Kubernetes architecture.
@@ -109,7 +109,7 @@ Deep agent that analyzes requirements and designs Kubernetes architecture.
 - Architecture planning following Bitnami standards
 - Resource estimation and scaling strategy
 
-📖 **[Planner Agent Documentation](./docs/planner/planner-agent-documentation.md)**
+📖 **[Planner Agent Documentation](./docs/helm_generation/planner/planner-agent-documentation.md)**
 
 #### 3. **Template Coordinator Agent**
 LangGraph-based coordinator that generates Helm chart templates and values files.
@@ -120,7 +120,7 @@ LangGraph-based coordinator that generates Helm chart templates and values files
 - Phase-based workflow (core → conditional → documentation)
 - Traefik IngressRoute generation
 
-📖 **[Template Coordinator Documentation](./docs/template/README.md)**
+📖 **[Template Coordinator Documentation](./docs/helm_generation/template/README.md)**
 
 #### 4. **Generator Agent (Validator)**
 Deep agent that validates, self-heals, and ensures charts are production-ready.
@@ -131,7 +131,7 @@ Deep agent that validates, self-heals, and ensures charts are production-ready.
 - Retry logic with human escalation
 - Workspace file management
 
-📖 **[Generator Agent Documentation](./docs/generator/README.md)**
+📖 **[Generator Agent Documentation](./docs/helm_generation/generator/README.md)**
 
 #### 5. **Helm Management Deep Agent**
 Specialized operational agent for managing Helm releases on active clusters.
