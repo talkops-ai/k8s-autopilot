@@ -13,7 +13,7 @@ from langchain_core.messages import ToolMessage
 from k8s_autopilot.core.state.base import PlanningSwarmState
 from k8s_autopilot.utils.logger import AgentLogger, log_sync
 from k8s_autopilot.config.config import Config
-from k8s_autopilot.core.llm.llm_provider import LLMProvider
+from langchain.chat_models import init_chat_model
 from k8s_autopilot.core.agents.base_agent import BaseSubgraphAgent
 from k8s_autopilot.core.agents.helm_generator.planner.tools.parser import (
     parse_requirements, 
@@ -79,12 +79,23 @@ class ValidateRequirementsHITLMiddleware(AgentMiddleware):
                 # Check if clarifications are needed
                 clarifications = validation_result.get("clarifications_needed", [])
                 if clarifications:
+                    # Format clarifications as a numbered list for better readability
+                    formatted_clarifications = []
+                    for idx, clarification in enumerate(clarifications, start=1):
+                        # Clean up the clarification text (remove extra whitespace, ensure proper formatting)
+                        cleaned_clarification = clarification.strip()
+                        # Format as numbered list item
+                        formatted_clarifications.append(f"{idx}. {cleaned_clarification}")
+                    
+                    # Join with single newline for readable list format
+                    formatted_questions = "\n".join(formatted_clarifications)
+                    
                     # Prepare interrupt payload
                     interrupt_payload = {
                         "pending_feedback_requests": {
                             "status": "input_required",
                             "session_id": request.runtime.state.get("session_id", "unknown"),
-                            "question": "I apologize, but I missed asking a few details in our previous conversation. Could you please clarify the following items so I can finalize the plan?\n\n" + "\n".join(clarifications),
+                            "question": f"I apologize, but I missed asking a few details in our previous conversation. Could you please clarify the following items so I can finalize the plan?\n\n{formatted_questions}",
                             "context": "Requirements validation identified missing information.",
                             "active_phase": "planning",
                             "tool_name": "validate_requirements",
@@ -106,7 +117,8 @@ class ValidateRequirementsHITLMiddleware(AgentMiddleware):
                         # Append feedback to updated_user_requirements
                         first_question = request.runtime.state.get("question_asked", "Initial Clarification Request")
                         first_response = request.runtime.state.get("updated_user_requirements", "No response recorded")
-                        validation_question = "\n".join(clarifications)
+                        # Use the same formatted questions that were shown to the user
+                        validation_question = formatted_questions
                         
                         new_requirements = (
                             f"Discussion happened so far:\n\n"
@@ -169,26 +181,19 @@ class k8sAutopilotPlanningDeepAgent(BaseSubgraphAgent):
         llm_config = self.config_instance.get_llm_config()
         
         try:
-            self.model = LLMProvider.create_llm(
-                provider=llm_config['provider'],
-                model=llm_config['model'],
-                temperature=llm_config['temperature'],
-                max_tokens=llm_config['max_tokens']
-            )
+            # Remove 'provider' key as it's handled by model_provider or auto-inference
+            config_for_init = {k: v for k, v in llm_config.items() if k != 'provider'}
+            self.model = init_chat_model(**config_for_init)
             planning_deep_agent_logger.log_structured(
                 level="INFO",
-                message=f"Initialized LLM model: {llm_config['provider']}:{llm_config['model']}",
-                extra={"llm_provider": llm_config['provider'], "llm_model": llm_config['model']}
+                message=f"Initialized LLM model: {llm_config.get('provider', 'auto')}:{llm_config.get('model', 'unknown')}",
+                extra={"llm_provider": llm_config.get('provider', 'auto'), "llm_model": llm_config.get('model', 'unknown')}
             )
             
             # Initialize Deep Agent model
             llm_deepagent_config = self.config_instance.get_llm_deepagent_config()
-            self.deep_agent_model = LLMProvider.create_llm(
-                provider=llm_deepagent_config['provider'],
-                model=llm_deepagent_config['model'],
-                temperature=llm_deepagent_config['temperature'],
-                max_tokens=llm_deepagent_config['max_tokens']
-            )
+            deepagent_config_for_init = {k: v for k, v in llm_deepagent_config.items() if k != 'provider'}
+            self.deep_agent_model = init_chat_model(**deepagent_config_for_init)
             planning_deep_agent_logger.log_structured(
                 level="INFO",
                 message=f"Initialized Deep Agent LLM model: {llm_deepagent_config['provider']}:{llm_deepagent_config['model']}",

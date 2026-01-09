@@ -11,6 +11,7 @@ Each gate:
 
 from typing import Dict, Any, List
 from datetime import datetime, timezone
+import json
 from langgraph.types import interrupt
 from langchain_core.messages import AIMessage
 
@@ -73,6 +74,30 @@ def generic_review_gate(
     
     # Trigger interrupt
     human_decision = interrupt(formatted_data)
+    
+    # Handle resume value: interrupt() may return a string when resuming
+    if isinstance(human_decision, str):
+        # Try to parse as JSON if it looks like JSON
+        try:
+            # Check if string contains JSON context
+            if "CONTEXT:" in human_decision:
+                # Extract JSON part after "CONTEXT:"
+                json_part = human_decision.split("CONTEXT:")[-1].strip()
+                human_decision = json.loads(json_part)
+            else:
+                # Try parsing the whole string as JSON
+                human_decision = json.loads(human_decision)
+        except (json.JSONDecodeError, ValueError):
+            # If not JSON, treat as simple approval decision
+            decision_lower = human_decision.lower().strip()
+            if "approve" in decision_lower or decision_lower == "approved":
+                human_decision = {"decision": "approved", "comments": human_decision}
+            else:
+                human_decision = {"decision": "rejected", "comments": human_decision}
+    
+    # Ensure human_decision is a dict
+    if not isinstance(human_decision, dict):
+        human_decision = {"decision": "rejected", "comments": str(human_decision)}
     
     # Process decision
     decision = human_decision.get("decision", "rejected")
@@ -184,7 +209,7 @@ def generation_review_gate(state: MainSupervisorState) -> Dict[str, Any]:
             chart_files_text += f"\n- ... and {len(chart_files) - 10} more files"
             
     # Construct the exact summary requested by user
-    full_summary = f"""# ✅ Template Generation Complete - Validation Required
+    full_summary = f"""# ✅ Template Generation Complete - Ready for Validation
     
     ## Generated Helm Chart Artifacts for `{chart_name}`
     
@@ -211,14 +236,16 @@ def generation_review_gate(state: MainSupervisorState) -> Dict[str, Any]:
     
     ---
     
-    ## 🔍 Next Steps (After Your Approval)
+    ## 🔍 What Happens Next (After Your Approval)
+    
+    **Important:** Validation has NOT started yet. The workflow will proceed as follows:
     
     1. **Write Files**: The system will write the generated files to your chosen workspace directory.
-    2. **Validate**: The Validator Agent will then run:
+    2. **Run Validation**: After files are written, the Validator Agent will automatically run:
        - **Helm lint** (Syntax check)
        - **Helm template** (Rendering check)
        - **Helm dry-run** (Cluster compatibility check, if available)
-    3. **Final Report**: You will receive a final validation report.
+    3. **Final Report**: You will receive a comprehensive validation report with results from all checks.
     """
 
     # Build review data
@@ -238,6 +265,30 @@ def generation_review_gate(state: MainSupervisorState) -> Dict[str, Any]:
     
     # Trigger interrupt
     human_decision = interrupt(review_data)
+    
+    # Handle resume value: interrupt() may return a string when resuming
+    if isinstance(human_decision, str):
+        # Try to parse as JSON if it looks like JSON
+        try:
+            # Check if string contains JSON context
+            if "CONTEXT:" in human_decision:
+                # Extract JSON part after "CONTEXT:"
+                json_part = human_decision.split("CONTEXT:")[-1].strip()
+                human_decision = json.loads(json_part)
+            else:
+                # Try parsing the whole string as JSON
+                human_decision = json.loads(human_decision)
+        except (json.JSONDecodeError, ValueError):
+            # If not JSON, treat as simple approval decision
+            decision_lower = human_decision.lower().strip()
+            if "approve" in decision_lower or decision_lower == "approved":
+                human_decision = {"decision": "approved", "comments": human_decision}
+            else:
+                human_decision = {"decision": "rejected", "comments": human_decision}
+    
+    # Ensure human_decision is a dict
+    if not isinstance(human_decision, dict):
+        human_decision = {"decision": "rejected", "comments": str(human_decision)}
     
     # Process human decision
     decision = human_decision.get("decision", "rejected")

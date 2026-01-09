@@ -9,7 +9,7 @@ import json
 from k8s_autopilot.core.state.base import GenerationSwarmState
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.config.config import Config
-from k8s_autopilot.core.llm.llm_provider import LLMProvider
+from langchain.chat_models import init_chat_model
 from .k8s_secrets_prompts import SECRET_SYSTEM_PROMPT, SECRET_USER_PROMPT
 
 secret_generator_logger = AgentLogger("SecretGenerator")
@@ -213,19 +213,12 @@ async def generate_secret(
         config = Config()
         llm_config = config.get_llm_config()
         higher_llm_config = config.get_llm_higher_config()
-        model = LLMProvider.create_llm(
-            provider=llm_config['provider'],
-            model=llm_config['model'],
-            temperature=llm_config['temperature'],
-            max_tokens=llm_config['max_tokens']
-        )
-        
-        higher_model = LLMProvider.create_llm(
-            provider=higher_llm_config['provider'],
-            model=higher_llm_config['model'],
-            temperature=higher_llm_config['temperature'],
-            max_tokens=higher_llm_config['max_tokens']
-        )
+        # Remove 'provider' key as it's handled by model_provider or auto-inference
+        config_for_init = {k: v for k, v in llm_config.items() if k != 'provider'}
+        model = init_chat_model(**config_for_init)
+
+        higher_config_for_init = {k: v for k, v in higher_llm_config.items() if k != 'provider'}
+        higher_model = init_chat_model(**higher_config_for_init)
         
         chain = prompt | higher_model | parser
         # Pass system message directly

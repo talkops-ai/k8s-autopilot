@@ -11,7 +11,7 @@ import json
 from k8s_autopilot.core.state.base import GenerationSwarmState
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.config.config import Config
-from k8s_autopilot.core.llm.llm_provider import LLMProvider
+from langchain.chat_models import init_chat_model
 from .namespace_prompts import NAMESPACE_GENERATOR_SYSTEM_PROMPT, NAMESPACE_GENERATOR_USER_PROMPT
 
 namespace_generator_tool_logger = AgentLogger("NamespaceGeneratorTool")
@@ -184,12 +184,9 @@ async def generate_namespace_yaml(
             }
         )
         
-        higher_model = LLMProvider.create_llm(
-            provider=higher_llm_config['provider'],
-            model=higher_llm_config['model'],
-            temperature=higher_llm_config['temperature'],
-            max_tokens=higher_llm_config['max_tokens']
-        )
+        # Remove 'provider' key as it's handled by model_provider or auto-inference
+        higher_config_for_init = {k: v for k, v in higher_llm_config.items() if k != 'provider'}
+        higher_model = init_chat_model(**higher_config_for_init)
         
         chain = prompt | higher_model | parser
         

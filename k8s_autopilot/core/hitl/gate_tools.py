@@ -123,10 +123,22 @@ async def request_planning_review(
         return Command(update=update_dict)
         
     except Exception as e:
+        # CRITICAL: GraphInterrupt exceptions MUST propagate to the graph executor
+        # Do NOT catch interrupts - they are normal control flow for HITL workflows
+        exception_type_name = type(e).__name__
+        if "Interrupt" in exception_type_name:
+            gate_tools_logger.log_structured(
+                level="DEBUG",
+                message=f"Re-raising interrupt exception: {exception_type_name}",
+                extra={"exception_type": exception_type_name}
+            )
+            raise  # Re-raise interrupt exceptions so graph executor can handle them
+        
+        # Only catch non-interrupt exceptions
         gate_tools_logger.log_structured(
             level="ERROR",
             message=f"Error in planning review gate: {e}",
-            extra={"error": str(e), "error_type": type(e).__name__}
+            extra={"error": str(e), "error_type": exception_type_name}
         )
         error_msg = f"❌ Error requesting planning review: {str(e)}"
         return Command(
@@ -226,6 +238,7 @@ async def request_generation_review(
             reviewer = approval.reviewer if hasattr(approval, "reviewer") else approval.get("reviewer")
             
             # Construct a rich status message that includes the user's raw feedback/intent
+            gate_messages = gate_result.get("messages", [])
             if status == "approved":
                 result_message = f"✅ Generation approved by {reviewer or 'reviewer'}. Resulting Workspace: {workspace_dir}. User comments: '{gate_messages[0].content if gate_messages else 'Approved'}'"
             elif status == "rejected":
@@ -242,10 +255,22 @@ async def request_generation_review(
         return Command(update=update_dict)
         
     except Exception as e:
+        # CRITICAL: GraphInterrupt exceptions MUST propagate to the graph executor
+        # Do NOT catch interrupts - they are normal control flow for HITL workflows
+        exception_type_name = type(e).__name__
+        if "Interrupt" in exception_type_name:
+            gate_tools_logger.log_structured(
+                level="DEBUG",
+                message=f"Re-raising interrupt exception: {exception_type_name}",
+                extra={"exception_type": exception_type_name}
+            )
+            raise  # Re-raise interrupt exceptions so graph executor can handle them
+        
+        # Only catch non-interrupt exceptions
         gate_tools_logger.log_structured(
             level="ERROR",
             message=f"Error in generation review gate: {e}",
-            extra={"error": str(e), "error_type": type(e).__name__}
+            extra={"error": str(e), "error_type": exception_type_name}
         )
         error_msg = f"❌ Error requesting generation review: {str(e)}"
         return Command(

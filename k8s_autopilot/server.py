@@ -1,5 +1,6 @@
 import json
 import sys
+import asyncio
 from pathlib import Path
 import click
 import httpx
@@ -14,6 +15,7 @@ from a2a.server.tasks import (
 from a2a.types import (
     AgentCard,
 )
+from starlette.middleware.cors import CORSMiddleware
 from k8s_autopilot.config.config import Config
 from k8s_autopilot.core import A2AAutoPilotExecutor
 from k8s_autopilot.core.agents import (
@@ -21,6 +23,7 @@ from k8s_autopilot.core.agents import (
     create_planning_swarm_deep_agent,
     create_template_supervisor,
     create_validator_deep_agent,
+    create_helm_mgmt_deep_agent,
 )
 from k8s_autopilot.utils.logger import AgentLogger, log_sync
 
@@ -84,9 +87,18 @@ def main(host: str, port: int, agent_card: str, config_file: str):
             name="validator_deep_agent"  # Must match the name expected in supervisor_agent.py
         )
 
+        # Create Helm Mgmt Deep Agent
+        # Create Helm Mgmt Deep Agent
+        # Note: This factory is async because it initializes the MCP client.
+        # We must run it synchronously here before the server loop starts.
+        helm_mgmt_deep_agent = asyncio.run(create_helm_mgmt_deep_agent(
+            config=config,
+            name="helm_mgmt_deep_agent"
+        ))
+
         # Create Supervisor Agent
         supervisor_agent = create_k8sAutopilotSupervisorAgent(
-            agents=[planning_swarm_deep_agent, template_supervisor, validator_deep_agent],
+            agents=[planning_swarm_deep_agent, template_supervisor, validator_deep_agent, helm_mgmt_deep_agent],
             config=config,
             name="k8sAutopilotSupervisorAgent"
         )
@@ -141,8 +153,19 @@ def main(host: str, port: int, agent_card: str, config_file: str):
                 "supervisor_agents": supervisor_agent.list_agents()
             }
         )
+        
+        # Build app and add CORS middleware for A2UI client access
+        app = server.build()
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        
         uvicorn.run(
-            server.build(), 
+            app, 
             host=host,
             port=port,
             log_level=config.log_level.lower()

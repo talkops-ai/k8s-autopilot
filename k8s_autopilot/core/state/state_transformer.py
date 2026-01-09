@@ -6,7 +6,8 @@ from k8s_autopilot.core.state.base import (
     GenerationSwarmState,
     ValidationSwarmState,
     WorkflowStatus,
-    SupervisorWorkflowState
+    SupervisorWorkflowState,
+    HelmAgentState
 )
 from k8s_autopilot.utils.logger import AgentLogger
 
@@ -49,11 +50,14 @@ class StateTransformer:
         else:
             status_value = str(status)  # Ensure it's a string
         
+        # Preserve existing plan/requirements if available to prevent loop
+        existing_plan = supervisor_state.get("planner_output")
+
         return {
             "messages": messages,
             "remaining_steps": None,  # Required by Deep Agent TodoListMiddleware
             "active_agent": "requirement_analyzer",  # Start with supervisor
-            "chart_plan": None,
+            "chart_plan": existing_plan,
             "status": status_value,  # Use string value to avoid serialization warnings
             "todos": [],
             "workspace_files": {},
@@ -100,6 +104,9 @@ class StateTransformer:
                 "current_phase": "planning"
             }
 
+        # Extract planning output (chart_plan)
+        planning_output = planning_state.get("chart_plan") or planning_state.get("handoff_data")
+        
         # Create summary of the plan for the LLM context
         try:
              # Convert to dict for summary extraction
@@ -128,7 +135,7 @@ class StateTransformer:
         return {
             "messages": summary_messages,
             "llm_input_messages": summary_messages,
-            "planner_output": planning_state.get("chart_plan") or planning_state.get("handoff_data"),
+            "planner_output": planning_output,
             "workflow_state": updated_workflow_state
         }
     
@@ -277,52 +284,58 @@ class StateTransformer:
         if generated_chart:
             import os
             try:
-                os.makedirs(chart_path, exist_ok=True)
-                os.makedirs(f"{chart_path}/templates", exist_ok=True)
-                
-                # Write all files as-is (content already has proper newlines)
-                for filename, content in generated_chart.items():
-                    try:
-                        # Content already has actual newline characters (\n) - no decoding needed
-                        # Just ensure it's a string type
-                        if not isinstance(content, str):
-                            content = str(content)
-                        
-                        # Determine file path and create directory structure
-                        file_path = f"{chart_path}/{filename}"
-                        
-                        # Handle templates/ subdirectory
-                        if filename.startswith("templates/"):
-                            template_name = filename.replace("templates/", "")
-                            file_path = f"{chart_path}/templates/{template_name}"
-                        elif "/" in filename and not filename.startswith("templates/"):
-                            # Handle other subdirectories (e.g., "charts/", "crds/")
-                            dir_path = f"{chart_path}/{os.path.dirname(filename)}"
-                            os.makedirs(dir_path, exist_ok=True)
+                # Directory-Level Check (The Better Approach)
+                # If the chart directory already exists, assume it's initialized and modified.
+                # Do NOT overwrite anything. This preserves agent fixes during resume loops.
+                if os.path.exists(chart_path) and os.path.exists(f"{chart_path}/Chart.yaml"):
+                    files_written.append("(skipped, chart directory exists)")
+                    # We skip the entire writing loop
+                else:
+                    # Initialize: Create chart from state
+                    os.makedirs(chart_path, exist_ok=True)
+                    os.makedirs(f"{chart_path}/templates", exist_ok=True)
+                    
+                    # Write all files as-is
+                    for filename, content in generated_chart.items():
+                        try:
+                            # Content already has actual newline characters (\n) - no decoding needed
+                            if not isinstance(content, str):
+                                content = str(content)
+                            
+                            # Determine file path and create directory structure
                             file_path = f"{chart_path}/{filename}"
-                        
-                        # Ensure parent directory exists (double-check)
-                        parent_dir = os.path.dirname(file_path)
-                        if parent_dir and parent_dir != chart_path:
-                            os.makedirs(parent_dir, exist_ok=True)
-                        
-                        # Write file with proper encoding and newline handling
-                        # Use newline="" to preserve original line endings
-                        with open(file_path, "w", encoding="utf-8", newline="") as f:
-                            f.write(content)
-                        files_written.append(filename)
-                    except Exception as e:
-                        # Log but continue - agent can write files itself if needed
-                        state_transformer_logger.log_structured(
-                            level="WARNING",
-                            message=f"Failed to pre-write chart file: {filename}",
-                            extra={
-                                "filename": filename,
-                                "error": str(e),
-                                "error_type": type(e).__name__,
-                                "chart_path": chart_path
-                            }
-                        )
+                            
+                            # Handle templates/ subdirectory
+                            if filename.startswith("templates/"):
+                                template_name = filename.replace("templates/", "")
+                                file_path = f"{chart_path}/templates/{template_name}"
+                            elif "/" in filename and not filename.startswith("templates/"):
+                                # Handle other subdirectories
+                                dir_path = f"{chart_path}/{os.path.dirname(filename)}"
+                                os.makedirs(dir_path, exist_ok=True)
+                                file_path = f"{chart_path}/{filename}"
+                            
+                            # Ensure parent directory exists
+                            parent_dir = os.path.dirname(file_path)
+                            if parent_dir and parent_dir != chart_path:
+                                os.makedirs(parent_dir, exist_ok=True)
+                            
+                            # Write file with proper encoding and newline handling
+                            with open(file_path, "w", encoding="utf-8", newline="") as f:
+                                f.write(content)
+                            files_written.append(filename)
+                        except Exception as e:
+                            # Log but continue
+                            state_transformer_logger.log_structured(
+                                level="WARNING",
+                                message=f"Failed to pre-write chart file: {filename}",
+                                extra={
+                                    "filename": filename,
+                                    "error": str(e),
+                                    "error_type": type(e).__name__,
+                                    "chart_path": chart_path
+                                }
+                            )
             except Exception as e:
                 # If directory creation fails, agent will handle it
                 state_transformer_logger.log_structured(
@@ -514,4 +527,162 @@ Chart files should be at: {chart_path}"""
         if blocking_issues:
             return_dict["blocking_issues"] = blocking_issues
 
+        return return_dict
+
+    # ============================================================================
+    # Helm Management Agent Transformations
+    # ============================================================================
+
+    @staticmethod
+    def supervisor_to_helm_mgmt(supervisor_state: MainSupervisorState) -> Dict:
+        """
+        Transform supervisor state to Helm Management Agent input state.
+        
+        Maps:
+        - user_query → user_request
+        - messages → messages (initialized with user query)
+        - Initializes all required HelmAgentState fields with defaults
+        """
+        user_query = supervisor_state.get("user_query", "")
+        messages = [HumanMessage(content=user_query)] if user_query else []
+        
+        return {
+            "messages": messages,
+            "user_request": user_query,
+            "user_id": "user",  # Default
+            "session_id": supervisor_state.get("session_id", "default"),
+            "cluster_context": {},
+            
+            # Chart discovery phase
+            "chart_metadata": {},
+            "chart_search_results": [],
+            
+            # Values and configuration
+            "user_provided_values": {},
+            "merged_values": {},
+            "validation_errors": [],
+            "validation_status": "pending",
+            
+            # Planning phase
+            "installation_plan": {},
+            "plan_validation_results": {},
+            "prerequisites_check_results": {},
+            
+            # Approval phase
+            "approval_checkpoints": [],
+            "pending_approval": False,
+            "approval_status": "pending",
+            
+            # Execution phase
+            "execution_started_at": None,
+            "execution_status": "not_started",
+            "execution_logs": [],
+            "helm_release_name": None,
+            "helm_release_namespace": None,
+            
+            # Monitoring and rollback
+            "deployment_status": {},
+            "rollback_available": False,
+            "rollback_executed": False,
+            
+            # Error tracking
+            "last_error": None,
+            "error_count": 0,
+            "recovery_attempts": [],
+            
+            # Request classification (for dual-path routing)
+            "request_classification": None,
+            "request_type": "unknown",
+            "operation_name": "",
+            
+            # Query-specific fields
+            "query_results": [],
+            "query_formatted_response": "",
+            
+            # Audit trail
+            "audit_log": []
+        }
+
+    @staticmethod
+    def helm_mgmt_to_supervisor(
+        helm_state: HelmAgentState,
+        original_supervisor_state: MainSupervisorState,
+        tool_call_id: str
+    ) -> Dict:
+        """
+        Transform Helm Management Agent output back to supervisor state updates.
+        
+        Maps:
+        - messages → summary ToolMessage with actual response content
+        - Updates workflow_state.helm_mgmt_complete via set_phase_complete("helm_mgmt")
+        - Stores response in helm_mgmt_response field
+        """
+        
+        # Reconstruct workflow state object (similar to validation_to_supervisor)
+        current_workflow_state = original_supervisor_state.get("workflow_state")
+        if current_workflow_state:
+            # Ensure it's a SupervisorWorkflowState object
+            if isinstance(current_workflow_state, dict):
+                workflow_state_obj = SupervisorWorkflowState(**current_workflow_state)
+            else:
+                workflow_state_obj = current_workflow_state
+        else:
+            # Fallback if no workflow state exists
+            workflow_state_obj = SupervisorWorkflowState(
+                workflow_id=original_supervisor_state.get("task_id", ""),
+                current_phase="helm_mgmt"
+            )
+        
+        # Get the last message from the agent to extract the actual response
+        messages = helm_state.get("messages", [])
+        last_content = "No response from Helm Management Agent."
+        
+        # Find the last AIMessage (this is the agent's final response)
+        for msg in reversed(messages):
+            if hasattr(msg, 'type') and msg.type == "ai":
+                last_content = msg.content if hasattr(msg, 'content') else str(msg)
+                break
+            elif isinstance(msg, dict) and msg.get("type") == "ai":
+                last_content = msg.get("content", str(msg))
+                break
+        
+        # If still no content, try to extract from any message with content
+        if last_content == "No response from Helm Management Agent.":
+            for msg in reversed(messages):
+                if hasattr(msg, 'content'):
+                    content = msg.content
+                    if content and content != "No response from Helm Management Agent.":
+                        last_content = str(content)
+                        break
+        
+        # Mark helm_mgmt phase as complete (similar to validation_to_supervisor)
+        workflow_state_obj.set_phase_complete("helm_mgmt")
+        workflow_state_obj.last_swarm = "helm_mgmt_swarm"
+        workflow_state_obj.current_phase = "helm_mgmt"  # Ensure current_phase is set
+        
+        # Return object directly to avoid Pydantic serialization warnings
+        updated_workflow_state = workflow_state_obj
+        
+        # Create summary messages (similar to validation_to_supervisor pattern)
+        summary_messages = [
+            ToolMessage(
+                content=last_content,  # Direct response, not wrapped
+                tool_call_id=tool_call_id
+            ),
+            HumanMessage(
+                content=f"Helm Management Agent completed successfully. Response: {last_content[:200]}..."
+            )
+        ]
+        
+        # Build return dictionary (similar to validation_to_supervisor)
+        # IMPORTANT: Set status="completed" and active_phase to match last_swarm
+        return_dict = {
+            "messages": summary_messages,
+            "llm_input_messages": summary_messages,
+            "workflow_state": updated_workflow_state,
+            "helm_mgmt_response": last_content,  # Store response for supervisor to extract
+            "status": "completed",  # Mark as completed (was "pending")
+            "active_phase": "helm_mgmt_swarm"  # Match last_swarm value
+        }
+        
         return return_dict

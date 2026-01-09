@@ -304,6 +304,17 @@ Validate the following parsed requirements for completeness and correctness:
    - Address gaps NOT covered by "Questions Asked"
    - Are necessary for chart generation
    - Do NOT duplicate questions that were already asked
+   - **CRITICAL**: Each question in `clarifications_needed` should be:
+     * A complete, standalone question (not a fragment)
+     * Clear and specific (e.g., "What is the application name to use for the Helm chart?" instead of "app_name?")
+     * Focused on a single topic (one question per list item)
+     * Human-readable and easy to understand
+
+**Question Formatting Guidelines:**
+- Each question should be a complete sentence ending with a question mark
+- Be specific about what information is needed (e.g., "What external port should the Service listen on (service.port)?")
+- Group related sub-questions together in a single question when appropriate (e.g., "Which entryPoints should be used (e.g., web, websecure) and are any Traefik middlewares required (BasicAuth, RateLimit, CORS, StripPrefix, etc.)?")
+- Avoid overly technical jargon; use clear, user-friendly language
 
 Return your validation results with specific details about any issues found. Remember: avoid asking questions that were already asked unless they were not properly answered."""
 

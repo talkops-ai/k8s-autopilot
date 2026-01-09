@@ -9,7 +9,7 @@ from langchain_core.prompts import MessagesPlaceholder
 from k8s_autopilot.core.state.base import GenerationSwarmState
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.config.config import Config
-from k8s_autopilot.core.llm.llm_provider import LLMProvider
+from langchain.chat_models import init_chat_model
 from .helper_prompts import (
     HELPERS_GENERATOR_SYSTEM_PROMPT,
     HELPERS_GENERATOR_USER_PROMPT,
@@ -71,9 +71,41 @@ async def generate_helpers_tpl(
         planner_output = runtime.state.get("planner_output", {}) or {}
         parsed_reqs = planner_output.get("parsed_requirements", {}) or {}
         
-        # Extract only what we need for minimal helpers
-        app_name = parsed_reqs.get("app_name", "my-app")
-        chart_name = parsed_reqs.get("chart_name", app_name)
+        # Extract app_name with fallback logic
+        # Handle case where app_name might be None (not just missing)
+        app_name_raw = parsed_reqs.get("app_name")
+        
+        # If app_name is None or empty, try to derive from other sources
+        if not app_name_raw:
+            # Try namespace name as fallback
+            namespace_info = parsed_reqs.get("namespace", {})
+            if namespace_info and namespace_info.get("name"):
+                app_name = namespace_info.get("name")
+            else:
+                # Try to extract from image repository name
+                image_info = parsed_reqs.get("image", {})
+                if image_info:
+                    repository = image_info.get("repository", "")
+                    if repository:
+                        # Extract app name from repository (e.g., "talkops/eagle" -> "eagle")
+                        app_name = repository.split("/")[-1] if "/" in repository else repository
+                    else:
+                        app_name = "my-app"
+                else:
+                    app_name = "my-app"
+        else:
+            app_name = app_name_raw
+        
+        # Extract chart_name with fallback to app_name
+        chart_name = parsed_reqs.get("chart_name") or app_name
+        
+        # Ensure we have a valid string before sanitizing
+        if not chart_name or not isinstance(chart_name, str):
+            chart_name = app_name if app_name and isinstance(app_name, str) else "my-app"
+        
+        # Ensure app_name is also a valid string
+        if not app_name or not isinstance(app_name, str):
+            app_name = chart_name if chart_name and isinstance(chart_name, str) else "my-app"
         
         # Sanitize chart name for Helm template naming
         # Replace spaces and special chars with hyphens
@@ -113,12 +145,9 @@ async def generate_helpers_tpl(
         config = Config()
         higher_llm_config = config.get_llm_higher_config()
         
-        higher_model = LLMProvider.create_llm(
-            provider=higher_llm_config['provider'],
-            model=higher_llm_config['model'],
-            temperature=higher_llm_config['temperature'],
-            max_tokens=higher_llm_config['max_tokens']
-        )
+        # Remove 'provider' key as it's handled by model_provider or auto-inference
+        higher_config_for_init = {k: v for k, v in higher_llm_config.items() if k != 'provider'}
+        higher_model = init_chat_model(**higher_config_for_init)
         
         # Create and execute the chain
         chain = prompt | higher_model | parser

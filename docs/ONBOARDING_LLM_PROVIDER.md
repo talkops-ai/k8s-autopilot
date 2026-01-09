@@ -1,97 +1,80 @@
-# Onboarding Guide: Adding a New LLM Provider
+# Onboarding Guide: Configuring LLM Providers
 
-This guide explains how to add ("onboard") a new LLM provider to the `k8s-autopilot` project using the established abstract base class pattern.
+This guide explains how to configure different LLM providers (OpenAI, Anthropic, Gemini, etc.) for `k8s-autopilot`.
 
-## Overview
+## 🚀 Quick Start (Configuration)
 
-The project uses a modular, extensible LLM provider architecture. Each provider is implemented as a subclass of `BaseLLMProvider` and registered in the `LLMProvider` factory. This ensures all LLMs are created via a consistent interface and are easily swappable.
+Switching providers is simple. Just set the `LLM_PROVIDER` and `LLM_MODEL` environment variables in your `.env` file. The system automatically handles the connection details.
 
----
+### 1. Anthropic (Claude)
 
-## Steps to Add a New LLM Provider
-
-### 1. Implement the Provider Class
-- **Location:** `k8s_autopilot/core/llm/`
-- **File:** Add or update in `llm_provider.py` (or create a new file if preferred)
-- **Base Class:** Inherit from `BaseLLMProvider` (see `base_llm_provider.py`)
-
-**Example Skeleton:**
-```python
-from .base_llm_provider import BaseLLMProvider
-from langchain_core.runnables import Runnable
-
-class MyNewProvider(BaseLLMProvider):
-    """
-    Concrete LLM provider for MyNewProvider models.
-    Implements the BaseLLMProvider interface.
-    """
-    def create_llm(
-        self,
-        model: str,
-        temperature: float = 0.1,
-        max_tokens: Optional[int] = None,
-        timeout: int = 60,
-        **kwargs: Any
-    ) -> Runnable:
-        # Import your provider's SDK or LangChain integration here
-        # from my_provider_sdk import MyProviderLLM
-        # Build config dict as needed
-        config = {
-            "model": model,
-            "temperature": temperature,
-            # ... other params ...
-        }
-        config.update(kwargs)
-        # Return a LangChain-compatible Runnable
-        return MyProviderLLM(**config)
+```bash
+# .env
+LLM_PROVIDER="anthropic"
+LLM_MODEL="claude-3-5-sonnet-20240620"
+ANTHROPIC_API_KEY="sk-ant-..."
 ```
 
-### 2. Register the Provider in the Factory
-- **Location:** `k8s_autopilot/core/llm/llm_provider.py`
-- **Action:** Update the `_create_provider_instance` method in `LLMProvider` to add a new `elif` branch for your provider:
+### 2. Google Gemini
 
-```python
-elif provider == "mynewprovider":
-    return MyNewProvider().create_llm(
-        model=model,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        timeout=timeout,
-        **kwargs
-    )
+```bash
+# .env
+LLM_PROVIDER="google_genai"
+LLM_MODEL="gemini-1.5-pro"
+GEMINI_API_KEY="AIza..."
 ```
-- Also add your provider name to `_SUPPORTED_PROVIDERS` set at the top of the class.
 
-### 3. Add Environment Variable Support (Optional)
-- If your provider requires API keys or endpoints, document the required environment variables in this guide and handle them in your provider class (see OpenAI/Anthropic examples).
+### 3. OpenAI (Default)
 
-### 4. Update Documentation
-- Add your provider to this onboarding guide and to any user-facing documentation (e.g., README, config docs).
-
-### 5. Test Your Provider
-- Ensure your provider works by running the agent with your provider selected in config or environment variables.
-- Add or update tests if possible.
+```bash
+# .env
+LLM_PROVIDER="openai"
+LLM_MODEL="gpt-4o"
+OPENAI_API_KEY="sk-..."
+```
 
 ---
 
-## Best Practices
-- Follow the structure and docstring style of existing providers.
-- Use type hints and clear error messages.
-- Keep all provider-specific logic encapsulated in your provider class.
-- Do not modify agent or planner code—only the provider and factory.
+## 📚 Provider Reference Table
+
+Use these values in your `.env` file to configure specific providers.
+
+| Provider | `LLM_PROVIDER` Value | Example `LLM_MODEL` Value | Required API Keys (Env Vars) | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| **OpenAI** | `openai` | `gpt-4o`, `gpt-4-turbo` | `OPENAI_API_KEY` | Default provider. |
+| **Anthropic** | `anthropic` | `claude-3-5-sonnet-20240620` | `ANTHROPIC_API_KEY` | |
+| **Google Gemini** | `google_genai` | `gemini-1.5-pro` | `GOOGLE_API_KEY` | Requires `langchain-google-genai` package. |
+| **Azure OpenAI** | `azure_openai` | `gpt-4` | `AZURE_OPENAI_API_KEY`<br>`AZURE_OPENAI_ENDPOINT`<br>`OPENAI_API_VERSION` | Requires `AZURE_OPENAI_DEPLOYMENT_NAME` env var if different from model name. |
+| **AWS Bedrock** | `bedrock` | `anthropic.claude-3-sonnet...` | `AWS_ACCESS_KEY_ID`<br>`AWS_SECRET_ACCESS_KEY`<br>`AWS_DEFAULT_REGION` | Uses standard AWS CLI/Boto3 credentials. |
 
 ---
 
-## Example: Adding "MyNewProvider"
-1. Implement `MyNewProvider` in `llm_provider.py` (see skeleton above).
-2. Register in `LLMProvider._create_provider_instance` and `_SUPPORTED_PROVIDERS`.
-3. Handle API keys/endpoints as needed.
-4. Test and document.
+### 🧠 Multi-Model Strategy: When to mix Providers?
+
+The system is designed for a **Multi-Model** approach, allowing you to use different models for different roles to optimize for cost, speed, and reasoning capability.
+
+#### 1. Supervisors (`LLM_DEEPAGENT_*`)
+*   **Role**: Orchestration, complex state management, multi-step planning, tool selection.
+*   **Recommended Models**: `o1-mini`, `gpt-4o`, `claude-3-opus`.
+*   **Why?**: Supervisors need high reasoning capabilities to maintain conversation state, handle complex graph transitions, and ensure safety guardrails are met. They are called less frequently but make critical decisions.
+
+#### 2. Workers / Sub-Agents (`LLM_*`)
+*   **Role**: Specific narrow tasks (e.g., "Parse this JSON", "Generate this YAML", "Validate this schema").
+*   **Recommended Models**: `gpt-4o-mini`, `gemini-1.5-flash`, `claude-3-haiku`.
+*   **Why?**: These agents perform high-volume, repetitive tasks where speed and low cost are prioritized over deep reasoning. A "Flash" model is often perfect for validating a Kubernetes manifest against a schema.
+
+**Example Scenario: Cost-Effective Enterprise Deployment**
+*   **Supervisor**: Use **OpenAI o1-mini** (`LLM_DEEPAGENT_MODEL`) for robust planning and safety.
+*   **Workers**: Use **Gemini 1.5 Flash** (`LLM_MODEL`) for blazing fast, nearly free code generation and validation loops.
+
+```bash
+# .env - Hybrid Configuration
+LLM_DEEPAGENT_PROVIDER="openai"
+LLM_DEEPAGENT_MODEL="o1-mini"
+
+LLM_PROVIDER="google_genai"
+LLM_MODEL="gemini-1.5-flash"
+```
 
 ---
 
-## References
-- [base_llm_provider.py](../k8s_autopilot/core/llm/base_llm_provider.py)
-- [llm_provider.py](../k8s_autopilot/core/llm/llm_provider.py)
-
----

@@ -151,7 +151,7 @@ def create_supervisor_with_hitl(
     interrupts on sensitive tool calls, requiring human approval before execution.
     
     Args:
-        model: LLM model instance (e.g., from LLMProvider)
+        model: LLM model instance (e.g., from init_chat_model)
         tools: List of tools available to the agent
         hitl_tools: Optional dictionary mapping tool names to interrupt configs.
                    If None, uses DEFAULT_HITL_TOOLS
@@ -164,10 +164,10 @@ def create_supervisor_with_hitl(
         Agent instance with HITL middleware configured
         
     Example:
-        from k8s_autopilot.core.llm.llm_provider import LLMProvider
+        from langchain.chat_models import init_chat_model
         from k8s_autopilot.tools.deployment import deploy_to_cluster_tool
         
-        model = LLMProvider.create_llm(...)
+        model = init_chat_model("gpt-4o")
         agent = create_supervisor_with_hitl(
             model=model,
             tools=[deploy_to_cluster_tool],

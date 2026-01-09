@@ -19,6 +19,9 @@ ENV UV_FROZEN=true
 # Copy the required files first
 COPY pyproject.toml uv.lock uv-requirements.txt ./
 
+# Copy local dependency
+COPY a2ui_extenstion ./a2ui_extenstion
+
 # Python optimization and uv configuration
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1

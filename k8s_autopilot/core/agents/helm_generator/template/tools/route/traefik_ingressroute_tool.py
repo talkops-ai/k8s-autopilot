@@ -7,7 +7,7 @@ from langchain_core.prompts import MessagesPlaceholder
 from k8s_autopilot.core.state.base import GenerationSwarmState
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.config.config import Config
-from k8s_autopilot.core.llm.llm_provider import LLMProvider
+from langchain.chat_models import init_chat_model
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Any, Optional, Literal
 import json
@@ -339,12 +339,9 @@ async def generate_traefik_ingressroute_yaml(
                 "tls_cert_resolver": ingress_traefik_tls.get("cert_resolver") or None,
             }
         )
-        model = LLMProvider.create_llm(
-            provider=llm_config['provider'],
-            model=llm_config['model'],
-            temperature=llm_config['temperature'],
-            max_tokens=llm_config['max_tokens'],
-        )
+        # Remove 'provider' key as it's handled by model_provider or auto-inference
+        config_for_init = {k: v for k, v in llm_config.items() if k != 'provider'}
+        model = init_chat_model(**config_for_init)
         chain = prompt | model | parser
         # Pass system message directly
         response = await chain.ainvoke({

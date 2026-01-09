@@ -13,8 +13,8 @@ class DefaultConfig:
     LLM_HIGHER_MAX_TOKENS: int = 15000
 
     LLM_DEEPAGENT_PROVIDER: str = "openai"
-    LLM_DEEPAGENT_MODEL: str = "gpt-4.1-mini"
-    LLM_DEEPAGENT_TEMPERATURE: float = 0.0
+    LLM_DEEPAGENT_MODEL: str = "o4-mini"
+    LLM_DEEPAGENT_TEMPERATURE: float = 1
     LLM_DEEPAGENT_MAX_TOKENS: int = 25000
 
     
@@ -27,12 +27,22 @@ class DefaultConfig:
     LOG_TO_FILE: bool = True
     LOG_STRUCTURED_JSON: bool = False
     
+    # A2A Server Configuration
+    A2A_SERVER_HOST: str = "localhost"
+    A2A_SERVER_PORT: int = 10102
+    
     # MCP Server Configuration
     ARGOCD_MCP_SERVER_HOST: str = "localhost"
     ARGOCD_MCP_SERVER_PORT: int = 8000
     ARGOCD_MCP_SERVER_TRANSPORT: str = "sse"
     ARGOCD_MCP_SERVER_DISABLED: bool = False
     AGENTS_MCP_SERVER_AUTO_APPROVE: list = []
+
+    # Helm MCP Server Configuration
+    HELM_MCP_SERVER_HOST: str = "localhost"
+    HELM_MCP_SERVER_PORT: int = 9000
+    HELM_MCP_SERVER_TRANSPORT: str = "sse"
+    HELM_MCP_SERVER_DISABLED: bool = False
     
     # LangGraph Configuration
     RECURSION_LIMIT: int = 50  # Maximum recursion depth for agent workflows (default: 25, increased for multi-phase workflows)
