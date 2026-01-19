@@ -115,6 +115,119 @@ class ArgoCDConfig(BaseModel):
     sync_waves: List[Dict] = Field(default_factory=list)
 
 
+# ============================================================================
+# ArgoCD Onboarding Agent State
+# ============================================================================
+
+class ApprovalRecord(TypedDict, total=False):
+    """Approval checkpoint record"""
+    checkpoint_id: str
+    type: Literal[
+        "plan_approval",
+        "project_approval",
+        "repo_approval",
+        "app_approval",
+        "sync_approval",
+        "delete_approval",
+    ]
+    approved: bool
+    approved_by: Optional[str]
+    approved_at: Optional[str]
+    feedback: Optional[str]
+
+
+class ArgoCDOnboardingState(AgentState):
+    """
+    State schema for ArgoCD Application Onboarding Deep Agent.
+    
+    Follows the HelmAgentState pattern with:
+    - Message history (auto-managed by LangGraph)
+    - Workflow type and phase tracking
+    - ArgoCD-specific state (projects, repos, apps)
+    - Approval checkpoints (HITL)
+    - Audit trail
+    - Error handling
+    """
+    # Message history (auto-managed by LangGraph)
+    messages: Annotated[List[AnyMessage], add_messages]
+    
+    # User request information
+    user_request: str
+    user_id: str
+    session_id: str
+    
+    # Workflow type and phase
+    workflow_type: Annotated[Literal["onboarding", "offboarding", "debug", "query"], lambda x, y: y]
+    current_phase: Annotated[int, lambda x, y: y]  # 1-5 phase workflow
+    
+    # Cluster context
+    cluster_context: Annotated[Dict[str, Any], lambda x, y: {**(x or {}), **(y or {})}]
+    
+    # ==================== ArgoCD Project State ====================
+    project_info: Annotated[Dict[str, Any], lambda x, y: {**(x or {}), **(y or {})}]
+    project_list: Annotated[List[dict], add]
+    project_created: Annotated[bool, lambda x, y: y]
+    project_validation_result: Annotated[Optional[Dict], lambda x, y: y]
+    
+    # ==================== ArgoCD Repository State ====================
+    repository_info: Annotated[Dict[str, Any], lambda x, y: {**(x or {}), **(y or {})}]
+    repository_list: Annotated[List[dict], add]
+    repo_validation_result: Annotated[Optional[Dict], lambda x, y: y]
+    repo_onboarded: Annotated[bool, lambda x, y: y]
+    
+    # ==================== ArgoCD Application State ====================
+    application_info: Annotated[Dict[str, Any], lambda x, y: {**(x or {}), **(y or {})}]
+    application_list: Annotated[List[dict], add]
+    application_created: Annotated[bool, lambda x, y: y]
+    application_details: Annotated[Optional[Dict], lambda x, y: y]
+    
+    # ==================== Deployment/Sync State ====================
+    sync_operation_id: Annotated[Optional[str], lambda x, y: y]
+    deployment_status: Annotated[Optional[Dict], lambda x, y: y]
+    health_report: Annotated[Optional[Dict], lambda x, y: y]
+    sync_status: Annotated[Literal["pending", "in_progress", "synced", "out_of_sync", "failed", None], lambda x, y: y]
+    
+    # ==================== Debug Results ====================
+    debug_results: Annotated[Dict[str, Any], lambda x, y: {**(x or {}), **(y or {})}]
+    logs_collected: Annotated[List[str], add]
+    events_collected: Annotated[List[dict], add]
+    metrics_collected: Annotated[Optional[Dict], lambda x, y: y]
+    
+    # ==================== Approvals (HITL Checkpoints) ====================
+    approval_checkpoints: Annotated[List[ApprovalRecord], add]
+    pending_approval: Annotated[bool, lambda x, y: y]
+    approval_status: Annotated[Literal["pending", "approved", "rejected", "modifications_requested"], lambda x, y: y]
+    # Phase-specific approvals
+    checkpoint_1_approved: Annotated[bool, lambda x, y: y]  # Project/Repo config
+    checkpoint_2_approved: Annotated[bool, lambda x, y: y]  # Application creation
+    checkpoint_3_approved: Annotated[bool, lambda x, y: y]  # Sync to cluster
+    checkpoint_4_approved: Annotated[bool, lambda x, y: y]  # Production deployment
+    
+    # ==================== Audit Trail ====================
+    audit_log: Annotated[List[dict], add]
+    execution_logs: Annotated[List[dict], add]  # Tool execution logs
+    
+    # ==================== Error Handling ====================
+    errors: Annotated[List[str], add]
+    warnings: Annotated[List[str], add]
+    last_error: Annotated[Optional[str], lambda x, y: y]
+    error_count: Annotated[int, add]
+    
+    # ==================== Deep Agent Compatibility ====================
+    remaining_steps: Annotated[Optional[int], lambda x, y: y]  # For TodoListMiddleware
+    _seen_tool_calls: Annotated[List[str], add]  # For de-dup tracking (Issue #7)
+
+    
+    # ==================== Request Classification ====================
+    request_classification: Annotated[Optional[Dict], lambda x, y: y]
+    request_type: Annotated[Literal["workflow", "query", "unknown"], lambda x, y: y]
+    operation_name: Annotated[str, lambda x, y: y]
+    
+    # ==================== Query Results ====================
+    query_results: Annotated[List[dict], add]
+    query_formatted_response: Annotated[str, lambda x, y: y]
+
+
 class WorkflowMetadata(BaseModel):
     """Workflow execution metadata"""
     workflow_id: str
@@ -157,6 +270,7 @@ class SupervisorWorkflowState(BaseModel):
         "generation",
         "validation",
         "helm_mgmt",
+        "argocd_onboarding",
         "error",
         "complete"
     ] = Field(default="requirements", description="Current workflow phase")
@@ -166,6 +280,7 @@ class SupervisorWorkflowState(BaseModel):
     generation_complete: bool = Field(default=False, description="Generation phase complete (generated_artifacts exists)")
     validation_complete: bool = Field(default=False, description="Validation phase complete (validation_results populated)")
     helm_mgmt_complete: bool = Field(default=False, description="Helm Management Agent phase complete (helm_mgmt_response populated)")
+    argocd_onboarding_complete: bool = Field(default=False, description="ArgoCD Onboarding Agent phase complete (argocd_onboarding_response populated)")
     # HITL approval tracking (mirrors human_approval_status)
     planning_approved: bool = Field(default=False, description="Planning approved by human")
     generation_approved: bool = Field(default=False, description="Generation (Artifacts) approved by human")
@@ -239,6 +354,9 @@ class SupervisorWorkflowState(BaseModel):
         elif phase == "helm_mgmt":
             self.helm_mgmt_complete = True
             self.current_phase = "helm_mgmt"
+        elif phase == "argocd_onboarding":
+            self.argocd_onboarding_complete = True
+            self.current_phase = "argocd_onboarding"
         
         # Update transition timestamp
         self.last_phase_transition = datetime.now(timezone.utc)
@@ -275,6 +393,7 @@ class SupervisorWorkflowState(BaseModel):
             "generation_approved": self.generation_approved,
             "validation_complete": self.validation_complete,
             "helm_mgmt_complete": self.helm_mgmt_complete,
+            "argocd_onboarding_complete": self.argocd_onboarding_complete,
             "workflow_complete": self.workflow_complete,
             "loop_counter": self.loop_counter,
             "last_swarm": self.last_swarm,
@@ -321,6 +440,7 @@ class MainSupervisorState(AgentState):
         "generation", 
         "validation", 
         "helm_mgmt",
+        "argocd_onboarding",
         "error"
     ]]
     
@@ -330,6 +450,7 @@ class MainSupervisorState(AgentState):
     helm_chart_artifacts: NotRequired[Dict[str, str]]  # filepath -> content
     validation_results: Annotated[List[ValidationResult], add]
     helm_mgmt_response: NotRequired[str]
+    argocd_onboarding_response: NotRequired[str]
     # HITL tracking - initialized with defaults
     human_approval_status: NotRequired[Dict[str, ApprovalStatus]]
     

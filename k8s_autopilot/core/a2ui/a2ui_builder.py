@@ -206,7 +206,7 @@ def build_hitl_approval_a2ui(
                                 "action": {
                                     "name": "hitl_response",
                                     "context": [
-                                        {"key": "decision", "value": {"literalString": "rejected"}},
+                                        {"key": "decision", "value": {"literalString": "reject"}},
                                         {"key": "phase", "value": {"path": "phaseId"}}
                                     ]
                                 }
@@ -228,7 +228,7 @@ def build_hitl_approval_a2ui(
                                 "action": {
                                     "name": "hitl_response",
                                     "context": [
-                                        {"key": "decision", "value": {"literalString": "approved"}},
+                                        {"key": "decision", "value": {"literalString": "approve"}},
                                         {"key": "phase", "value": {"path": "phaseId"}}
                                     ]
                                 }

@@ -37,17 +37,22 @@ class MCPAdapterClient:
     - Tool, Resource, and Prompt support
     - Configuration driven via k8s_autopilot.config.Config
     - Robust error handling and logging
+    - Server filtering to connect only to specific servers
     """
     
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Optional[Config] = None, server_filter: Optional[List[str]] = None):
         """
         Initialize the MCP adapter client.
         
         Args:
             config: Configuration object containing MCP server details.
                     If None, it tries to load default configuration.
+            server_filter: Optional list of server names to connect to.
+                          If None, connects to all configured servers.
+                          Valid values: ['helm_mcp_server', 'argocd_mcp_server']
         """
         self.config = config or Config()
+        self.server_filter = server_filter  # e.g., ['argocd_mcp_server']
         self.client: Optional[MultiServerMCPClient] = None
         self._exit_stack = AsyncExitStack()
         self.tools: List[BaseTool] = []
@@ -61,28 +66,57 @@ class MCPAdapterClient:
         """
         Build MCP server configuration for MultiServerMCPClient.
         Iterates through supported servers defined in Config.
+        
+        If server_filter is set, only includes servers in that list.
         """
         servers = {}
         
+        # Helper to check if server should be included
+        def should_include(server_name: str) -> bool:
+            if self.server_filter is None:
+                return True  # No filter = include all
+            return server_name in self.server_filter
+        
         # 1. Helm MCP Server
-        helm_config = getattr(self.config, 'helm_mcp_config', {})
-        if helm_config and not helm_config.get('disabled', False):
-            host = helm_config.get('host', 'localhost')
-            port = helm_config.get('port', 10100)
-            transport = helm_config.get('transport', 'sse')
-            
-            if transport == 'sse':
-                servers['helm_mcp_server'] = {
-                    "url": f"http://{host}:{port}/sse",
-                    "transport": "sse"
-                }
-            elif transport == 'stdio':
-                 # Assuming a standard location or command for stdio if ever needed
-                 # This is a placeholder as stdio usually requires specific command paths
-                pass
+        if should_include('helm_mcp_server'):
+            helm_config = getattr(self.config, 'helm_mcp_config', {})
+            if helm_config and not helm_config.get('disabled', False):
+                host = helm_config.get('host', 'localhost')
+                port = helm_config.get('port', 10100)
+                transport = helm_config.get('transport', 'sse')
+                
+                if transport == 'sse':
+                    servers['helm_mcp_server'] = {
+                        "url": f"http://{host}:{port}/sse",
+                        "transport": "sse"
+                    }
+                elif transport == 'stdio':
+                     # Assuming a standard location or command for stdio if ever needed
+                     # This is a placeholder as stdio usually requires specific command paths
+                    pass
 
-        # 2. ArgoCD MCP Server (Example for future/other usage)
-        # argocd_config = ...
+        # 2. ArgoCD MCP Server
+        if should_include('argocd_mcp_server'):
+            argocd_config = getattr(self.config, 'argocd_mcp_config', {})
+            if argocd_config and not argocd_config.get('disabled', False):
+                host = argocd_config.get('host', 'localhost')
+                port = argocd_config.get('port', 10101)
+                transport = argocd_config.get('transport', 'sse')
+                
+                if transport == 'sse':
+                    servers['argocd_mcp_server'] = {
+                        "url": f"http://{host}:{port}/sse",
+                        "transport": "sse"
+                    }
+                elif transport == 'stdio':
+                    # For stdio transport, specify command and args
+                    command = argocd_config.get('command', 'python')
+                    args = argocd_config.get('args', ['-m', 'argocd_mcp_server'])
+                    servers['argocd_mcp_server'] = {
+                        "command": command,
+                        "args": args,
+                        "transport": "stdio"
+                    }
         
         return servers
     
@@ -112,9 +146,9 @@ class MCPAdapterClient:
         """
         Execute a tool on the specified server, ensuring a valid session exists.
         """
-        # Lazy initialization if needed
+        # Ensure persistent sessions exist for runtime execution
         if not self._sessions:
-            await self.initialize()
+            await self.initialize(persist_sessions=True)
             
         session = self._sessions.get(server_name)
         if not session:
@@ -148,39 +182,57 @@ class MCPAdapterClient:
         
         return "\n".join(output)
 
-    async def initialize(self) -> None:
-        """Initialize the MCP client connection and load tools."""
-        if self._sessions:
-            return
+    async def initialize(self, persist_sessions: bool = False) -> None:
+        """
+        Initialize the MCP client.
+
+        There are two modes:
+        - persist_sessions=False (default): load tool schemas using short-lived sessions.
+          This is safe to run inside short-lived event loops (e.g., `asyncio.run(...)` during startup).
+        - persist_sessions=True: open and keep sessions alive in `self._exit_stack` for tool execution
+          and resource reads. This MUST happen in the same event loop that will use the sessions.
+        """
+        if persist_sessions:
+            if self._sessions:
+                return
+        else:
+            # Tools already discovered
+            if self.tools:
+                return
 
         if not self.mcp_config:
             # If no servers are configured, we warn but don't crash
             print("Warning: No MCP servers configured.")
             return
 
-        # Initialize the MultiServerMCPClient (factory)
-        self.client = MultiServerMCPClient(self.mcp_config)
+        # Initialize the MultiServerMCPClient (factory). Safe to keep across loops.
+        # Sessions are always opened within the active event loop.
+        if self.client is None:
+            self.client = MultiServerMCPClient(self.mcp_config)
         
         # Connect to each configured server and maintain persistent sessions
         from langchain_mcp_adapters.tools import load_mcp_tools
         from langchain_core.tools import StructuredTool
 
         try:
-            new_tools = []
+            new_tools: List[BaseTool] = []
             for server_name in self.mcp_config:
-                # Enter persistent session context
-                session = await self._exit_stack.enter_async_context(
-                    self.client.session(server_name)
-                )
-                self._sessions[server_name] = session
-                
-                # Load raw tools from this session
-                server_tools = await load_mcp_tools(session)
-                
-                # Wrap tools
+                if persist_sessions:
+                    # Enter persistent session context (kept open until close()).
+                    session = await self._exit_stack.enter_async_context(
+                        self.client.session(server_name)
+                    )
+                    self._sessions[server_name] = session
+                    server_tools = await load_mcp_tools(session)
+                else:
+                    # Tool discovery mode: open/close within the same loop to avoid
+                    # async generator cleanup issues when the loop exits.
+                    async with self.client.session(server_name) as session:
+                        server_tools = await load_mcp_tools(session)
+
                 for tool in server_tools:
-                     wrapper = self._create_tool_wrapper(tool, server_name)
-                     new_tools.append(wrapper)
+                    wrapper = self._create_tool_wrapper(tool, server_name)
+                    new_tools.append(wrapper)
             
             # If we re-initialized, we might want to update self.tools?
             # But if we are re-initializing in a new loop, self.tools might already exist (orphans).
@@ -208,7 +260,7 @@ class MCPAdapterClient:
     @asynccontextmanager
     async def session(self):
         """Context manager for MCP client session."""
-        await self.initialize()
+        await self.initialize(persist_sessions=True)
         try:
             yield self
         finally:
@@ -232,7 +284,7 @@ class MCPAdapterClient:
         """
         # Lazy init
         if not self._sessions:
-            await self.initialize()
+            await self.initialize(persist_sessions=True)
 
         session = self._sessions.get(server_name)
         if not session:
@@ -276,7 +328,7 @@ class MCPAdapterClient:
         """
         # Lazy init
         if not self._sessions:
-            await self.initialize()
+            await self.initialize(persist_sessions=True)
 
         session = self._sessions.get(server_name)
         if not session:
