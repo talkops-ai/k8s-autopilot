@@ -224,7 +224,7 @@ docker run -d -p 10102:10102 \
 **Available Docker tags:**
 
 - `latest` - Latest stable release
-- `v0.3.0` - Specific version
+- `vX.Y.Z` - Specific version (release tag)
 
 #### Option 2: Standalone Installation
 
@@ -264,14 +264,19 @@ docker run -d -p 10102:10102 \
 
 ### Working with Agents
 
-The easiest way to interact with k8s-autopilot is using the **TalkOps Web UI** via Docker Compose, which sets up the complete stack including the k8s-autopilot agent, Helm MCP Server, Argocd MCP Server and TalkOps Web UI.
+The easiest way to interact with k8s-autopilot is using the **TalkOps Web UI** via Docker Compose, which sets up the complete stack including the k8s-autopilot agent, Helm MCP Server, ArgoCD MCP Server, and TalkOps Web UI.
 
 1. **Create a `.env` file** in the project root with your LLM provider API key:
 
    ```bash
    # Required: LLM Provider API Key
    OPENAI_API_KEY=your_openai_api_key_here
+   
+   # Required for ArgoCD workflows
    ARGOCD_AUTH_TOKEN=argocd_auth_token
+   # Optional override (docker-compose.yml defaults to host.docker.internal)
+   # ARGOCD_SERVER_URL=https://host.docker.internal:9090
+
    # Optional: Customize LLM models (defaults shown below)
    # LLM_PROVIDER=openai
    # LLM_MODEL=gpt-4o-mini
@@ -287,14 +292,14 @@ The easiest way to interact with k8s-autopilot is using the **TalkOps Web UI** v
    docker-compose up -d
    ```
 
-   This will start three services:
+   This will start four services:
    - **k8s-autopilot**: The main agent (port 10102)
    - **helm-mcp-server**: Helm operations backend (port 9000 by default in `docker-compose.yml`)
-   - **argocd-mcp-server**: Argocd Operations backend (port 8765 by default in `docker-compose.yml`)
+   - **argocd-mcp-server**: ArgoCD operations backend (port 8765 by default in `docker-compose.yml`)
    - **talkops-ui**: Web interface (port 8080)
 
-   **Optional (for ArgoCD workflows)**:
-   - Start the ArgoCD MCP server as well (see `docker-compose.yml`) and set:
+   **Required (for ArgoCD workflows)**:
+   - Set (in `.env`):
      - `ARGOCD_SERVER_URL`
      - `ARGOCD_AUTH_TOKEN`
      - `ARGOCD_MCP_SERVER_HOST/PORT/TRANSPORT`
@@ -569,7 +574,7 @@ For detailed configuration instructions, supported status, and API key setup for
 - [x] **Helm Management Agent**: Live cluster operations
 - [x] Comprehensive documentation
 
-### Current Release (v0.2.0)
+### Past Release (v0.2.0)
 
 **✅ Implemented**:
 - [x] **Helm Management Agent**: Full lifecycle management (Install, Upgrade, Rollback) with active cluster state awareness
@@ -577,33 +582,43 @@ For detailed configuration instructions, supported status, and API key setup for
 - [x] **A2UI & A2A Protocol**: Seamless integration with Google's Agent-to-Agent (A2A) protocol and rich UI components via A2UI
 - [x] **ArgoCD Onboarding Agent**: Projects, repositories, and applications via ArgoCD MCP server with HITL plan review and tool-level approvals
 
+### Current Release (v0.3.0)
+
+**✅ Implemented (ArgoCD updates)**:
+- [x] **Agentic onboarding workflow**: prerequisite validation → plan preview → tool execution
+- [x] **Deterministic HITL**:
+  - Missing-input pauses only at tool boundaries (no repeated “clarification loops”)
+  - Tool-level approvals for `create_application` (always) and destructive ops like `delete_application`
+- [x] **Safe deletion flow**: exact-name confirmation step before `delete_application`
+- [x] **Repo URL consistency**: avoids SSH↔HTTPS drift that causes “repo not permitted in project”
+- [x] **No credential probing**: the agent does not ask for SSH secret names (assumes server-side config)
+
 
 ### Future Releases
 
-**v0.3.0 - Enhanced Validation** (Planned):
+**v0.4.0 - Enhanced Validation** (Planned):
 - [ ] Policy compliance checking
 - [ ] Helm unit test generation
-- [x] ArgoCD Application Onboarding
 - [ ] Traefik IngressRoute improvements and enhanced features
 
-**v0.3.0 - Deployment Automation** (Planned):
+**v0.5.0 - Deployment Automation** (Planned):
 - [ ] Automated deployment to Kubernetes clusters
 - [ ] Deployment rollback capabilities
 - [ ] Multi-cluster deployment strategies
 - [ ] Deployment status monitoring
 
-**v0.4.0 - CI/CD Integration** (Planned):
+**v0.6.0 - CI/CD Integration** (Planned):
 - [ ] GitHub Actions workflow generation
 - [ ] GitLab CI pipeline generation
 - [ ] Jenkins pipeline generation
 
-**v0.5.0 - Testing & Evaluation** (Planned):
+**v0.7.0 - Testing & Evaluation** (Planned):
 - [ ] Test case generation for Helm charts
 - [ ] Evaluation framework integration
 - [ ] Automated testing integration
 - [ ] Chart quality metrics and scoring
 
-**v0.6.0 - Extended Capabilities** (Planned):
+**v0.8.0 - Extended Capabilities** (Planned):
 - [ ] Application monitoring setup (Prometheus, Grafana)
 - [ ] Logging aggregation (ELK, Loki)
 - [ ] Service mesh integration (Istio, Linkerd)
@@ -623,7 +638,7 @@ Each agent swarm is independently deployable and scalable, allowing for:
 LangGraph provides:
 - Explicit state management with reducers
 - Checkpointing for resumable workflows
-- Interrupt handling for HITL interactions
+- Interrupt handling for HITL interactions (pause/resume)
 
 ### 3. **Tool-Based Delegation**
 Supervisor uses tool wrappers instead of manual routing:
@@ -631,14 +646,22 @@ Supervisor uses tool wrappers instead of manual routing:
 - Simplified graph building
 - Easy to add new swarms
 
-### 4. **Human-Centric Design**
-HITL gates ensure:
+### 4. **MCP-Backed Live Operations**
+All live cluster / control-plane actions are executed via MCP servers (e.g., Helm MCP, ArgoCD MCP):
+- Agents **read real state** before acting (no guessing)
+- Mutations are **auditable** and can be gated (see HITL)
+- Credentials are handled server-side (agents avoid prompting for secrets)
+
+### 5. **Human-Centric Design**
+HITL gates ensure safety without turning the system into a “chatbot loop”:
 - Human oversight at critical points
-- Approval workflows for production readiness
+- Plan previews in plain English (approve/reject)
+- Tool-level approvals for high-impact actions (e.g., create/delete/sync)
+- Deterministic missing-input pauses only when a required tool arg is missing
 - Escalation when autonomous fixes fail
 
-### 5. **Self-Healing Capabilities**
-Agents autonomously fix common errors:
+### 6. **Self-Healing Capabilities**
+Agents autonomously fix common recoverable errors:
 - YAML indentation issues
 - Deprecated API versions
 - Missing required fields
@@ -705,7 +728,12 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 - **LangChain Team**: For the excellent LangChain and LangGraph frameworks
 - **Google A2A Protocol**: For the Agent-to-Agent communication protocol enabling enterprise agent ecosystems
-- **CNCF**: For Kubernetes and Helm community standards
+- **A2UI**: For rich, structured UI components (forms/cards/buttons) used in Human-in-the-Loop flows
+- **Argo Project / ArgoCD**: For GitOps application delivery patterns and tooling
+- **Model Context Protocol (MCP) ecosystem**: For standardizing tool access between agents and control planes
+- **Kubernetes**: For the core platform that makes declarative orchestration possible
+- **Helm**: For packaging, templating, and lifecycle management of Kubernetes apps
+- **CNCF**: For Kubernetes and Helm community standards and stewardship
 - **Traefik**: For modern ingress routing capabilities
 
 ---
