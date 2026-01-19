@@ -63,12 +63,12 @@ services:
       - k8s-autopilot-net
 
   argocd-mcp-server:
-    image: sandeep2014/talkops-mcp:argocd-mcp-server-latest
+    image: argocd-mcp-server:latest
     container_name: argocd-mcp-server
     environment:
       # ArgoCD Server Configuration
       # NOTE: Use host.docker.internal to access ArgoCD server running on the host
-      - ARGOCD_SERVER_URL=${ARGOCD_SERVER_URL:-https://host.docker.internal:8080}
+      - ARGOCD_SERVER_URL=${ARGOCD_SERVER_URL:-https://host.docker.internal:9090}
       - ARGOCD_AUTH_TOKEN=${ARGOCD_AUTH_TOKEN}
       - ARGOCD_INSECURE=${ARGOCD_INSECURE:-true}
 
@@ -91,7 +91,7 @@ services:
       - k8s-autopilot-net
 
   talkops-ui:
-    image: talkops-ui
+    image: talkops-ui:latest
     container_name: talkops-ui
     environment:
       - K8S_AGENT_URL=http://localhost:10102

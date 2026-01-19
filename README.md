@@ -4,7 +4,7 @@
 
 [![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/hFt5DAYEVx) [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-sandeep2014/k8s--autopilot-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://hub.docker.com/r/sandeep2014/k8s-autopilot) [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge)](LICENSE) [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/) [![LangGraph](https://img.shields.io/badge/LangGraph-Multi--Agent-FF6B6B?style=for-the-badge)](https://github.com/langchain-ai/langgraph) [![A2A Protocol](https://img.shields.io/badge/Google%20A2A-Protocol-4285F4?style=for-the-badge)](https://github.com/google/a2a)
 
-**k8s-autopilot** is an intelligent, multi-agent framework that automates the complete lifecycle of Kubernetes operations. Built on LangChain and LangGraph, it acts as a unified platform for both **Helm Chart Generation** (transforming natural language requirements into production-ready charts) and **Active Cluster Management** (installing, upgrading, and maintaining releases with Human-in-the-loop safety).
+**k8s-autopilot** is an intelligent, multi-agent framework that automates the lifecycle of Kubernetes operations. Built on LangChain and LangGraph, it unifies **Helm Chart Generation** (natural language → production-ready charts), **Helm Release Management** (install/upgrade/rollback via Helm MCP), and **ArgoCD GitOps Onboarding & Management** (projects/repos/apps via ArgoCD MCP) with Human-in-the-Loop safety.
 
 ---
 
@@ -27,9 +27,10 @@ k8s-autopilot automates the end-to-end lifecycle of Kubernetes operations, from 
 1. **📋 Planning**: Analyzes requirements, validates completeness, and designs Kubernetes architecture
 2. **⚙️ Generation**: Generates Helm templates, values files, and documentation
 3. **✅ Validation**: Validates charts, performs security scanning, and ensures production readiness
-4. **� Management**: Installs, upgrades, and rolls back releases on active clusters via a dual-path agent
-5. **�🔄 Self-Healing**: Automatically fixes common errors (YAML indentation, deprecated APIs, missing fields)
-6. **👤 Human-in-the-Loop**: Requests approvals at critical workflow points (Plan, Template, Execution)
+4. **🛠️ Management**: Installs, upgrades, and rolls back Helm releases on active clusters via MCP
+5. **🚀 ArgoCD Onboarding**: Manages ArgoCD projects, repositories, and applications (create/update/delete/sync) via MCP
+6. **🔄 Self-Healing**: Automatically fixes common errors (YAML indentation, deprecated APIs, missing fields)
+7. **👤 Human-in-the-Loop**: Requests approvals at critical workflow points (plan review and tool-level approvals)
 
 ### Current Capabilities
 
@@ -39,10 +40,13 @@ k8s-autopilot automates the end-to-end lifecycle of Kubernetes operations, from 
 - Traefik IngressRoute generation (modern CRD-based routing)
 - Helm chart validation (lint, template rendering, cluster compatibility)
 - Self-healing validation errors
-- Self-healing validation errors
 - Human-in-the-loop approvals
 - **Active Helm Management**: Install, Upgrade, Rollback, Uninstall charts
 - **Cluster Discovery**: Inspect releases and cluster state
+- **ArgoCD Onboarding & Management**: Projects, repositories, applications (create/update/delete/sync), diff/status
+
+📖 **ArgoCD onboarding docs**: [`docs/app_onboarding/README.md`](./docs/app_onboarding/README.md)  
+📖 **Helm management docs**: [`docs/helm_mgmt/README.md`](./docs/helm_mgmt/README.md)
 
 **🚧 Planned** (Future Releases):
 - Automated deployment to Kubernetes clusters
@@ -59,32 +63,47 @@ k8s-autopilot follows a **hierarchical supervisor-with-swarms** pattern, leverag
 ### High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Supervisor Agent                              │
-│  - Orchestrates workflow phases                                  │
-│  - Manages HITL approvals                                        │
-│  - Coordinates agent swarms                                      │
-│  - Handles state transformation                                  │
-└──────────────┬───────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                           Supervisor Agent                           │
+│  - Routes user intent to the right workflow                           │
+│  - Orchestrates phases + shared state                                 │
+│  - Manages HITL (plan review + tool-level approvals)                  │
+└──────────────┬───────────────────────────┬───────────────────────────┘
+               │                           │
+     (Helm Chart Generation)        (Live Ops via MCP)
+               │                           │
+               ▼                           ▼
+┌────────────────────────────┐     ┌───────────────────────────────┐
+│ Planner Agent (Deep Agent) │     │ Helm Mgmt Agent (Deep Agent)   │
+└──────────────┬─────────────┘     └──────────────┬────────────────┘
+               │                                  │
+               ▼                                  ▼
+┌────────────────────────────┐     ┌───────────────────────────────┐
+│ Template Coordinator        │     │ Helm MCP Server                │
+│ (LangGraph StateGraph)      │     │ (reads/writes cluster via Helm) │
+└──────────────┬─────────────┘     └───────────────────────────────┘
                │
-    ┌──────────┴──────────┬──────────────┬──────────────────────┐
-    │                     │              │                      │
-    ▼                     ▼              ▼                      ▼
-┌─────────────┐    ┌──────────────┐  ┌──────────────┐   ┌─────────────┐
-│  Planner    │    │  Template    │  │  Generator   │   │  HITL       │
-│  Agent      │───▶│  Coordinator │──▶│  Agent       │   │  Gates      │
-│             │    │              │  │              │   │             │
-│ (Deep       │    │ (LangGraph   │  │ (Deep        │   │ (Interrupt  │
-│  Agent)     │    │  StateGraph) │  │  Agent)      │   │  Tools)     │
-└─────────────┘    └──────────────┘  └──────────────┘   └─────────────┘
-       ▲
-       │ (Generative Flow)
-       │
-┌─────────────┐
-│  Helm Mgmt  │ (Operational Flow)
-│  Agent      │◀───────────────────
-│ (Deep Agent)│
-└─────────────┘
+               ▼
+┌────────────────────────────┐
+│ Generator Agent (Validator) │
+└──────────────┬─────────────┘
+               │
+               ▼
+┌────────────────────────────┐
+│ HITL Gates                  │
+│ (interrupts + structured UI)│
+└────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                 ArgoCD Onboarding Agent (Deep Agent)                 │
+│  - Projects / Repos / Apps (create/update/delete/sync)               │
+│  - Deterministic missing-input pauses + templated approvals          │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                ▼
+                     ┌───────────────────────────────┐
+                     │ ArgoCD MCP Server               │
+                     │ (talks to your ArgoCD API)      │
+                     └───────────────────────────────┘
 ```
 
 ### Architecture Components
@@ -146,6 +165,21 @@ Specialized operational agent for managing Helm releases on active clusters.
 - **Helm MCP Server**: The Helm Management agent requires the [Helm MCP Server](./docs/mcp/helm-mcp-server.md) to be running and configured. The MCP server provides the underlying tools and resources for Helm operations (chart discovery, installation, validation, monitoring, etc.).
 
 📖 **[Helm Management Documentation](./docs/helm_mgmt/README.md)** | 📖 **[Helm MCP Server Documentation](./docs/mcp/helm-mcp-server.md)**
+
+#### 6. **ArgoCD Onboarding Deep Agent**
+Specialized operational agent for managing ArgoCD projects, repositories, and applications (GitOps onboarding).
+
+**Key Features**:
+- **Prerequisite-first** workflow: validates project/repo/app state before changes
+- **Agentic UX**: plan preview + clear approvals before mutations
+- **Safety**: deterministic missing-input pauses and templated approvals (create/delete/sync)
+- **Repo URL consistency**: avoids “repo not permitted in project” drift (SSH vs HTTPS)
+
+**Dependencies**:
+- **ArgoCD MCP Server**: required for ArgoCD workflows.
+  - Reference implementation: `https://github.com/talkops-ai/talkops-mcp/tree/main/src/argocd-mcp-server`
+
+📖 **[ArgoCD Onboarding Documentation](./docs/app_onboarding/README.md)**
 
 ---
 
@@ -255,8 +289,14 @@ The easiest way to interact with k8s-autopilot is using the **TalkOps Web UI** v
 
    This will start three services:
    - **k8s-autopilot**: The main agent (port 10102)
-   - **helm-mcp-server**: Helm operations backend (port 9000)
+   - **helm-mcp-server**: Helm operations backend (port 9000 by default in `docker-compose.yml`)
    - **talkops-ui**: Web interface (port 8080)
+
+   **Optional (for ArgoCD workflows)**:
+   - Start the ArgoCD MCP server as well (see `docker-compose-dev.yml`) and set:
+     - `ARGOCD_SERVER_URL`
+     - `ARGOCD_AUTH_TOKEN`
+     - `ARGOCD_MCP_SERVER_HOST/PORT/TRANSPORT`
 
 3. **Access the Web UI** by opening your browser to:
 
@@ -282,7 +322,17 @@ The easiest way to interact with k8s-autopilot is using the **TalkOps Web UI** v
    Install argo-cd helm chart from this repository - https://argoproj.github.io/argo-helm
    ```
 
-   The agent will guide you through the process, asking for clarifications if needed, and generate production-ready Helm charts or perform cluster operations via MCP server.
+   The agent will guide you through the process, asking for clarifications if needed, and generate production-ready Helm charts or perform cluster operations via MCP servers.
+
+   **ArgoCD examples**:
+
+   ```
+   Onboard the application from the repository git@github.com:helm/examples.git located at charts/hello-world.
+   ```
+
+   ```
+   Delete application hello-world
+   ```
 
 5. **Access generated charts**: Charts are saved to `./helm_output` directory on your host machine.
 
@@ -290,7 +340,11 @@ The easiest way to interact with k8s-autopilot is using the **TalkOps Web UI** v
 
 ## 🔄 Workflows
 
-k8s-autopilot supports two primary workflows: **Helm Chart Generation** (creating new charts from scratch) and **Helm Management** (managing releases on active clusters).
+k8s-autopilot supports three primary workflows:
+
+1) **Helm Chart Generation** (create charts from scratch)
+2) **Helm Management** (manage Helm releases on live clusters via Helm MCP)
+3) **ArgoCD Onboarding & Management** (manage ArgoCD projects/repos/apps via ArgoCD MCP)
 
 ### Workflow 1: Helm Chart Generation
 
@@ -379,6 +433,32 @@ User Request: "Install argo-cd from https://argoproj.github.io/argo-helm"
 - ⬆️ **Upgrade**: Update existing releases with diff preview
 - ⏮️ **Rollback**: Revert to previous revisions
 - 🗑️ **Uninstall**: Remove releases from cluster
+
+### Workflow 3: ArgoCD Onboarding & Management (via MCP Server)
+
+For managing ArgoCD applications, repositories, and projects using GitOps patterns:
+
+```
+User Request: "Onboard the application from repo X at path Y"
+    ↓
+1. Orchestrator → Prerequisite validation
+   - Checks project exists and is configured correctly
+   - Checks repository registration and connectivity
+   - Checks whether application already exists
+    ↓
+2. Orchestrator → Plan preview (HITL)
+   - Shows a plain-English plan preview (goal/where/steps/risks)
+   - Requests plan approval (approve/reject)
+    ↓
+3. Execute with checkpoints
+   - Missing-input pauses only when a tool is about to run without required args
+   - Tool-level approvals for create/delete/sync
+    ↓
+4. Continuous validation
+   - Uses diff/status tools when available to confirm outcomes
+```
+
+📖 **ArgoCD onboarding docs**: [`docs/app_onboarding/README.md`](./docs/app_onboarding/README.md)
 
 ### Human-in-the-Loop Gates
 
@@ -494,6 +574,7 @@ For detailed configuration instructions, supported status, and API key setup for
 - [x] **Helm Management Agent**: Full lifecycle management (Install, Upgrade, Rollback) with active cluster state awareness
 - [x] **Multi-LLM Model Support**: Provider-agnostic architecture supporting a mix of models (OpenAI, Anthropic, Gemini, Bedrock) optimized for cost and performance
 - [x] **A2UI & A2A Protocol**: Seamless integration with Google's Agent-to-Agent (A2A) protocol and rich UI components via A2UI
+- [x] **ArgoCD Onboarding Agent**: Projects, repositories, and applications via ArgoCD MCP server with HITL plan review and tool-level approvals
 
 
 ### Future Releases
@@ -501,7 +582,7 @@ For detailed configuration instructions, supported status, and API key setup for
 **v0.3.0 - Enhanced Validation** (Planned):
 - [ ] Policy compliance checking
 - [ ] Helm unit test generation
-- [ ] ArgoCD Application Onboarding
+- [x] ArgoCD Application Onboarding
 - [ ] Traefik IngressRoute improvements and enhanced features
 
 **v0.3.0 - Deployment Automation** (Planned):
