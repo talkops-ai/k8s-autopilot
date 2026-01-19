@@ -686,3 +686,212 @@ Chart files should be at: {chart_path}"""
         }
         
         return return_dict
+
+    # ============================================================================
+    # ArgoCD Onboarding Agent Transformations
+    # ============================================================================
+
+    @staticmethod
+    def supervisor_to_argocd_onboarding(supervisor_state: MainSupervisorState) -> Dict:
+        """
+        Transform supervisor state to ArgoCD Onboarding Agent input state.
+        
+        Maps:
+        - user_query → user_request
+        - messages → messages (initialized with user query)
+        - Initializes all required ArgoCDOnboardingState fields with defaults
+        """
+        user_query = supervisor_state.get("user_query", "")
+        messages = [HumanMessage(content=user_query)] if user_query else []
+        
+        return {
+            # Core message history
+            "messages": messages,
+            
+            # User request information
+            "user_request": user_query,
+            "user_id": "user",  # Default
+            "session_id": supervisor_state.get("session_id", "default"),
+            
+            # Workflow type and phase
+            "workflow_type": "onboarding",
+            "current_phase": 1,
+            
+            # Cluster context
+            "cluster_context": {},
+            
+            # ArgoCD Project State
+            "project_info": {},
+            "project_list": [],
+            "project_created": False,
+            "project_validation_result": None,
+            
+            # ArgoCD Repository State
+            "repository_info": {},
+            "repository_list": [],
+            "repo_validation_result": None,
+            "repo_onboarded": False,
+            
+            # ArgoCD Application State
+            "application_info": {},
+            "application_list": [],
+            "application_created": False,
+            "application_details": None,
+            
+            # Deployment/Sync State
+            "sync_operation_id": None,
+            "deployment_status": None,
+            "health_report": None,
+            "sync_status": None,
+            
+            # Debug Results
+            "debug_results": {},
+            "logs_collected": [],
+            "events_collected": [],
+            "metrics_collected": None,
+            
+            # Approvals (HITL Checkpoints)
+            "approval_checkpoints": [],
+            "pending_approval": False,
+            "approval_status": "pending",
+            "checkpoint_1_approved": False,
+            "checkpoint_2_approved": False,
+            "checkpoint_3_approved": False,
+            "checkpoint_4_approved": False,
+            
+            # Audit Trail
+            "audit_log": [],
+            "execution_logs": [],
+            
+            # Error Handling
+            "errors": [],
+            "warnings": [],
+            "last_error": None,
+            "error_count": 0,
+            
+            # Deep Agent Compatibility
+            "remaining_steps": None,
+            "_seen_tool_calls": [],
+            
+            # Request Classification
+            "request_classification": None,
+            "request_type": "unknown",
+            "operation_name": "",
+            
+            # Query Results
+            "query_results": [],
+            "query_formatted_response": "",
+        }
+
+    @staticmethod
+    def argocd_onboarding_to_supervisor(
+        argocd_state: Dict,
+        original_supervisor_state: MainSupervisorState,
+        tool_call_id: str
+    ) -> Dict:
+        """
+        Transform ArgoCD Onboarding Agent output back to supervisor state updates.
+        
+        Maps:
+        - messages → summary ToolMessage with actual response content
+        - Updates workflow_state.argocd_onboarding_complete via set_phase_complete("argocd_onboarding")
+        - Stores response in argocd_onboarding_response field
+        """
+        
+        # Reconstruct workflow state object (similar to helm_mgmt_to_supervisor)
+        current_workflow_state = original_supervisor_state.get("workflow_state")
+        if current_workflow_state:
+            # Ensure it's a SupervisorWorkflowState object
+            if isinstance(current_workflow_state, dict):
+                workflow_state_obj = SupervisorWorkflowState(**current_workflow_state)
+            else:
+                workflow_state_obj = current_workflow_state
+        else:
+            # Fallback if no workflow state exists
+            workflow_state_obj = SupervisorWorkflowState(
+                workflow_id=original_supervisor_state.get("task_id", ""),
+                current_phase="argocd_onboarding"
+            )
+        
+        # Get the last message from the agent to extract the actual response
+        messages = argocd_state.get("messages", [])
+        last_content = "No response from ArgoCD Onboarding Agent."
+        
+        # Find the last AIMessage (this is the agent's final response)
+        for msg in reversed(messages):
+            if hasattr(msg, 'type') and msg.type == "ai":
+                last_content = msg.content if hasattr(msg, 'content') else str(msg)
+                break
+            elif isinstance(msg, dict) and msg.get("type") == "ai":
+                last_content = msg.get("content", str(msg))
+                break
+        
+        # If still no content, try to extract from any message with content
+        if last_content == "No response from ArgoCD Onboarding Agent.":
+            for msg in reversed(messages):
+                if hasattr(msg, 'content'):
+                    content = msg.content
+                    if content and content != "No response from ArgoCD Onboarding Agent.":
+                        last_content = str(content)
+                        break
+        
+        # Build a summary from the ArgoCD state
+        summary_parts = []
+        
+        # Project status
+        if argocd_state.get("project_created"):
+            project_name = argocd_state.get("project_info", {}).get("name", "unknown")
+            summary_parts.append(f"✅ Project '{project_name}' created")
+        
+        # Repository status
+        if argocd_state.get("repo_onboarded"):
+            repo_url = argocd_state.get("repository_info", {}).get("url", "unknown")
+            summary_parts.append(f"✅ Repository '{repo_url}' onboarded")
+        
+        # Application status
+        if argocd_state.get("application_created"):
+            app_name = argocd_state.get("application_info", {}).get("name", "unknown")
+            summary_parts.append(f"✅ Application '{app_name}' created")
+            
+            # Sync status
+            sync_status = argocd_state.get("sync_status")
+            if sync_status:
+                summary_parts.append(f"📊 Sync status: {sync_status}")
+        
+        # Errors
+        errors = argocd_state.get("errors", [])
+        if errors:
+            summary_parts.append(f"⚠️ Errors: {len(errors)}")
+        
+        state_summary = " | ".join(summary_parts) if summary_parts else "Operation completed"
+
+        # Mark argocd_onboarding phase as complete (HITL/input handling happens in the ArgoCD subgraph)
+        workflow_state_obj.set_phase_complete("argocd_onboarding")
+        workflow_state_obj.last_swarm = "argocd_onboarding_swarm"
+        workflow_state_obj.current_phase = "argocd_onboarding"
+        
+        # Return object directly to avoid Pydantic serialization warnings
+        updated_workflow_state = workflow_state_obj
+        
+        # Create summary messages (similar to helm_mgmt_to_supervisor pattern)
+        summary_messages = [
+            ToolMessage(
+                content=last_content,  # Direct response, not wrapped
+                tool_call_id=tool_call_id
+            ),
+            HumanMessage(
+                content=f"ArgoCD Onboarding Agent completed. {state_summary}"
+            )
+        ]
+        
+        # Build return dictionary
+        return_dict = {
+            "messages": summary_messages,
+            "llm_input_messages": summary_messages,
+            "workflow_state": updated_workflow_state,
+            "argocd_onboarding_response": last_content,  # Store response for supervisor to extract
+            "status": "completed",
+            "active_phase": "argocd_onboarding_swarm"
+        }
+        
+        return return_dict

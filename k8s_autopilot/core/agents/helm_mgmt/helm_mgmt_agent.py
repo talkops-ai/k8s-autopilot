@@ -866,8 +866,11 @@ class k8sAutopilotHelmMgmtAgent(BaseSubgraphAgent):
         self._name = name
         self.memory = memory or MemorySaver()
         
-        # Initialize standard MCP client with config
-        self._mcp_client = MCPAdapterClient(config=self.config_instance)
+        # Initialize standard MCP client with config (filter to helm_mcp_server ONLY)
+        self._mcp_client = MCPAdapterClient(
+            config=self.config_instance,
+            server_filter=['helm_mcp_server']  # Only connect to Helm server
+        )
         self._mcp_tools: List[BaseTool] = []
         self._mcp_resources: Dict[str, Any] = {}
         self._mcp_prompts: Dict[str, List[BaseMessage]] = {}
@@ -1235,9 +1238,7 @@ async def create_helm_mgmt_deep_agent(
         memory=memory,
     )
     await agent.initialize_mcp()
-    # Close the MCP client here because this factory is often run in a temporary event loop (asyncio.run).
-    # The agent's tools are now Proxies that will lazy-initialize the MCP client
-    # when run in the final server event loop.
+    # Close client to cleanup async context (tools are cached)
     await agent.close()
     return agent
 

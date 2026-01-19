@@ -154,12 +154,13 @@ class k8sAutopilotSupervisorAgent(BaseAgent):
 
 
         return f"""
-You are a supervisor managing specialized swarms for Kubernetes Helm chart generation, management, and deployment.
+You are a supervisor managing specialized swarms for Kubernetes Helm chart generation, management, and deployment, as well as ArgoCD application lifecycle management.
 
 **Capabilities:**
 1. **Generation:** Create new Helm charts, templates, and values files from scratch.
 2. **Management:** Install, upgrade, list, delete, and troubleshoot existing Helm releases on the cluster.
 3. **Cluster/Context Management:** List Kubernetes contexts, switch between clusters, and query Helm releases across different clusters.
+4. **ArgoCD Onboarding:** Manage ArgoCD projects, onboard repositories, create/sync/delete applications, and debug ArgoCD deployments.
 
 **VALID REQUEST EXAMPLES:**
 - "Create a Helm chart for nginx" (Generation)
@@ -171,15 +172,21 @@ You are a supervisor managing specialized swarms for Kubernetes Helm chart gener
 - "Switch to production cluster" (Management - Cluster/Context)
 - "Show Helm releases in the production cluster" (Management - Cluster/Context)
 - "What clusters do I have access to?" (Management - Cluster/Context)
+- "Create an ArgoCD project called my-project" (ArgoCD Onboarding)
+- "Onboard my GitHub repository to ArgoCD" (ArgoCD Onboarding)
+- "Create an ArgoCD application for my-app" (ArgoCD Onboarding)
+- "Sync the my-app ArgoCD application" (ArgoCD Onboarding)
+- "Show ArgoCD application status" (ArgoCD Onboarding)
+- "Debug why my ArgoCD app is not syncing" (ArgoCD Onboarding)
 
 **OUT-OF-SCOPE REQUEST HANDLING:**
-If a request is NOT related to Helm usage (e.g. "Write a Python script", "Configure AWS VPC", greetings like "hello", "how are you"):
+If a request is NOT related to Helm or ArgoCD (e.g. "Write a Python script", "Configure AWS VPC", greetings like "hello", "how are you"):
 1. **CRITICAL: You MUST use the request_human_feedback tool** - DO NOT output text directly
 2. **Create dynamic, contextual messages** based on the user's input:
    - For greetings (hello, hi, how are you): Greet them naturally first, then explain your capabilities
-   - For out-of-scope requests: Acknowledge their request, then guide them to Helm-related tasks
-   - Example for "hello how are you": "Hello! I'm doing well, thank you for asking. I'm specialized in Kubernetes Helm charts - I can help you generate new charts or manage existing ones. What would you like to work on today?"
-   - Example for "what is Jenkins": "I can help with Kubernetes Helm charts, but Jenkins configuration is outside my scope. I specialize in Helm chart generation and management. Would you like help creating a Helm chart for deploying Jenkins instead?"
+   - For out-of-scope requests: Acknowledge their request, then guide them to Helm/ArgoCD-related tasks
+   - Example for "hello how are you": "Hello! I'm doing well, thank you for asking. I'm specialized in Kubernetes Helm charts and ArgoCD - I can help you generate new charts, manage existing ones, or set up ArgoCD applications. What would you like to work on today?"
+   - Example for "what is Jenkins": "I can help with Kubernetes Helm charts and ArgoCD, but Jenkins configuration is outside my scope. Would you like help creating a Helm chart for deploying Jenkins or onboarding it to ArgoCD?"
 3. **NEVER output conversational text without calling request_human_feedback tool first**
 4. **Make your messages natural and conversational** - adapt to the user's tone and context
 
@@ -198,6 +205,7 @@ Available tools:
 - transfer_to_template_supervisor: Generate Helm chart templates and values files (Generation)
 - transfer_to_validator_deep_agent: Validate charts, perform security scanning, and prepare deployment configs (Generation)
 - transfer_to_helm_management: Install, upgrade, list, delete, or troubleshoot Helm charts (Management). Also handles Kubernetes context management (list contexts, switch contexts, query across clusters).
+- transfer_to_argocd_onboarding: Manage ArgoCD projects, repositories, and applications (ArgoCD Onboarding). Use for creating projects, onboarding repos, creating/syncing/deleting apps, and debugging.
 - request_human_feedback: Request human feedback or clarification
 
 **HITL APPROVAL GATES (REQUIRED):**
@@ -216,6 +224,14 @@ Available tools:
      * Chart queries and information requests
    - Do NOT call planning or validation swarms unless the user asks to *modify* the chart code first.
 
+3. **For ArgoCD Requests** ("Create ArgoCD project...", "Onboard repo...", "Sync application...", "Debug ArgoCD..."):
+   - DIRECTLY call `transfer_to_argocd_onboarding(task_description=user_request)`
+   - This includes:
+     * ArgoCD project operations (create, list, update, delete projects)
+     * Repository onboarding (HTTPS, SSH)
+     * Application lifecycle (create, sync, delete, get status)
+     * Debugging and troubleshooting (logs, events, metrics)
+
 **WORKFLOW SEQUENCE WITH HITL (For Generation Requests):**
 1. For ANY Helm chart generation request → transfer_to_planning_swarm(task_description="...")
 2. When planning_complete → transfer_to_template_supervisor(task_description="...") [Proceeds automatically]
@@ -231,10 +247,11 @@ Available tools:
    - No further action needed - the workflow is complete after successful validation
 
 **CRITICAL RULES:**
-- Always check if the user wants to GENERATE a new chart or MANAGE an existing one.
+- Always check if the user wants to GENERATE a new chart, MANAGE an existing one, or work with ArgoCD.
 - For Management tasks (Helm operations, context management, cluster queries), delegate to `transfer_to_helm_management` immediately.
+- For ArgoCD tasks (projects, repos, apps, debugging), delegate to `transfer_to_argocd_onboarding` immediately.
 - Kubernetes context queries (list contexts, switch contexts, query releases in specific clusters) are Management operations - route to `transfer_to_helm_management`.
-- Do NOT try to run helm commands yourself. Use the tools.
+- Do NOT try to run helm or argocd commands yourself. Use the tools.
 - **Check workflow_state flags before each tool call**
 - **ALWAYS call HITL gate tools after phase completion (generation → request_generation_review)**
 - **Do NOT proceed to next phase without approval (check human_approval_status)**
@@ -257,8 +274,12 @@ Available tools:
 **IMPORTANT**: For requests like "help me write nginx helm chart", immediately call:
 transfer_to_planning_swarm(task_description="create nginx helm chart")
 
+For ArgoCD requests like "create an argocd project my-project", immediately call:
+transfer_to_argocd_onboarding(task_description="create argocd project my-project")
+
 Do not do any work yourself - only delegate using the transfer tools and HITL gates.
 """
+
 
     def _get_agent_description(self, agent_name: str) -> str:
         """Get description for an agent based on its name."""
@@ -595,6 +616,73 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                 level="DEBUG",
                 message="Created helm management agent tool",
                 extra={"tool_name": "transfer_to_helm_management"}
+            )
+        
+        # ArgoCD Onboarding agent tool
+        if "argocd_onboarding_deep_agent" in compiled_swarms:
+            argocd_onboarding_agent = compiled_swarms["argocd_onboarding_deep_agent"]
+            
+            @tool
+            async def transfer_to_argocd_onboarding(
+                task_description: str,
+                runtime: ToolRuntime[None, MainSupervisorState],
+                tool_call_id: Annotated[str, InjectedToolCallId]
+            ) -> Command:
+                """
+                Delegate to ArgoCD Onboarding Agent for application lifecycle management.
+                
+                Use this when:
+                - User requests to CREATE, LIST, UPDATE, or DELETE ArgoCD projects
+                - User asks to ONBOARD repositories to ArgoCD (HTTPS or SSH)
+                - User requests to CREATE, SYNC, or DELETE ArgoCD applications
+                - User asks for ArgoCD application status or troubleshooting
+                - User wants to debug ArgoCD applications (logs, events, metrics)
+                
+                Args:
+                    task_description: Description of the ArgoCD task (e.g., "Create project my-project", "Sync application my-app")
+                """
+                supervisor_logger.log_structured(
+                    level="INFO",
+                    message="ArgoCD Onboarding agent tool invoked",
+                    extra={"task_description": task_description}
+                )
+                
+                # 1. Transform State
+                argocd_input = StateTransformer.supervisor_to_argocd_onboarding(runtime.state)
+                # Overwrite user_request with task_description if provided, as it's more specific
+                if task_description:
+                    argocd_input["user_request"] = task_description
+                    # Also update message content to reflect specific task
+                    argocd_input["messages"] = [HumanMessage(content=task_description)]
+
+                # 2. Configure execution
+                child_config = {
+                    "recursion_limit": 50
+                }
+                
+                # 3. Invoke ArgoCD agent
+                final_state = await argocd_onboarding_agent.ainvoke(
+                    argocd_input,
+                    config=child_config
+                )
+                
+                if final_state is None:
+                    raise ValueError("ArgoCD onboarding agent execution yielded no state")
+
+                # 4. Transform Back
+                supervisor_updates = StateTransformer.argocd_onboarding_to_supervisor(
+                    final_state,
+                    runtime.state,
+                    tool_call_id
+                )
+                
+                return Command(update=supervisor_updates)
+            
+            tools.append(transfer_to_argocd_onboarding)
+            supervisor_logger.log_structured(
+                level="DEBUG",
+                message="Created ArgoCD onboarding agent tool",
+                extra={"tool_name": "transfer_to_argocd_onboarding"}
             )
         
         return tools
@@ -1428,6 +1516,91 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
             }
         )
 
+    def _check_argocd_onboarding_completion(
+        self,
+        item: Dict[str, Any],
+        task_id: str,
+        context_id: str,
+        step_count: int
+    ) -> Optional[AgentResponse]:
+        """
+        Check if the ArgoCD Onboarding Agent workflow has completed and return the response if so.
+        
+        Args:
+            item: Current state item from the graph stream
+            task_id: Current task identifier
+            context_id: Current context/session identifier
+            step_count: Current step count in execution
+            
+        Returns:
+            AgentResponse if the ArgoCD Onboarding workflow is complete, None otherwise.
+        """
+        # Extract workflow state and status
+        workflow_state = item.get('workflow_state', {})
+        status = item.get('status', 'pending')
+        active_phase = item.get('active_phase', '')
+        
+        # Extract argocd_onboarding_complete flag from workflow_state
+        argocd_onboarding_complete = False
+        if isinstance(workflow_state, dict):
+            argocd_onboarding_complete = workflow_state.get('argocd_onboarding_complete', False)
+        elif hasattr(workflow_state, 'argocd_onboarding_complete'):
+            # Handle Pydantic object
+            argocd_onboarding_complete = workflow_state.argocd_onboarding_complete
+            
+        if not argocd_onboarding_complete:
+            return None
+            
+        # Extract the argocd_onboarding response (set by state_transformer.argocd_onboarding_to_supervisor)
+        argocd_onboarding_response = item.get('argocd_onboarding_response', '')
+        
+        if not argocd_onboarding_response:
+            supervisor_logger.log_structured(
+                level="WARNING",
+                message="ArgoCD Onboarding Agent completed but no response found",
+                task_id=task_id,
+                context_id=context_id
+            )
+            argocd_onboarding_response = 'ArgoCD Onboarding Agent completed successfully.'
+        
+        supervisor_logger.log_structured(
+            level="INFO",
+            message="ArgoCD Onboarding Agent completed - yielding response",
+            task_id=task_id,
+            context_id=context_id,
+            extra={
+                "status": status,
+                "active_phase": active_phase,
+                "argocd_onboarding_complete": argocd_onboarding_complete
+            }
+        )
+        
+        # Return the response to be yielded
+        return AgentResponse(
+            response_type='data',
+            is_task_complete=True,  # ArgoCD onboarding operations are complete when agent finishes
+            require_user_input=False,
+            content={
+                "status": "completed",
+                "message": argocd_onboarding_response,
+                "argocd_onboarding_response": argocd_onboarding_response,
+                "completion_metrics": {
+                    'step_count': step_count,
+                    'argocd_onboarding_complete': True
+                }
+            },
+            metadata={
+                'session_id': context_id,
+                'task_id': task_id,
+                'agent_name': self.name,
+                'step_count': step_count,
+                'status': 'completed',
+                'argocd_onboarding_complete': True,
+                'active_phase': active_phase or 'argocd_onboarding_swarm'
+            }
+        )
+
+
     def _check_helm_generation_completion(
         self,
         item: Dict[str, Any],
@@ -2052,6 +2225,16 @@ Do not do any work yourself - only delegate using the transfer tools and HITL ga
                         if helm_mgmt_response:
                             yield helm_mgmt_response
                             
+
+                        # 2.5 Check for ArgoCD Onboarding Agent completion (separate workflow)
+                        argocd_onboarding_response = self._check_argocd_onboarding_completion(
+                            item=item,
+                            task_id=task_id,
+                            context_id=context_id,
+                            step_count=step_count
+                        )
+                        if argocd_onboarding_response:
+                            yield argocd_onboarding_response
 
                         # 3. Check for Helm Generation workflow completion (planning/generation/validation)
                         # This also handles intermediate validation completion messages

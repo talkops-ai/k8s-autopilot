@@ -1,0 +1,21 @@
+"""ArgoCD Onboarding Agent Prompts Package"""
+
+from k8s_autopilot.core.agents.onboarding.prompts.argocd_prompts import (
+    ARGOCD_ORCHESTRATOR_PROMPT,
+    PROJECT_AGENT_PROMPT,
+    REPOSITORY_AGENT_PROMPT,
+    APPLICATION_AGENT_PROMPT,
+    DEBUG_AGENT_PROMPT,
+    APPROVAL_TEMPLATES,
+    REACT_PROMPT_TEMPLATE,
+)
+
+__all__ = [
+    "ARGOCD_ORCHESTRATOR_PROMPT",
+    "PROJECT_AGENT_PROMPT",
+    "REPOSITORY_AGENT_PROMPT",
+    "APPLICATION_AGENT_PROMPT",
+    "DEBUG_AGENT_PROMPT",
+    "APPROVAL_TEMPLATES",
+    "REACT_PROMPT_TEMPLATE",
+]

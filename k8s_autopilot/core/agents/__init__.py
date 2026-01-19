@@ -15,6 +15,11 @@ from .helm_mgmt.helm_mgmt_agent import (
     create_helm_mgmt_deep_agent,
     create_helm_mgmt_deep_agent_factory
 )
+from .onboarding import (
+    ArgoCDOnboardingAgent,
+    create_argocd_onboarding_agent,
+    create_argocd_onboarding_agent_factory,
+)
 
 __all__ = [
     "k8sAutopilotSupervisorAgent",
@@ -27,4 +32,7 @@ __all__ = [
     "create_validator_deep_agent_factory",
     "create_helm_mgmt_deep_agent",
     "create_helm_mgmt_deep_agent_factory",
+    "ArgoCDOnboardingAgent",
+    "create_argocd_onboarding_agent",
+    "create_argocd_onboarding_agent_factory",
 ]

@@ -263,6 +263,18 @@ class Config:
             'disabled': self._config.get('HELM_MCP_SERVER_DISABLED', False)
         }
 
+    @property
+    def argocd_mcp_config(self) -> Dict[str, Any]:
+        """Get ArgoCD MCP server configuration."""
+        return {
+            'host': self._config.get('ARGOCD_MCP_SERVER_HOST', 'localhost'),
+            'port': self._config.get('ARGOCD_MCP_SERVER_PORT', 8000),
+            'transport': self._config.get('ARGOCD_MCP_SERVER_TRANSPORT', 'sse'),
+            'disabled': self._config.get('ARGOCD_MCP_SERVER_DISABLED', False),
+            'command': self._config.get('ARGOCD_MCP_SERVER_COMMAND'),
+            'args': self._config.get('ARGOCD_MCP_SERVER_ARGS'),
+        }
+
     def set_llm_config(self, config: Dict[str, Any]) -> None:
         """Set the standard LLM configuration.
         

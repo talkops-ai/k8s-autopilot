@@ -15,6 +15,13 @@ services:
       - HELM_MCP_SERVER_TRANSPORT=sse
       - HELM_MCP_SERVER_DISABLED=false
 
+      # ArgoCD MCP Server Configuration
+      # Connects to the 'argocd-mcp-server' service defined below
+      - ARGOCD_MCP_SERVER_HOST=argocd-mcp-server
+      - ARGOCD_MCP_SERVER_PORT=8765
+      - ARGOCD_MCP_SERVER_TRANSPORT=sse
+      - ARGOCD_MCP_SERVER_DISABLED=false
+
       # LLM Configuration
       - LLM_PROVIDER=openai
       - LLM_MODEL=gpt-4o-mini
@@ -30,6 +37,7 @@ services:
       - ./helm_output:/tmp/helm-charts
     depends_on:
       - helm-mcp-server
+      - argocd-mcp-server
     restart: unless-stopped
     networks:
       - k8s-autopilot-net
@@ -54,8 +62,36 @@ services:
     networks:
       - k8s-autopilot-net
 
+  argocd-mcp-server:
+    image: argocd-mcp-server:latest
+    container_name: argocd-mcp-server
+    environment:
+      # ArgoCD Server Configuration
+      # NOTE: Use host.docker.internal to access ArgoCD server running on the host
+      - ARGOCD_SERVER_URL=${ARGOCD_SERVER_URL:-https://host.docker.internal:9090}
+      - ARGOCD_AUTH_TOKEN=${ARGOCD_AUTH_TOKEN}
+      - ARGOCD_INSECURE=${ARGOCD_INSECURE:-true}
+
+      # SSH Key for Git Repository Access (optional)
+      - SSH_PRIVATE_KEY_PATH=/app/.ssh/id_rsa
+
+      # MCP Server Configuration
+      - MCP_PORT=8765
+      - MCP_ALLOW_WRITE=true
+      - MCP_LOG_LEVEL=INFO
+    volumes:
+      # Mount SSH key for Git repository access (optional, for SSH-based repos)
+      # NOTE: Ensure this path points to your SSH private key file
+      - ${HOME}/.ssh/id_ed25519:/app/.ssh/id_rsa:ro
+    ports:
+      # Expose port 8765 for local debugging/direct access if needed
+      - "8765:8765"
+    restart: unless-stopped
+    networks:
+      - k8s-autopilot-net
+
   talkops-ui:
-    image: talkops-ui
+    image: talkops-ui:latest
     container_name: talkops-ui
     environment:
       - K8S_AGENT_URL=http://localhost:10102

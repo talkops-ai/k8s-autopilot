@@ -24,6 +24,7 @@ from k8s_autopilot.core.agents import (
     create_template_supervisor,
     create_validator_deep_agent,
     create_helm_mgmt_deep_agent,
+    create_argocd_onboarding_agent,
 )
 from k8s_autopilot.utils.logger import AgentLogger, log_sync
 
@@ -88,7 +89,6 @@ def main(host: str, port: int, agent_card: str, config_file: str):
         )
 
         # Create Helm Mgmt Deep Agent
-        # Create Helm Mgmt Deep Agent
         # Note: This factory is async because it initializes the MCP client.
         # We must run it synchronously here before the server loop starts.
         helm_mgmt_deep_agent = asyncio.run(create_helm_mgmt_deep_agent(
@@ -96,9 +96,16 @@ def main(host: str, port: int, agent_card: str, config_file: str):
             name="helm_mgmt_deep_agent"
         ))
 
+        # Create ArgoCD Onboarding Agent
+        # Note: This factory is also async because it initializes its MCP client.
+        argocd_onboarding_agent = asyncio.run(create_argocd_onboarding_agent(
+            config=config,
+            name="argocd_onboarding_deep_agent"  # Must match name in supervisor_agent.py
+        ))
+
         # Create Supervisor Agent
         supervisor_agent = create_k8sAutopilotSupervisorAgent(
-            agents=[planning_swarm_deep_agent, template_supervisor, validator_deep_agent, helm_mgmt_deep_agent],
+            agents=[planning_swarm_deep_agent, template_supervisor, validator_deep_agent, helm_mgmt_deep_agent, argocd_onboarding_agent],
             config=config,
             name="k8sAutopilotSupervisorAgent"
         )
