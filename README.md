@@ -224,7 +224,7 @@ docker run -d -p 10102:10102 \
 **Available Docker tags:**
 
 - `latest` - Latest stable release
-- `v0.2.0` - Specific version
+- `v0.3.0` - Specific version
 
 #### Option 2: Standalone Installation
 
@@ -264,14 +264,14 @@ docker run -d -p 10102:10102 \
 
 ### Working with Agents
 
-The easiest way to interact with k8s-autopilot is using the **TalkOps Web UI** via Docker Compose, which sets up the complete stack including the k8s-autopilot agent, Helm MCP Server, and TalkOps Web UI.
+The easiest way to interact with k8s-autopilot is using the **TalkOps Web UI** via Docker Compose, which sets up the complete stack including the k8s-autopilot agent, Helm MCP Server, Argocd MCP Server and TalkOps Web UI.
 
 1. **Create a `.env` file** in the project root with your LLM provider API key:
 
    ```bash
    # Required: LLM Provider API Key
    OPENAI_API_KEY=your_openai_api_key_here
-   
+   ARGOCD_AUTH_TOKEN=argocd_auth_token
    # Optional: Customize LLM models (defaults shown below)
    # LLM_PROVIDER=openai
    # LLM_MODEL=gpt-4o-mini
@@ -290,10 +290,11 @@ The easiest way to interact with k8s-autopilot is using the **TalkOps Web UI** v
    This will start three services:
    - **k8s-autopilot**: The main agent (port 10102)
    - **helm-mcp-server**: Helm operations backend (port 9000 by default in `docker-compose.yml`)
+   - **argocd-mcp-server**: Argocd Operations backend (port 8765 by default in `docker-compose.yml`)
    - **talkops-ui**: Web interface (port 8080)
 
    **Optional (for ArgoCD workflows)**:
-   - Start the ArgoCD MCP server as well (see `docker-compose-dev.yml`) and set:
+   - Start the ArgoCD MCP server as well (see `docker-compose.yml`) and set:
      - `ARGOCD_SERVER_URL`
      - `ARGOCD_AUTH_TOKEN`
      - `ARGOCD_MCP_SERVER_HOST/PORT/TRANSPORT`
