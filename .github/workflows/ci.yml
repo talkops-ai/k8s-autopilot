@@ -1,130 +1,155 @@
 name: k8s-autopilot CI
 'on':
-  pull_request:
-    branches:
-    - main
   push:
     branches:
     - main
+    - master
+  pull_request:
+    branches:
+    - main
+    - master
 permissions:
   contents: read
   packages: write
 env:
   PYTHON_VERSION: '3.12'
-  IMAGE_NAME: k8s-autopilot
+  IMAGE_NAME: talkops-ai/k8s-autopilot
   IMAGE_TAG: ${{ github.sha }}
-  COVERAGE_PACKAGE: k8s_autopilot
   COVERAGE_THRESHOLD: '80'
 jobs:
-  validate-validate:
+  validate-code:
     name: 'Validate: Code Quality'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-    - name: Setup uv
-      uses: astral-sh/setup-uv@v3
-      with:
-        enable-cache: 'true'
-        version: 0.4.18
-    - name: Cache .venv
-      uses: actions/cache@v4
-      with:
-        path: .venv
-        key: ${{ runner.os }}-venv-${{ hashFiles('uv.lock', 'pyproject.toml') }}
-        restore-keys: ${{ runner.os }}-venv-
-    - name: Checkout
-      id: checkout
-      uses: actions/checkout@v4
-    - name: Setup Python
-      id: setup-python
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
     - name: Cache pip
-      id: cache-pip
-      uses: actions/cache@v4
+      uses: actions/cache@v4.4.0
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}
-    - name: Install UV and dev dependencies
-      id: install-dev
-      run: |
-        python -m pip install --upgrade pip && pip install uv && uv sync --python ${{ env.PYTHON_VERSION }} --frozen --dev --no-install-project --no-editable
-      env:
-        UV_FROZEN: 'true'
-    - name: Run ruff format check
-      id: ruff-format-check
-      run: ruff format --check .
-    - name: Run ruff linter (uses pyproject.toml ruff config)
-      id: ruff-lint
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: ${{ runner.os }}-pip-
+    - name: Checkout repository
+      id: validate-checkout
+      uses: actions/checkout@v4.5.0
+    - name: Setup Python
+      id: validate-setup-python
+      uses: actions/setup-python@v4.12.0
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: Upgrade pip
+      id: validate-upgrade-pip
+      run: python -m pip install --upgrade pip
+    - name: Install ruff and mypy (dev deps)
+      id: validate-install-tools
+      run: python -m pip install ruff mypy
+    - name: Install package (editable) for type checking
+      id: validate-install-editable
+      run: python -m pip install -e .
+    - name: Run ruff lint
+      id: validate-ruff-check
       run: ruff check .
-    - name: Run mypy type checks (pyproject.toml config is used)
-      id: mypy
+    - name: Check formatting (ruff format --check)
+      id: validate-ruff-format-check
+      run: ruff format --check .
+    - name: Run mypy
+      id: validate-mypy
       run: mypy .
-  test-test:
-    name: 'Test: Unit Tests & Coverage'
+  test-unit:
+    name: 'Test: Unit'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs:
-    - validate-validate
+    - validate-code
     steps:
-    - name: Setup uv
-      uses: astral-sh/setup-uv@v3
-      with:
-        enable-cache: 'true'
-        version: 0.4.18
-    - name: Cache .venv
-      uses: actions/cache@v4
-      with:
-        path: .venv
-        key: ${{ runner.os }}-venv-${{ hashFiles('uv.lock', 'pyproject.toml') }}
-        restore-keys: ${{ runner.os }}-venv-
-    - name: Checkout
-      id: checkout
-      uses: actions/checkout@v4
-    - name: Setup Python
-      id: setup-python
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.PYTHON_VERSION }}
     - name: Cache pip
-      id: cache-pip
-      uses: actions/cache@v4
+      uses: actions/cache@v4.4.0
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}
-    - name: Install UV and dev dependencies (including pytest-cov)
-      id: install-dev
-      run: |
-        python -m pip install --upgrade pip && pip install uv && uv sync --python ${{ env.PYTHON_VERSION }} --frozen --dev --no-install-project --no-editable
-      env:
-        UV_FROZEN: 'true'
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: ${{ runner.os }}-pip-
+    - name: Checkout repository
+      id: test-checkout
+      uses: actions/checkout@v4.5.0
+    - name: Setup Python
+      id: test-setup-python
+      uses: actions/setup-python@v4.12.0
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: Upgrade pip and install test deps
+      id: test-install-deps
+      run: python -m pip install --upgrade pip setuptools wheel && python -m pip install pytest pytest-asyncio pytest-cov
+    - name: Install package (editable) for tests
+      id: test-install-editable
+      run: python -m pip install -e .
+    - name: Run pytest (unit tests)
+      id: test-run-pytest
+      run: pytest
+  test-coverage:
+    name: 'Test: Coverage'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+    - validate-code
+    steps:
+    - name: Cache pip
+      uses: actions/cache@v4.4.0
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: ${{ runner.os }}-pip-
+    - name: Checkout repository
+      id: cov-checkout
+      uses: actions/checkout@v4.5.0
+    - name: Setup Python
+      id: cov-setup-python
+      uses: actions/setup-python@v4.12.0
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: Upgrade pip and install coverage deps
+      id: cov-install-deps
+      run: python -m pip install --upgrade pip setuptools wheel && python -m pip install pytest pytest-asyncio pytest-cov
+    - name: Install package (editable) for tests
+      id: cov-install-editable
+      run: python -m pip install -e .
     - name: Run pytest with coverage and enforce threshold
-      id: pytest-coverage
-      run: |
-        pytest --cov=${{ env.COVERAGE_PACKAGE }} --cov-report=xml --cov-report=term --cov-fail-under=${{ env.COVERAGE_THRESHOLD }}
-  build-package-build:
-    name: 'Build & Package: Docker Build & Image Scan'
+      id: cov-run-pytest-cov
+      run: pytest --cov=k8s_autopilot --cov-fail-under=${{ env.COVERAGE_THRESHOLD }} -v --tb=short
+  build-docker:
+    name: 'Build & Scan: Docker image'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     needs:
-    - test-test
+    - test-unit
+    - test-coverage
     steps:
-    - name: Checkout
-      id: checkout
-      uses: actions/checkout@v4
+    - name: Checkout repository
+      id: build-checkout
+      uses: actions/checkout@v4.5.0
+    - name: Set up Docker Buildx
+      id: build-setup-buildx
+      uses: docker/setup-buildx-action@v3
     - name: Build Docker image
-      id: docker-build
-      run: docker build --progress=plain -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} .
-    - name: Scan image with Aquasecurity Trivy (action)
-      id: trivy-action
-      uses: aquasecurity/trivy-action@v0.46.0
+      id: build-docker-build
+      run: docker build -f Dockerfile -t "${IMAGE_NAME}:${IMAGE_TAG}" .
+      env:
+        IMAGE_NAME: "${{ env.IMAGE_NAME }}"
+        IMAGE_TAG: "${{ env.IMAGE_TAG }}"
+    - name: Ensure image exists (inspect)
+      id: build-inspect-image
+      run: docker image inspect "${IMAGE_NAME}:${IMAGE_TAG}" >/dev/null
+      env:
+        IMAGE_NAME: "${{ env.IMAGE_NAME }}"
+        IMAGE_TAG: "${{ env.IMAGE_TAG }}"
+    - name: Run Trivy scan (local)
+      id: build-trivy-local
+      run: trivy image --severity HIGH,CRITICAL --exit-code 1 "${IMAGE_NAME}:${IMAGE_TAG}"
+      env:
+        IMAGE_NAME: "${{ env.IMAGE_NAME }}"
+        IMAGE_TAG: "${{ env.IMAGE_TAG }}"
+    - name: 'Fallback: run Trivy (action)'
+      id: build-trivy-container-fallback
+      uses: aquasecurity/trivy-action@v0.34.0
       with:
         image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-        format: table
-        severity: HIGH,CRITICAL
-        exit-code: 1
-    - name: 'Fallback: run Trivy scanner in container if action is unavailable'
-      id: trivy-fallback
-      run: |
-        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.39.0 image --severity HIGH,CRITICAL ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        severities: HIGH,CRITICAL
+        exit-code: '1'
