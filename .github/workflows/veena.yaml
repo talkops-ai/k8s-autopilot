@@ -1,0 +1,116 @@
+name: k8s-autopilot CI
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+permissions:
+  contents: read
+  packages: write
+env:
+  PYTHON_VERSION: '3.12'
+  IMAGE_NAME: k8s-autopilot
+  IMAGE_TAG: ${{ github.sha }}
+jobs:
+  validate-code:
+    name: 'Validate: Code Quality'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/pyproject.toml','**/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+      - name: Checkout repository
+        id: checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install ruff and mypy
+        id: install-lint-type
+        run: python -m pip install --upgrade pip && python -m pip install ruff mypy
+      - name: Run ruff (lint & format check)
+        id: run-ruff
+        run: ruff check . && ruff format --check .
+      - name: Run mypy (type check)
+        id: run-mypy
+        run: mypy .
+  test-unit:
+    name: 'Test: Unit & Coverage'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - validate-code
+    steps:
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/pyproject.toml','**/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+      - name: Checkout repository
+        id: checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        id: setup-python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install test dependencies and make package importable
+        id: install-tests
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-asyncio pytest-cov
+          python -m pip install -e .
+      - name: Run pytest with coverage (enforce 80%)
+        id: run-pytest-coverage
+        run: pytest --cov=k8s_autopilot --cov-report=term --cov-report=xml --cov-fail-under=80 -q
+  build-docker:
+    name: Build & Scan Docker Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+      - test-unit
+    steps:
+      - name: Checkout repository
+        id: checkout
+        uses: actions/checkout@v4
+      - name: Echo image variables
+        id: echo-image
+        run: |
+          echo "IMAGE_NAME=${IMAGE_NAME}"
+          echo "IMAGE_TAG=${IMAGE_TAG}"
+          echo "IMAGE_FULL=${IMAGE_NAME}:${IMAGE_TAG}" >> "$GITHUB_ENV"
+      - name: Build Docker image
+        id: build-image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: |
+            ${{ env.IMAGE_FULL }}
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Docker login (for scanning/push if needed)
+        id: install-trivy
+        if: ${{ github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main') }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run Trivy image scan (fail on HIGH/CRITICAL)
+        id: scan-image
+        uses: aquasec/trivy-action@v0.26.1
+        with:
+          image-ref: ${{ env.IMAGE_FULL }}
+          exit-code: '1'
+          severity: CRITICAL,HIGH
