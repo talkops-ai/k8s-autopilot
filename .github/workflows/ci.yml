@@ -1,0 +1,130 @@
+name: k8s-autopilot CI
+'on':
+  pull_request:
+    branches:
+    - main
+  push:
+    branches:
+    - main
+permissions:
+  contents: read
+  packages: write
+env:
+  PYTHON_VERSION: '3.12'
+  IMAGE_NAME: k8s-autopilot
+  IMAGE_TAG: ${{ github.sha }}
+  COVERAGE_PACKAGE: k8s_autopilot
+  COVERAGE_THRESHOLD: '80'
+jobs:
+  validate-validate:
+    name: 'Validate: Code Quality'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - name: Setup uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: 'true'
+        version: 0.4.18
+    - name: Cache .venv
+      uses: actions/cache@v4
+      with:
+        path: .venv
+        key: ${{ runner.os }}-venv-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+        restore-keys: ${{ runner.os }}-venv-
+    - name: Checkout
+      id: checkout
+      uses: actions/checkout@v4
+    - name: Setup Python
+      id: setup-python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: Cache pip
+      id: cache-pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}
+    - name: Install UV and dev dependencies
+      id: install-dev
+      run: |
+        python -m pip install --upgrade pip && pip install uv && uv sync --python ${{ env.PYTHON_VERSION }} --frozen --dev --no-install-project --no-editable
+      env:
+        UV_FROZEN: 'true'
+    - name: Run ruff format check
+      id: ruff-format-check
+      run: ruff format --check .
+    - name: Run ruff linter (uses pyproject.toml ruff config)
+      id: ruff-lint
+      run: ruff check .
+    - name: Run mypy type checks (pyproject.toml config is used)
+      id: mypy
+      run: mypy .
+  test-test:
+    name: 'Test: Unit Tests & Coverage'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+    - validate-validate
+    steps:
+    - name: Setup uv
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: 'true'
+        version: 0.4.18
+    - name: Cache .venv
+      uses: actions/cache@v4
+      with:
+        path: .venv
+        key: ${{ runner.os }}-venv-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+        restore-keys: ${{ runner.os }}-venv-
+    - name: Checkout
+      id: checkout
+      uses: actions/checkout@v4
+    - name: Setup Python
+      id: setup-python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: Cache pip
+      id: cache-pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ env.PYTHON_VERSION }}
+    - name: Install UV and dev dependencies (including pytest-cov)
+      id: install-dev
+      run: |
+        python -m pip install --upgrade pip && pip install uv && uv sync --python ${{ env.PYTHON_VERSION }} --frozen --dev --no-install-project --no-editable
+      env:
+        UV_FROZEN: 'true'
+    - name: Run pytest with coverage and enforce threshold
+      id: pytest-coverage
+      run: |
+        pytest --cov=${{ env.COVERAGE_PACKAGE }} --cov-report=xml --cov-report=term --cov-fail-under=${{ env.COVERAGE_THRESHOLD }}
+  build-package-build:
+    name: 'Build & Package: Docker Build & Image Scan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs:
+    - test-test
+    steps:
+    - name: Checkout
+      id: checkout
+      uses: actions/checkout@v4
+    - name: Build Docker image
+      id: docker-build
+      run: docker build --progress=plain -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} .
+    - name: Scan image with Aquasecurity Trivy (action)
+      id: trivy-action
+      uses: aquasecurity/trivy-action@v0.46.0
+      with:
+        image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        format: table
+        severity: HIGH,CRITICAL
+        exit-code: 1
+    - name: 'Fallback: run Trivy scanner in container if action is unavailable'
+      id: trivy-fallback
+      run: |
+        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.39.0 image --severity HIGH,CRITICAL ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}

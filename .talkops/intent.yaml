@@ -9,14 +9,14 @@ runtime:
   version: '3.12'
   package_manager: uv
 triggers:
-- event: push
-  branches:
-  - main
 - event: pull_request
   branches:
   - main
+- event: push
+  branches:
+  - main
 stages:
-- id: validate-code
+- id: validate-validate
   name: 'Validate: Code Quality'
   needs: []
   timeout_minutes: 30
@@ -43,17 +43,22 @@ stages:
     version: ${{ env.PYTHON_VERSION }}
     tool: null
     command: null
+  - type: cache
+    runtime: null
+    version: null
+    tool: null
+    command: null
   - type: dependency_install
     runtime: null
     version: null
     tool: null
-    command: 'python -m pip install --upgrade pip && python -m pip install uv && uv
-      sync --python ${{ env.PYTHON_VERSION }} --frozen
+    command: 'python -m pip install --upgrade pip && pip install uv && uv sync --python
+      ${{ env.PYTHON_VERSION }} --frozen --dev --no-install-project --no-editable
 
       '
   tasks:
-  - id: ruff-format
-    name: Check formatting with ruff (format-check)
+  - id: ruff-format-check
+    name: Run ruff format check
     capability: format-check
     tool: ruff
     tool_version: null
@@ -62,7 +67,7 @@ stages:
     env: {}
     fail_on_error: true
   - id: ruff-lint
-    name: Run ruff lint (reads configuration from pyproject.toml)
+    name: Run ruff linter (uses pyproject.toml ruff config)
     capability: lint
     tool: ruff
     tool_version: null
@@ -71,7 +76,7 @@ stages:
     env: {}
     fail_on_error: true
   - id: mypy
-    name: Run mypy type checks
+    name: Run mypy type checks (pyproject.toml config is used)
     capability: type-check
     tool: mypy
     tool_version: null
@@ -80,10 +85,10 @@ stages:
     env: {}
     fail_on_error: true
   services: []
-- id: test-unit
-  name: 'Test: Unit & Coverage'
+- id: test-test
+  name: 'Test: Unit Tests & Coverage'
   needs:
-  - validate-code
+  - validate-validate
   timeout_minutes: 30
   enforcement: mandatory
   thresholds: {}
@@ -108,12 +113,17 @@ stages:
     version: ${{ env.PYTHON_VERSION }}
     tool: null
     command: null
+  - type: cache
+    runtime: null
+    version: null
+    tool: null
+    command: null
   - type: dependency_install
     runtime: null
     version: null
     tool: null
-    command: 'python -m pip install --upgrade pip && python -m pip install uv && uv
-      sync --python ${{ env.PYTHON_VERSION }} --frozen
+    command: 'python -m pip install --upgrade pip && pip install uv && uv sync --python
+      ${{ env.PYTHON_VERSION }} --frozen --dev --no-install-project --no-editable
 
       '
   tasks:
@@ -122,16 +132,18 @@ stages:
     capability: coverage+coverage
     tool: pytest
     tool_version: null
-    command: pytest --cov=k8s_autopilot --cov-report=xml:coverage.xml --cov-fail-under=${{
-      env.COVERAGE_THRESHOLD }} -v --tb=short
+    command: 'pytest --cov=${{ env.COVERAGE_PACKAGE }} --cov-report=xml --cov-report=term
+      --cov-fail-under=${{ env.COVERAGE_THRESHOLD }}
+
+      '
     config: {}
     env: {}
     fail_on_error: true
   services: []
-- id: build-package-build-docker
-  name: 'Build & Package: Docker Build + Image Scan'
+- id: build-package-build
+  name: 'Build & Package: Docker Build & Image Scan'
   needs:
-  - test-unit
+  - test-test
   timeout_minutes: 60
   enforcement: null
   thresholds: {}
@@ -143,24 +155,36 @@ stages:
     command: null
   tasks:
   - id: docker-build
-    name: Build Docker image (multi-stage Dockerfile)
+    name: Build Docker image
     capability: docker-build
     tool: docker
     tool_version: null
-    command: docker build --pull --progress=plain -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG
-      }} -t ${{ env.IMAGE_NAME }}:latest -t ${{ env.IMAGE_NAME }}:${{ github.sha }}
-      .
+    command: docker build --progress=plain -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG
+      }} .
     config: {}
     env: {}
     fail_on_error: true
-  - id: trivy-scan
-    name: Scan built image with Trivy (containerized trivy)
+  - id: trivy-action
+    name: Scan image with Aquasecurity Trivy (action)
     capability: image-scan
     tool: trivy
-    tool_version: 0.32.0
+    tool_version: 0.46.0
     command: null
     config:
-      image: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+      image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+      format: table
+      severity: HIGH,CRITICAL
+      exit-code: 1
+    env: {}
+    fail_on_error: true
+  - id: trivy-fallback
+    name: 'Fallback: run Trivy scanner in container if action is unavailable'
+    capability: image-scan
+    tool: docker
+    tool_version: null
+    command: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.39.0
+      image --severity HIGH,CRITICAL ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+    config: {}
     env: {}
     fail_on_error: true
   services: []
@@ -168,5 +192,5 @@ docker:
   dockerfile: Dockerfile
   base_image: null
   image_name: k8s-autopilot
-  image_tag: 0.1.0
+  image_tag: ${{ github.sha }}
   exposed_ports: []
