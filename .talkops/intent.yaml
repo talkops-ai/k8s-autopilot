@@ -1,0 +1,172 @@
+schema_version: '1.0'
+name: k8s-autopilot CI
+metadata:
+  project_type: service
+  owner: unknown-team
+  reconciliation_mode: strict
+runtime:
+  language: python
+  version: '3.12'
+  package_manager: uv
+triggers:
+- event: push
+  branches:
+  - main
+- event: pull_request
+  branches:
+  - main
+stages:
+- id: validate-code
+  name: 'Validate: Code Quality'
+  needs: []
+  timeout_minutes: 30
+  enforcement: null
+  thresholds: {}
+  setup:
+  - type: package_manager_setup
+    runtime: null
+    version: null
+    tool: uv
+    command: null
+  - type: cache
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: checkout
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: runtime_setup
+    runtime: python
+    version: ${{ env.PYTHON_VERSION }}
+    tool: null
+    command: null
+  - type: dependency_install
+    runtime: null
+    version: null
+    tool: null
+    command: 'python -m pip install --upgrade pip && python -m pip install uv && uv
+      sync --python ${{ env.PYTHON_VERSION }} --frozen
+
+      '
+  tasks:
+  - id: ruff-format
+    name: Check formatting with ruff (format-check)
+    capability: format-check
+    tool: ruff
+    tool_version: null
+    command: ruff format --check .
+    config: {}
+    env: {}
+    fail_on_error: true
+  - id: ruff-lint
+    name: Run ruff lint (reads configuration from pyproject.toml)
+    capability: lint
+    tool: ruff
+    tool_version: null
+    command: ruff check .
+    config: {}
+    env: {}
+    fail_on_error: true
+  - id: mypy
+    name: Run mypy type checks
+    capability: type-check
+    tool: mypy
+    tool_version: null
+    command: mypy .
+    config: {}
+    env: {}
+    fail_on_error: true
+  services: []
+- id: test-unit
+  name: 'Test: Unit & Coverage'
+  needs:
+  - validate-code
+  timeout_minutes: 30
+  enforcement: mandatory
+  thresholds: {}
+  setup:
+  - type: package_manager_setup
+    runtime: null
+    version: null
+    tool: uv
+    command: null
+  - type: cache
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: checkout
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: runtime_setup
+    runtime: python
+    version: ${{ env.PYTHON_VERSION }}
+    tool: null
+    command: null
+  - type: dependency_install
+    runtime: null
+    version: null
+    tool: null
+    command: 'python -m pip install --upgrade pip && python -m pip install uv && uv
+      sync --python ${{ env.PYTHON_VERSION }} --frozen
+
+      '
+  tasks:
+  - id: pytest-coverage
+    name: Run pytest with coverage and enforce threshold
+    capability: coverage+coverage
+    tool: pytest
+    tool_version: null
+    command: pytest --cov=k8s_autopilot --cov-report=xml:coverage.xml --cov-fail-under=${{
+      env.COVERAGE_THRESHOLD }} -v --tb=short
+    config: {}
+    env: {}
+    fail_on_error: true
+  services: []
+- id: build-package-build-docker
+  name: 'Build & Package: Docker Build + Image Scan'
+  needs:
+  - test-unit
+  timeout_minutes: 60
+  enforcement: null
+  thresholds: {}
+  setup:
+  - type: checkout
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  tasks:
+  - id: docker-build
+    name: Build Docker image (multi-stage Dockerfile)
+    capability: docker-build
+    tool: docker
+    tool_version: null
+    command: docker build --pull --progress=plain -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG
+      }} -t ${{ env.IMAGE_NAME }}:latest -t ${{ env.IMAGE_NAME }}:${{ github.sha }}
+      .
+    config: {}
+    env: {}
+    fail_on_error: true
+  - id: trivy-scan
+    name: Scan built image with Trivy (containerized trivy)
+    capability: image-scan
+    tool: trivy
+    tool_version: 0.32.0
+    command: null
+    config:
+      image: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+    env: {}
+    fail_on_error: true
+  services: []
+docker:
+  dockerfile: Dockerfile
+  base_image: null
+  image_name: k8s-autopilot
+  image_tag: 0.1.0
+  exposed_ports: []
