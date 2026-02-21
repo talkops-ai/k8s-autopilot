@@ -1,0 +1,172 @@
+schema_version: '1.0'
+name: k8s-autopilot CI
+metadata:
+  project_type: service
+  owner: unknown-team
+  reconciliation_mode: strict
+runtime:
+  language: python
+  version: '3.12'
+  package_manager: uv
+triggers:
+- event: pull_request
+  branches:
+  - main
+  - master
+- event: push
+  branches:
+  - main
+  - master
+stages:
+- id: validate-code
+  name: 'Validate: Code Quality'
+  needs: []
+  timeout_minutes: 30
+  enforcement: null
+  thresholds: {}
+  setup:
+  - type: cache
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: checkout
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: runtime_setup
+    runtime: python
+    version: ${{ env.PYTHON_VERSION }}
+    tool: null
+    command: null
+  - type: dependency_install
+    runtime: null
+    version: null
+    tool: null
+    command: python -m pip install --upgrade pip && python -m pip install "${{ env.LINT_TOOL
+      }}" "${{ env.TYPE_CHECK_TOOL }}"
+  tasks:
+  - id: validate-ruff-lint
+    name: Run ruff lint check
+    capability: lint
+    tool: ruff
+    tool_version: null
+    command: ruff check .
+    config: {}
+    env: {}
+    fail_on_error: true
+  - id: validate-ruff-format
+    name: Check formatting with ruff
+    capability: format-check
+    tool: ruff
+    tool_version: null
+    command: ruff format --check .
+    config: {}
+    env: {}
+    fail_on_error: true
+  - id: validate-mypy
+    name: Run mypy type checking
+    capability: type-check
+    tool: mypy
+    tool_version: null
+    command: mypy .
+    config: {}
+    env: {}
+    fail_on_error: true
+  services: []
+- id: test-unit
+  name: 'Test: Unit & Coverage'
+  needs:
+  - validate-code
+  timeout_minutes: 30
+  enforcement: mandatory
+  thresholds: {}
+  setup:
+  - type: cache
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: checkout
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: runtime_setup
+    runtime: python
+    version: ${{ env.PYTHON_VERSION }}
+    tool: null
+    command: null
+  - type: dependency_install
+    runtime: null
+    version: null
+    tool: null
+    command: python -m pip install --upgrade pip && python -m pip install "pytest"
+      "pytest-asyncio" "pytest-cov"
+  tasks:
+  - id: test-run-pytest
+    name: Run tests with coverage and enforce threshold
+    capability: coverage+coverage
+    tool: pytest
+    tool_version: null
+    command: pytest --cov=k8s_autopilot --cov-report=term-missing --cov-report=xml:coverage.xml
+      --cov-fail-under="${{ env.COVERAGE_THRESHOLD }}"
+    config: {}
+    env: {}
+    fail_on_error: true
+  - id: upload-coverage
+    name: Upload coverage report
+    capability: coverage
+    tool: upload-artifact
+    tool_version: '4'
+    command: null
+    config:
+      name: coverage-report
+      path: coverage.xml
+    env: {}
+    fail_on_error: true
+  services: []
+- id: build-build-docker-image
+  name: 'Build & Package: Docker Build and Image Scan'
+  needs:
+  - test-unit
+  timeout_minutes: 60
+  enforcement: null
+  thresholds: {}
+  setup:
+  - type: checkout
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  tasks:
+  - id: build-docker
+    name: Build Docker image
+    capability: docker-build
+    tool: docker
+    tool_version: null
+    command: docker build -t "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" .
+    config: {}
+    env:
+      DOCKER_BUILDKIT: ${{ env.DOCKER_BUILDKIT }}
+    fail_on_error: true
+  - id: build-trivy-scan
+    name: Scan built image with Trivy (action)
+    capability: image-scan
+    tool: trivy
+    tool_version: '1'
+    command: null
+    config:
+      image: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+      severity: HIGH,CRITICAL
+    env: {}
+    fail_on_error: true
+  services: []
+docker:
+  dockerfile: Dockerfile
+  base_image: python:3.12-slim
+  image_name: k8s-autopilot
+  image_tag: ${{ github.sha }}
+  exposed_ports:
+  - '10102'

@@ -1,0 +1,111 @@
+name: k8s-autopilot CI
+on:
+  pull_request:
+    branches:
+    - main
+    - master
+  push:
+    branches:
+    - main
+    - master
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  packages: write
+env:
+  PYTHON_VERSION: '3.12'
+  IMAGE_NAME: k8s-autopilot
+  IMAGE_TAG: ${{ github.sha }}
+  COVERAGE_THRESHOLD: '80'
+  DOCKER_BUILDKIT: '1'
+  LINT_TOOL: ruff
+  TYPE_CHECK_TOOL: mypy
+  TEST_PACKAGES: pytest pytest-asyncio pytest-cov
+jobs:
+  validate-code:
+    name: 'Validate: Code Quality'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - name: Cache pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: ${{ runner.os }}-pip-
+    - name: Checkout repository
+      id: validate-checkout
+      uses: actions/checkout@v4
+    - name: Set up Python
+      id: validate-setup-python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: Install linters and type-checker
+      id: validate-install-tools
+      run: python -m pip install --upgrade pip && python -m pip install "${{ env.LINT_TOOL }}" "${{ env.TYPE_CHECK_TOOL }}"
+    - name: Run ruff lint check
+      id: validate-ruff-lint
+      run: ruff check .
+    - name: Check formatting with ruff
+      id: validate-ruff-format
+      run: ruff format --check .
+    - name: Run mypy type checking
+      id: validate-mypy
+      run: mypy .
+  test-unit:
+    name: 'Test: Unit & Coverage'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+    - validate-code
+    steps:
+    - name: Cache pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: ${{ runner.os }}-pip-
+    - name: Checkout repository
+      id: test-checkout
+      uses: actions/checkout@v4
+    - name: Set up Python
+      id: test-setup-python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: Install test dependencies
+      id: test-install-deps
+      run: python -m pip install --upgrade pip && python -m pip install "pytest" "pytest-asyncio" "pytest-cov"
+    - name: Run tests with coverage and enforce threshold
+      id: test-run-pytest
+      run: pytest --cov=k8s_autopilot --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under="${{ env.COVERAGE_THRESHOLD }}"
+    - name: Upload coverage report
+      id: upload-coverage
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: coverage.xml
+  build-build-docker-image:
+    name: 'Build & Package: Docker Build and Image Scan'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs:
+    - test-unit
+    steps:
+    - name: Checkout repository
+      id: build-checkout
+      uses: actions/checkout@v4
+    - name: Build Docker image
+      id: build-docker
+      run: docker build -t "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" .
+      env:
+        DOCKER_BUILDKIT: ${{ env.DOCKER_BUILDKIT }}
+    - name: Scan built image with Trivy (action)
+      id: build-trivy-scan
+      uses: aquasec/trivy-action@v1
+      with:
+        image: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+        severity: HIGH,CRITICAL
