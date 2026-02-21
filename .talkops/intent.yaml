@@ -1,0 +1,227 @@
+schema_version: '1.0'
+name: k8s-autopilot CI
+metadata:
+  project_type: service
+  owner: unknown-team
+  reconciliation_mode: strict
+runtime:
+  language: python
+  version: '3.12'
+  package_manager: uv
+triggers:
+- event: push
+  branches:
+  - main
+- event: pull_request
+  branches:
+  - main
+stages:
+- id: validate-validate
+  name: 'Validate: Code Quality'
+  needs: []
+  timeout_minutes: 30
+  enforcement: null
+  thresholds: {}
+  setup:
+  - type: checkout
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: cache
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: runtime_setup
+    runtime: python
+    version: ${{ env.PYTHON_VERSION }}
+    tool: null
+    command: null
+  - type: dependency_install
+    runtime: null
+    version: null
+    tool: null
+    command: python -m pip install --upgrade pip && python -m pip install ruff mypy
+  tasks:
+  - id: ruff-lint
+    name: Run ruff lint
+    capability: lint
+    tool: ruff
+    tool_version: null
+    command: ruff check .
+    config: {}
+    env: {}
+    fail_on_error: true
+  - id: ruff-format-check
+    name: Check formatting with ruff
+    capability: format-check
+    tool: ruff
+    tool_version: null
+    command: ruff format --check .
+    config: {}
+    env: {}
+    fail_on_error: true
+  - id: mypy-typecheck
+    name: Run mypy type checks
+    capability: type-check
+    tool: mypy
+    tool_version: null
+    command: mypy .
+    config: {}
+    env: {}
+    fail_on_error: true
+  services: []
+- id: test-test
+  name: 'Test: Unit & Coverage'
+  needs:
+  - validate-validate
+  timeout_minutes: 30
+  enforcement: mandatory
+  thresholds: {}
+  setup:
+  - type: checkout
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: cache
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: runtime_setup
+    runtime: python
+    version: ${{ env.PYTHON_VERSION }}
+    tool: null
+    command: null
+  - type: dependency_install
+    runtime: null
+    version: null
+    tool: null
+    command: 'python -m pip install --upgrade pip
+
+      python -m pip install -e . pytest pytest-asyncio pytest-cov
+
+      '
+  tasks:
+  - id: pytest-unit
+    name: Run pytest (unit tests)
+    capability: unit-test
+    tool: pytest
+    tool_version: null
+    command: pytest --maxfail=1 --disable-warnings -q
+    config: {}
+    env: {}
+    fail_on_error: true
+  - id: pytest-coverage
+    name: Run pytest with coverage
+    capability: coverage+coverage
+    tool: pytest
+    tool_version: null
+    command: pytest --cov=k8s_autopilot --cov-report=xml --cov-report=term-missing
+      -q
+    config: {}
+    env: {}
+    fail_on_error: true
+  - id: upload-coverage
+    name: Upload coverage artifact (XML)
+    capability: coverage
+    tool: upload-artifact
+    tool_version: '4'
+    command: null
+    config:
+      name: coverage-xml
+      path: ${{ env.COVERAGE_XML }}
+    env: {}
+    fail_on_error: true
+  - id: coverage-threshold-note
+    name: (Optional) Enforce coverage threshold
+    capability: coverage+coverage
+    tool: echo
+    tool_version: null
+    command: echo "No coverage threshold configured in CISpec; configure threshold
+      to enable enforcement."
+    config: {}
+    env: {}
+    fail_on_error: true
+  services: []
+- id: build-package-build
+  name: 'Build & Package: Docker and Distributions'
+  needs:
+  - test-test
+  timeout_minutes: 60
+  enforcement: null
+  thresholds: {}
+  setup:
+  - type: checkout
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: package_manager_setup
+    runtime: null
+    version: null
+    tool: buildx
+    command: null
+  - type: runtime_setup
+    runtime: python
+    version: ${{ env.PYTHON_VERSION }}
+    tool: null
+    command: null
+  - type: cache
+    runtime: null
+    version: null
+    tool: null
+    command: null
+  - type: dependency_install
+    runtime: null
+    version: null
+    tool: null
+    command: python -m pip install --upgrade pip && python -m pip install hatchling
+  tasks:
+  - id: docker-build
+    name: Build Docker image (local tag)
+    capability: custom
+    tool: build-push
+    tool_version: 4.13.0
+    command: null
+    config:
+      context: .
+      file: Dockerfile
+      push: false
+      tags: ${{ env.DOCKER_IMAGE }}
+    env: {}
+    fail_on_error: true
+  - id: trivy-scan
+    name: Scan Docker image with Trivy
+    capability: image-scan
+    tool: trivy
+    tool_version: 0.26.1
+    command: null
+    config:
+      image-ref: ${{ env.DOCKER_IMAGE }}
+    env: {}
+    fail_on_error: true
+  - id: build-dists
+    name: Build distributions with hatchling
+    capability: custom
+    tool: python
+    tool_version: null
+    command: python -m hatchling.build -o ${{ env.DIST_DIR }}
+    config: {}
+    env: {}
+    fail_on_error: true
+  - id: upload-dist
+    name: Upload built artifacts
+    capability: custom
+    tool: upload-artifact
+    tool_version: '4'
+    command: null
+    config:
+      name: dist
+      path: ${{ env.DIST_DIR }}
+    env: {}
+    fail_on_error: true
+  services: []
+docker: null

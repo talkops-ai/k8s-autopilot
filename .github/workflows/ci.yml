@@ -1,0 +1,144 @@
+name: k8s-autopilot CI
+'on':
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+permissions:
+  contents: read
+  packages: write
+env:
+  PYTHON_VERSION: '3.12'
+  PACKAGE_MANAGER: uv
+  IMAGE_NAME: talkops-ai/k8s-autopilot
+  IMAGE_TAG: ${{ github.sha }}
+  DOCKER_IMAGE: talkops-ai/k8s-autopilot:${{ github.sha }}
+  DIST_DIR: dist
+  COVERAGE_XML: coverage.xml
+jobs:
+  validate-validate:
+    name: 'Validate: Code Quality'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - name: Checkout
+      id: checkout
+      uses: actions/checkout@v4
+    - name: Cache pip
+      id: cache-pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: ${{ runner.os }}-pip-
+    - name: Setup Python
+      id: setup-python
+      uses: actions/setup-python@v4.12.0
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: Install ruff and mypy
+      id: install-linters
+      run: python -m pip install --upgrade pip && python -m pip install ruff mypy
+    - name: Run ruff lint
+      id: ruff-lint
+      run: ruff check .
+    - name: Check formatting with ruff
+      id: ruff-format-check
+      run: ruff format --check .
+    - name: Run mypy type checks
+      id: mypy-typecheck
+      run: mypy .
+  test-test:
+    name: 'Test: Unit & Coverage'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs:
+    - validate-validate
+    steps:
+    - name: Checkout
+      id: checkout
+      uses: actions/checkout@v4
+    - name: Cache pip
+      id: cache-pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: ${{ runner.os }}-pip-
+    - name: Setup Python
+      id: setup-python
+      uses: actions/setup-python@v4.12.0
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: Install project and test dependencies
+      id: install-test-deps
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install -e . pytest pytest-asyncio pytest-cov
+    - name: Run pytest (unit tests)
+      id: pytest-unit
+      run: pytest --maxfail=1 --disable-warnings -q
+    - name: Run pytest with coverage
+      id: pytest-coverage
+      run: pytest --cov=k8s_autopilot --cov-report=xml --cov-report=term-missing -q
+    - name: Upload coverage artifact (XML)
+      id: upload-coverage
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-xml
+        path: ${{ env.COVERAGE_XML }}
+    - name: (Optional) Enforce coverage threshold
+      id: coverage-threshold-note
+      run: echo "No coverage threshold configured in CISpec; configure threshold to enable enforcement."
+  build-package-build:
+    name: 'Build & Package: Docker and Distributions'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs:
+    - test-test
+    steps:
+    - name: Checkout
+      id: checkout
+      uses: actions/checkout@v4
+    - name: Set up Docker Buildx
+      id: setup-buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Build Docker image (local tag)
+      id: docker-build
+      uses: docker/build-push-action@v4.13.0
+      with:
+        context: .
+        file: Dockerfile
+        push: false
+        tags: ${{ env.DOCKER_IMAGE }}
+    - name: Scan Docker image with Trivy
+      id: trivy-scan
+      uses: aquasec/trivy-action@v0.26.1
+      with:
+        image-ref: ${{ env.DOCKER_IMAGE }}
+    - name: Setup Python (for packaging)
+      id: setup-python
+      uses: actions/setup-python@v4.12.0
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    - name: Cache pip
+      id: cache-pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: ${{ runner.os }}-pip-
+    - name: Install hatchling build backend
+      id: install-hatchling
+      run: python -m pip install --upgrade pip && python -m pip install hatchling
+    - name: Build distributions with hatchling
+      id: build-dists
+      run: python -m hatchling.build -o ${{ env.DIST_DIR }}
+    - name: Upload built artifacts
+      id: upload-dist
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist
+        path: ${{ env.DIST_DIR }}
