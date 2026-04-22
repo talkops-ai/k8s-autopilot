@@ -69,9 +69,7 @@ def create_checkpointer(
         Exception: If PostgreSQL setup fails
     """
     if checkpointer_type == "memory":
-        hitl_logger.log_structured(
-            level="INFO",
-            message="Creating MemorySaver checkpointer (development mode)",
+        hitl_logger.info("Creating MemorySaver checkpointer (development mode)",
             extra={"checkpointer_type": "memory"}
         )
         return MemorySaver()
@@ -79,69 +77,50 @@ def create_checkpointer(
     elif checkpointer_type == "postgres":
         # Check if PostgreSQL checkpointer is available
         if not POSTGRES_AVAILABLE or PostgresSaver is None:
-            hitl_logger.log_structured(
-                level="WARNING",
-                message="PostgreSQL checkpointer not available, falling back to MemorySaver",
-                extra={
+            hitl_logger.warning("PostgreSQL checkpointer not available, falling back to MemorySaver", extra={
                     "checkpointer_type": "postgres",
                     "fallback": "memory",
                     "reason": "langgraph.checkpoint.postgres not installed"
-                }
-            )
+                })
             return MemorySaver()
         
         # Get database URI
         db_uri = database_uri or get_database_uri(config)
         
         if not db_uri:
-            hitl_logger.log_structured(
-                level="WARNING",
-                message="No database URI found, falling back to MemorySaver",
-                extra={
+            hitl_logger.warning("No database URI found, falling back to MemorySaver", extra={
                     "checkpointer_type": "postgres",
                     "fallback": "memory"
-                }
-            )
+                })
             return MemorySaver()
         
         try:
-            hitl_logger.log_structured(
-                level="INFO",
-                message="Creating PostgresSaver checkpointer",
-                extra={
+            hitl_logger.info("Creating PostgresSaver checkpointer", extra={
                     "checkpointer_type": "postgres",
                     "has_uri": bool(db_uri),
                     "auto_setup": auto_setup
                 }
             )
             
-            checkpointer = PostgresSaver.from_conn_string(db_uri)
+            cm = PostgresSaver.from_conn_string(db_uri)
+            # LangGraph PostgresSaver.from_conn_string returns a context manager.
+            # We must enter it to acquire the actual PostgresSaver instance.
+            checkpointer = cm.__enter__()  # type: ignore
             
             if auto_setup:
                 checkpointer.setup()
-                hitl_logger.log_structured(
-                    level="INFO",
-                    message="PostgreSQL checkpointer tables initialized",
-                    extra={"checkpointer_type": "postgres"}
-                )
+                hitl_logger.info("PostgreSQL checkpointer tables initialized", extra={"checkpointer_type": "postgres"})
             
             return checkpointer
             
         except Exception as e:
-            hitl_logger.log_structured(
-                level="ERROR",
-                message=f"Failed to create PostgreSQL checkpointer: {e}",
-                extra={
+            hitl_logger.error(f"Failed to create PostgreSQL checkpointer: {e}", extra={
                     "error": str(e),
                     "error_type": type(e).__name__
                 }
             )
             # Fallback to MemorySaver on error
-            hitl_logger.log_structured(
-                level="WARNING",
-                message="Falling back to MemorySaver due to PostgreSQL error",
-                extra={"checkpointer_type": "memory"}
-            )
+            hitl_logger.warning("Falling back to MemorySaver due to PostgreSQL error", extra={"checkpointer_type": "memory"})
             return MemorySaver()
     
     else:
