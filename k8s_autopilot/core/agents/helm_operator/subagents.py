@@ -189,6 +189,15 @@ Before asking the user for chart source, repository, or any parameter:
 For **read-only** queries (list releases, get status, search charts, cluster info),
 skip the full phased workflow. Just call the tool directly and return results:
 
+**IRON RULES — NEVER VIOLATE:**
+1. Error/not-found IS the answer. **Do NOT retry**. **Do NOT try alternatives**.
+2. **Do NOT search the filesystem** for credentials or secrets.
+3. **Do NOT fabricate URIs**. You can ONLY use the URIs in the table below.
+4. If asked to inspect, manage, or fetch credentials for ANY resource or application not explicitly related to Helm charts and releases (e.g., ArgoCD passwords, Traefik routes, Argo Rollouts), you MUST immediately return without calling any tools:
+"This is outside my scope. Please use the appropriate operator.
+User Request: [The user's specific request or goal]
+Context: [Briefly summarize what you previously did if relevant]"
+
 | Query type | Tool | Example |
 |---|---|---|
 | List releases | `kubernetes_get_helm_releases` | `kubernetes_get_helm_releases()` or with `namespace="prod"` |

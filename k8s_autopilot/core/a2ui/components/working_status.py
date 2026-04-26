@@ -27,13 +27,23 @@ class WorkingStatusComponent(BaseComponent):
 
     def build(self, ctx: RenderContext) -> List[dict]:
         status_text = ctx.status.replace('_', ' ').title()
+        content = ctx.content_str if ctx.content_str else "Processing..."
         
+        markdown_text = (
+            f"### ⏳ {status_text}\n\n"
+            f"{content.strip()}\n"
+        )
+
         return [
             {
                 "beginRendering": {
                     "surfaceId": "status",
                     "root": "status-root",
-                    "styles": {"primaryColor": "#818cf8", "font": "Inter"}
+                    "styles": {
+                        "primaryColor": "#818cf8",
+                        "foregroundColor": "#E2E8F0",
+                        "font": "Inter",
+                    }
                 }
             },
             {
@@ -43,47 +53,9 @@ class WorkingStatusComponent(BaseComponent):
                         {
                             "id": "status-root",
                             "component": {
-                                "Card": {"child": "status-content"}
-                            }
-                        },
-                        {
-                            "id": "status-content",
-                            "component": {
-                                "Column": {
-                                    "children": {"explicitList": ["status-header", "status-text"]}
-                                }
-                            }
-                        },
-                        {
-                            "id": "status-header",
-                            "component": {
-                                "Row": {
-                                    "children": {"explicitList": ["status-icon", "status-title"]},
-                                    "alignment": "center"
-                                }
-                            }
-                        },
-                        {
-                            "id": "status-icon",
-                            "component": {
-                                "Icon": {"name": {"literalString": "settings"}}
-                            }
-                        },
-                        {
-                            "id": "status-title",
-                            "component": {
                                 "Text": {
-                                    "usageHint": "h4",
-                                    "text": {"path": "title"}
-                                }
-                            }
-                        },
-                        {
-                            "id": "status-text",
-                            "component": {
-                                "Text": {
+                                    "text": {"path": "markdown"},
                                     "usageHint": "body",
-                                    "text": {"path": "content"}
                                 }
                             }
                         }
@@ -95,8 +67,7 @@ class WorkingStatusComponent(BaseComponent):
                     "surfaceId": "status",
                     "path": "/",
                     "contents": [
-                        {"key": "title", "valueString": f"⏳ {status_text}"},
-                        {"key": "content", "valueString": ctx.content_str}
+                        {"key": "markdown", "valueString": markdown_text}
                     ]
                 }
             }

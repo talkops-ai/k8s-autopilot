@@ -39,13 +39,23 @@ class ValuesConfirmationComponent(BaseComponent):
             context_text = ''
             
         context_display = context_text if context_text else "Please refer to content above"
+        
+        markdown_text = (
+            f"### ⚙️ Values Confirmation\n\n"
+            f"**{question}**\n\n"
+            f"{context_display}\n"
+        )
 
         return [
             {
                 "beginRendering": {
                     "surfaceId": "values-form",
                     "root": "values-root",
-                    "styles": {"primaryColor": "#818cf8", "font": "Inter"}
+                    "styles": {
+                        "primaryColor": "#818cf8",
+                        "foregroundColor": "#E2E8F0",
+                        "font": "Inter",
+                    }
                 }
             },
             {
@@ -54,19 +64,12 @@ class ValuesConfirmationComponent(BaseComponent):
                     "components": [
                         {
                             "id": "values-root",
-                            "component": {"Card": {"child": "values-content"}}
-                        },
-                        {
-                            "id": "values-content",
                             "component": {
                                 "Column": {
                                     "children": {
                                         "explicitList": [
-                                            "values-header",
-                                            "divider1",
-                                            "question-text",
-                                            "context-text",
-                                            "divider2",
+                                            "markdown-text",
+                                            "divider",
                                             "action-row"
                                         ]
                                     }
@@ -74,47 +77,15 @@ class ValuesConfirmationComponent(BaseComponent):
                             }
                         },
                         {
-                            "id": "values-header",
-                            "component": {
-                                "Row": {
-                                    "children": {"explicitList": ["header-icon", "header-title"]},
-                                    "alignment": "center"
-                                }
-                            }
-                        },
-                        {
-                            "id": "header-icon",
-                            "component": {"Icon": {"name": {"literalString": "settings"}}}
-                        },
-                        {
-                            "id": "header-title",
-                            "component": {
-                                "Text": {
-                                    "usageHint": "h3",
-                                    "text": {"literalString": "Values Confirmation"}
-                                }
-                            }
-                        },
-                        {"id": "divider1", "component": {"Divider": {}}},
-                        {
-                            "id": "question-text",
+                            "id": "markdown-text",
                             "component": {
                                 "Text": {
                                     "usageHint": "body",
-                                    "text": {"path": "question"}
+                                    "text": {"path": "markdown"}
                                 }
                             }
                         },
-                        {
-                             "id": "context-text",
-                             "component": {
-                                 "Text": {
-                                     "usageHint": "caption",
-                                     "text": {"path": "context"}
-                                 }
-                             }
-                        },
-                        {"id": "divider2", "component": {"Divider": {}}},
+                        {"id": "divider", "component": {"Divider": {}}},
                         {
                             "id": "action-row",
                             "component": {
@@ -154,8 +125,7 @@ class ValuesConfirmationComponent(BaseComponent):
                     "surfaceId": "values-form",
                     "path": "/",
                     "contents": [
-                        {"key": "question", "valueString": question},
-                        {"key": "context", "valueString": context_display}
+                        {"key": "markdown", "valueString": markdown_text}
                     ]
                 }
             }

@@ -39,7 +39,10 @@ Call tool EXACTLY ONCE for the query → format → return. Do NOT read SKILL.md
 1. Error/not-found IS the answer. **Do NOT retry**. **Do NOT try alternatives**.
 2. **Do NOT search the filesystem** (`ls`, `glob`, `grep`, `read_file`).
 3. **Do NOT fabricate URIs** or resource types.
-4. If asked to inspect ANY resource or object type not explicitly listed in the table below, you MUST immediately return: "I only have access to specific MCP resources. Use the K8s Operator to inspect raw Kubernetes objects."
+4. If asked to inspect ANY resource or object type not explicitly listed in the table below, you MUST immediately return without calling any tools:
+"This is outside my scope. Please use the appropriate operator.
+User Request: [The user's specific request or goal]
+Context: [Briefly summarize what you previously did if relevant]"
 
 | Query type | Tool |
 |---|---|
@@ -92,6 +95,22 @@ Tools gated by `HumanInTheLoopMiddleware`. First-time sync: `dry_run=true` first
 ### Phase 4: Verification
 Poll `get_sync_status` or `get_application_details`. Do NOT trust tool stdout alone.
 
+## PLAN-LOCKED Execution Mode
+When the task description contains `[PLAN-LOCKED]`:
+- The coordinator has ALREADY obtained user approval for specific parameters.
+- **SKIP Phase 2** (planning) entirely — parameters are pre-approved.
+- Execute EXACTLY the parameters specified in the task description.
+- Do NOT re-plan, re-ask, or modify any parameter.
+- Do NOT call `request_human_input` for plan approval (already done).
+- `HumanInTheLoopMiddleware` still gates the actual tool call mechanically.
+- If execution fails, STOP and return the error — do NOT attempt alternatives.
+
+## Rejection Protocol
+If the user REJECTS a plan (via middleware or `request_human_input`):
+→ Do NOT retry with a modified plan.
+→ Return: "Plan rejected by user. Returning to coordinator for re-engagement."
+→ The COORDINATOR handles re-engagement — not you.
+
 Return: "Completed ArgoCD operation: {summary}".
 CRITICAL: Do NOT use `request_human_input` for final results. Return raw text string.
 """
@@ -111,7 +130,10 @@ Call resource EXACTLY ONCE for the query → format → return. Do NOT read SKIL
 1. Error/not-found IS the answer. **Do NOT retry**. **Do NOT try alternatives**.
 2. **Do NOT search the filesystem** (`ls`, `glob`, `grep`, `read_file`).
 3. **Do NOT fabricate URIs**. You can ONLY use the URIs in the table below.
-4. If asked to inspect ANY resource or object type not explicitly listed in the table below, you MUST immediately return: "I only have access to specific MCP resources. Use the K8s Operator to inspect raw Kubernetes objects."
+4. If asked to inspect ANY resource or object type not explicitly listed in the table below, you MUST immediately return without calling any tools:
+"This is outside my scope. Please use the appropriate operator.
+User Request: [The user's specific request or goal]
+Context: [Briefly summarize what you previously did if relevant]"
 
 | Query type | STRICT URI FORMAT (use via `read_mcp_resource`) |
 |---|---|
@@ -190,6 +212,22 @@ If `argo_update_rollout` mentions "Deployment" in its response, that is normal f
 - `promote_full` → always requires explicit approval.
 - Inconclusive AnalysisRun → NOT passing. Check health + Prometheus. Transient → `resume`. Persistent → abort.
 
+## PLAN-LOCKED Execution Mode
+When the task description contains `[PLAN-LOCKED]`:
+- The coordinator has ALREADY obtained user approval for specific parameters.
+- **SKIP Phase 2** (planning) entirely — parameters are pre-approved.
+- Execute EXACTLY the parameters specified in the task description.
+- Do NOT re-plan, re-ask, or modify any parameter.
+- Do NOT call `request_human_input` for plan approval (already done).
+- `HumanInTheLoopMiddleware` still gates the actual tool call mechanically.
+- If execution fails, STOP and return the error — do NOT attempt alternatives.
+
+## Rejection Protocol
+If the user REJECTS a plan (via middleware or `request_human_input`):
+→ Do NOT retry with a modified plan.
+→ Return: "Plan rejected by user. Returning to coordinator for re-engagement."
+→ The COORDINATOR handles re-engagement — not you.
+
 Return: "Completed Argo Rollouts operation: {summary}".
 CRITICAL: Do NOT use `request_human_input` for final results. Return raw text string.
 """
@@ -239,7 +277,10 @@ Call resource EXACTLY ONCE for the query → format → return. Do NOT read SKIL
 2. **Do NOT search the filesystem** (`ls`, `glob`, `grep`, `read_file`).
 3. **Do NOT fabricate URIs**. You can ONLY use the URIs in the table below.
 4. `traefik_generate_routing_manifest` is a WRITE-SIDE tool — NEVER use for read-only queries.
-5. If asked to inspect ANY resource or object type not explicitly listed in the table below, you MUST immediately return: "I only have access to specific MCP resources. Use the K8s Operator to inspect raw Kubernetes objects."
+5. If asked to inspect ANY resource or object type not explicitly listed in the table below, you MUST immediately return without calling any tools:
+"This is outside my scope. Please use the appropriate operator.
+User Request: [The user's specific request or goal]
+Context: [Briefly summarize what you previously did if relevant]"
 
 | Query type | STRICT URI FORMAT (use via `read_mcp_resource`) |
 |---|---|
@@ -298,6 +339,22 @@ Do NOT trust tool stdout alone.
 - **Generate-before-apply:** `traefik_nginx_migration` and `traefik_generate_routing_manifest` → `action=generate` → show YAML → confirm → `action=apply`.
 - **Traffic mirroring:** Zero user impact but consumes cluster resources. >50% mirror → warn. Verify canary is running first.
 - **TCP routing:** No weight-based rollback. Confirm service availability. TLS passthrough: check ACME interception.
+
+## PLAN-LOCKED Execution Mode
+When the task description contains `[PLAN-LOCKED]`:
+- The coordinator has ALREADY obtained user approval for specific parameters.
+- **SKIP Phase 2** (planning) entirely — parameters are pre-approved.
+- Execute EXACTLY the parameters specified in the task description.
+- Do NOT re-plan, re-ask, or modify any parameter.
+- Do NOT call `request_human_input` for plan approval (already done).
+- `HumanInTheLoopMiddleware` still gates the actual tool call mechanically.
+- If execution fails, STOP and return the error — do NOT attempt alternatives.
+
+## Rejection Protocol
+If the user REJECTS a plan (via middleware or `request_human_input`):
+→ Do NOT retry with a modified plan.
+→ Return: "Plan rejected by user. Returning to coordinator for re-engagement."
+→ The COORDINATOR handles re-engagement — not you.
 
 Return: "Completed Traefik operation: {summary}".
 CRITICAL: Do NOT use `request_human_input` for final results. Return raw text string.
@@ -475,8 +532,14 @@ def _build_mcp_subagent(
                     f"{name}: attached HumanInTheLoopMiddleware + ToolRetryMiddleware"
                 )
 
-            # Lazily instantiate model and graph
-            cfg = Config()
+            # Lazily instantiate model and graph — prefer coordinator's config
+            # over a fresh Config() to ensure sub-agents inherit model/backend
+            # settings from the coordinator (FINDING 8).
+            cfg = (
+                config.get("configurable", {}).get("app_config")
+                if isinstance(config, dict)
+                else None
+            ) or Config()
             model = create_model(cfg.get_llm_deepagent_config())
             agent_graph = create_agent(
                 model=model,

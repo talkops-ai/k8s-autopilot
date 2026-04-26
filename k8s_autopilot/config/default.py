@@ -96,11 +96,9 @@ class DefaultConfig:
         },
         {
             "name": "kubernetes_mcp_server",
-            "url": "http://localhost:8003/mcp",
-            "transport": "http",
-            "disabled": False,
-            "headers": {},
-            "auth_token_env_var": None,
+            "command": "npx",
+            "transport": "stdio",
+            "args": ["-y", "kubernetes-mcp-server@latest"],
         }
     ]
 

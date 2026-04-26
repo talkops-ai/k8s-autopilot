@@ -315,35 +315,17 @@ class K8sOperatorApprovalComponent(BaseComponent):
                     env_text = f" — {badge}"
                     break
 
-        # ── Build context line components ────────────────────────────
-        context_lines = [
-            ln for ln in (context_text or "").split("\n") if ln.strip()
-        ]
-        if not context_lines:
-            context_lines = [f"Phase: {phase}"]
-
-        context_line_ids = [f"k8s-ctx-line-{i}" for i in range(len(context_lines))]
-
-        context_line_components = []
-        for idx, line in enumerate(context_lines):
-            # Resource headers get body style, detail lines get caption
-            is_header = not line.startswith("  ")
-            context_line_components.append({
-                "id": context_line_ids[idx],
-                "component": {
-                    "Text": {
-                        "usageHint": "body" if is_header else "caption",
-                        "text": {"literalString": line},
-                    }
-                },
-            })
+        # ── Build Markdown Text ──────────────────────────────────────
+        title_str = f"{title_icon} K8s Cluster Operation — {phase_display}{env_text}"
+        markdown_text = (
+            f"### {title_str}\n\n"
+            f"**{question}**\n\n"
+            f"{context_text}\n"
+        )
 
         column_children = [
-            "k8s-approval-header",
-            "k8s-divider1",
-            "k8s-question-text",
-            *context_line_ids,
-            "k8s-divider2",
+            "markdown-text",
+            "divider",
             "k8s-action-row",
         ]
 
@@ -354,6 +336,7 @@ class K8sOperatorApprovalComponent(BaseComponent):
                     "root": "k8s-approval-root",
                     "styles": {
                         "primaryColor": "#3b82f6",  # Blue — Kubernetes brand color
+                        "foregroundColor": "#E2E8F0",
                         "font": "Inter",
                     },
                 }
@@ -365,12 +348,6 @@ class K8sOperatorApprovalComponent(BaseComponent):
                         {
                             "id": "k8s-approval-root",
                             "component": {
-                                "Card": {"child": "k8s-approval-content"},
-                            },
-                        },
-                        {
-                            "id": "k8s-approval-content",
-                            "component": {
                                 "Column": {
                                     "children": {
                                         "explicitList": column_children,
@@ -379,48 +356,15 @@ class K8sOperatorApprovalComponent(BaseComponent):
                             },
                         },
                         {
-                            "id": "k8s-approval-header",
-                            "component": {
-                                "Row": {
-                                    "children": {
-                                        "explicitList": [
-                                            "k8s-header-icon",
-                                            "k8s-header-title",
-                                        ],
-                                    },
-                                    "alignment": "center",
-                                }
-                            },
-                        },
-                        {
-                            "id": "k8s-header-icon",
-                            "component": {
-                                "Icon": {
-                                    "name": {"literalString": "security"},
-                                }
-                            },
-                        },
-                        {
-                            "id": "k8s-header-title",
+                            "id": "markdown-text",
                             "component": {
                                 "Text": {
-                                    "usageHint": "h3",
-                                    "text": {"path": "title"},
-                                }
-                            },
-                        },
-                        {"id": "k8s-divider1", "component": {"Divider": {}}},
-                        {
-                            "id": "k8s-question-text",
-                            "component": {
-                                "Text": {
+                                    "text": {"path": "markdown"},
                                     "usageHint": "body",
-                                    "text": {"path": "question"},
                                 }
-                            },
+                            }
                         },
-                        *context_line_components,
-                        {"id": "k8s-divider2", "component": {"Divider": {}}},
+                        {"id": "divider", "component": {"Divider": {}}},
                         {
                             "id": "k8s-action-row",
                             "component": {
@@ -507,14 +451,7 @@ class K8sOperatorApprovalComponent(BaseComponent):
                     "surfaceId": "k8s-op-approval",
                     "path": "/",
                     "contents": [
-                        {
-                            "key": "title",
-                            "valueString": (
-                                f"{title_icon} K8s Cluster Operation — "
-                                f"{phase_display}{env_text}"
-                            ),
-                        },
-                        {"key": "question", "valueString": question},
+                        {"key": "markdown", "valueString": markdown_text},
                         {
                             "key": "phaseId",
                             "valueString": phase if phase else "unknown",

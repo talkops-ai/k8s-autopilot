@@ -230,40 +230,17 @@ class HitlApprovalComponent(BaseComponent):
             
         phase_display = phase.replace('_', ' ').title() if phase else "Unknown"
 
-        # ── Build dynamic context lines ──────────────────────────────
-        # A2UI Text components collapse \n, so we render each line
-        # as a separate Text component inside a Column.
-        context_lines = [
-            ln for ln in (context_text or "").split("\n") if ln.strip()
-        ]
-        if not context_lines:
-            context_lines = [f"Phase: {phase}"]
+        # ── Build Markdown Text ──────────────────────────────────────
+        title_str = f"🔔 Input Required - {phase_display}"
+        markdown_text = (
+            f"### {title_str}\n\n"
+            f"**{question}**\n\n"
+            f"{context_text}\n"
+        )
 
-        # Generate unique IDs for each context line component
-        context_line_ids = [f"context-line-{i}" for i in range(len(context_lines))]
-
-        # Build the Text components for each context line
-        context_line_components = []
-        for idx, line in enumerate(context_lines):
-            # Group headers (emoji lines) get body style, items get caption
-            is_header = not line.startswith("  ")
-            context_line_components.append({
-                "id": context_line_ids[idx],
-                "component": {
-                    "Text": {
-                        "usageHint": "body" if is_header else "caption",
-                        "text": {"literalString": line},
-                    }
-                },
-            })
-
-        # Column children: header, divider, question, context lines, divider, actions
         column_children = [
-            "approval-header",
-            "divider1",
-            "question-text",
-            *context_line_ids,
-            "divider2",
+            "markdown-text",
+            "divider",
             "action-row",
         ]
 
@@ -272,7 +249,11 @@ class HitlApprovalComponent(BaseComponent):
                 "beginRendering": {
                     "surfaceId": "hitl-form",
                     "root": "approval-root",
-                    "styles": {"primaryColor": "#818cf8", "font": "Inter"}
+                    "styles": {
+                        "primaryColor": "#818cf8",
+                        "foregroundColor": "#E2E8F0",
+                        "font": "Inter",
+                    }
                 }
             },
             {
@@ -281,10 +262,6 @@ class HitlApprovalComponent(BaseComponent):
                     "components": [
                         {
                             "id": "approval-root",
-                            "component": {"Card": {"child": "approval-content"}}
-                        },
-                        {
-                            "id": "approval-content",
                             "component": {
                                 "Column": {
                                     "children": {
@@ -294,40 +271,15 @@ class HitlApprovalComponent(BaseComponent):
                             }
                         },
                         {
-                            "id": "approval-header",
-                            "component": {
-                                "Row": {
-                                    "children": {"explicitList": ["header-icon", "header-title"]},
-                                    "alignment": "center"
-                                }
-                            }
-                        },
-                        {
-                            "id": "header-icon",
-                            "component": {"Icon": {"name": {"literalString": "help"}}}
-                        },
-                        {
-                            "id": "header-title",
+                            "id": "markdown-text",
                             "component": {
                                 "Text": {
-                                    "usageHint": "h3",
-                                    "text": {"path": "title"}
-                                }
-                            }
-                        },
-                        {"id": "divider1", "component": {"Divider": {}}},
-                        {
-                            "id": "question-text",
-                            "component": {
-                                "Text": {
+                                    "text": {"path": "markdown"},
                                     "usageHint": "body",
-                                    "text": {"path": "question"}
                                 }
                             }
                         },
-                        # Dynamic context line components
-                        *context_line_components,
-                        {"id": "divider2", "component": {"Divider": {}}},
+                        {"id": "divider", "component": {"Divider": {}}},
                         {
                             "id": "action-row",
                             "component": {
@@ -389,8 +341,7 @@ class HitlApprovalComponent(BaseComponent):
                     "surfaceId": "hitl-form",
                     "path": "/",
                     "contents": [
-                        {"key": "title", "valueString": f"🔔 Input Required - {phase_display}"},
-                        {"key": "question", "valueString": question},
+                        {"key": "markdown", "valueString": markdown_text},
                         {"key": "phaseId", "valueString": phase if phase else "unknown"}
                     ]
                 }

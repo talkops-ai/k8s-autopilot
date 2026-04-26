@@ -51,11 +51,14 @@ class UserInputComponent(BaseComponent):
         options: List[Dict[str, Any]] = content.get("options", [])
         input_fields: List[Dict[str, Any]] = content.get("input_fields", [])
 
-        # ── Build dynamic child IDs ──────────────────────────────────
-        children_ids = ["input-header", "divider-top", "input-question"]
+        markdown_text = (
+            f"### {title}\n\n"
+            f"**{question}**\n\n"
+            f"{context_text}\n"
+        )
 
-        if context_text:
-            children_ids.append("input-context")
+        # ── Build dynamic child IDs ──────────────────────────────────
+        children_ids = ["markdown-text"]
 
         if input_fields:
             children_ids.append("divider-fields")
@@ -77,40 +80,17 @@ class UserInputComponent(BaseComponent):
                     }
                 },
             },
-            # Header
+            # Markdown block
             {
-                "id": "input-header",
+                "id": "markdown-text",
                 "component": {
                     "Text": {
-                        "text": {"path": "title"},
-                        "usageHint": "h3",
-                    }
-                },
-            },
-            {"id": "divider-top", "component": {"Divider": {}}},
-            # Question
-            {
-                "id": "input-question",
-                "component": {
-                    "Text": {
-                        "text": {"path": "question"},
+                        "text": {"path": "markdown"},
                         "usageHint": "body",
                     }
                 },
             },
         ]
-
-        # ── Optional context ─────────────────────────────────────────
-        if context_text:
-            components.append({
-                "id": "input-context",
-                "component": {
-                    "Text": {
-                        "text": {"path": "context"},
-                        "usageHint": "caption",
-                    }
-                },
-            })
 
         # ── Dynamic text fields ──────────────────────────────────────
         if input_fields:
@@ -199,13 +179,8 @@ class UserInputComponent(BaseComponent):
 
         # ── Data model ───────────────────────────────────────────────
         data_entries = [
-            {"key": "title", "valueString": title},
-            {"key": "question", "valueString": question},
+            {"key": "markdown", "valueString": markdown_text},
         ]
-        if context_text:
-            data_entries.append(
-                {"key": "context", "valueString": context_text}
-            )
         # Pre-fill input field defaults
         for field in input_fields:
             field_key = field.get("key", "")

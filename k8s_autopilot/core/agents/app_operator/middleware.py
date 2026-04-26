@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from deepagents.middleware.summarization import create_summarization_tool_middleware
 from langchain.agents.middleware import HumanInTheLoopMiddleware, AgentMiddleware, AgentState
 from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
+from k8s_autopilot.core.hitl.safe_resume import SafeResumeHITLMiddleware
 from langchain_core.messages import SystemMessage
 from k8s_autopilot.utils.logger import AgentLogger
 
@@ -81,6 +82,88 @@ class AppOperationContextMiddleware(AgentMiddleware):
         self, state: AgentState, runtime: Any,
     ) -> Dict[str, Any] | None:
         return self.before_model(state, runtime)
+
+
+# ---------------------------------------------------------------------------
+# Layer 3: PlanLockMiddleware — enforces plan→execute fidelity
+# ---------------------------------------------------------------------------
+
+class PlanLockMiddleware(AgentMiddleware):
+    """Re-injects approved plan parameters before every model call.
+
+    Industry pattern: Terraform plan/apply — the plan file constrains what
+    ``apply`` can do.  OPA/Gatekeeper — admission controller rejects
+    mutations that violate policy.
+
+    When the coordinator writes an approved plan to
+    ``state["files"]["/plan/active-plan.md"]``, this middleware re-injects
+    it as a SystemMessage before every subsequent model call, ensuring the
+    LLM cannot forget or deviate from approved parameters — even after
+    context summarization.
+
+    Lifecycle:
+        1. Coordinator presents plan → user approves → coordinator writes plan
+           to ``state["files"]`` via ``write_file``.
+        2. ``before_model``: re-injects approved plan as a SystemMessage
+           constraint.
+        3. After execution completes, coordinator clears the plan file.
+    """
+
+    _PLAN_PATH = "/plan/active-plan.md"
+
+    def before_model(
+        self, state: AgentState, runtime: Any,
+    ) -> Dict[str, Any] | None:
+        """Re-inject approved plan as a binding constraint."""
+        plan_content = self._get_active_plan(state)
+        if not plan_content:
+            return None
+
+        logger.debug(
+            "PlanLockMiddleware: injecting active plan constraint",
+            extra={"plan_length": len(plan_content)},
+        )
+
+        return {
+            "messages": [
+                SystemMessage(
+                    content=(
+                        "## ACTIVE PLAN (LOCKED — DO NOT DEVIATE)\n"
+                        "The user approved the following plan. Execute "
+                        "EXACTLY these parameters.\n"
+                        "Any deviation is a protocol violation.\n\n"
+                        f"{plan_content}\n\n"
+                        "If you cannot execute as planned, STOP and report "
+                        "the error. Do NOT attempt alternatives."
+                    )
+                )
+            ],
+        }
+
+    async def abefore_model(
+        self, state: AgentState, runtime: Any,
+    ) -> Dict[str, Any] | None:
+        return self.before_model(state, runtime)
+
+    @staticmethod
+    def _get_active_plan(state: AgentState) -> Optional[str]:
+        """Extract active plan content from agent state files."""
+        files = state.get("files", {})
+        if not files:
+            return None
+
+        plan_file = files.get(PlanLockMiddleware._PLAN_PATH)
+        if plan_file is None:
+            return None
+
+        # Handle both string and dict file representations
+        if isinstance(plan_file, str):
+            return plan_file.strip() or None
+        if isinstance(plan_file, dict):
+            content = plan_file.get("content", "")
+            return content.strip() or None
+
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -555,11 +638,11 @@ def _make_interrupt_config(
 # Middleware factories — one per domain
 # ---------------------------------------------------------------------------
 
-def build_app_operator_hitl_middleware() -> HumanInTheLoopMiddleware:
-    """Create a ``HumanInTheLoopMiddleware`` configured for ArgoCD operations."""
-    logger.info("Building HumanInTheLoopMiddleware for ArgoCD execution tools")
+def build_app_operator_hitl_middleware() -> SafeResumeHITLMiddleware:
+    """Create a ``SafeResumeHITLMiddleware`` configured for ArgoCD operations."""
+    logger.info("Building SafeResumeHITLMiddleware for ArgoCD execution tools")
 
-    return HumanInTheLoopMiddleware(
+    return SafeResumeHITLMiddleware(
         interrupt_on={
             "create_application": _make_interrupt_config(
                 "create_application", _build_approval_description,
@@ -595,8 +678,8 @@ def build_app_operator_hitl_middleware() -> HumanInTheLoopMiddleware:
     )
 
 
-def build_argo_rollouts_hitl_middleware() -> HumanInTheLoopMiddleware:
-    """Create a ``HumanInTheLoopMiddleware`` configured for Argo Rollouts operations.
+def build_argo_rollouts_hitl_middleware() -> SafeResumeHITLMiddleware:
+    """Create a ``SafeResumeHITLMiddleware`` configured for Argo Rollouts operations.
 
     Gated tools (from SKILL.md safety rules and progressive delivery best practices):
         - argo_delete_rollout — destructive: removes CRD + all ReplicaSets
@@ -608,10 +691,11 @@ def build_argo_rollouts_hitl_middleware() -> HumanInTheLoopMiddleware:
         - argo_create_rollout — creates new Rollout CRD (cluster mutation)
         - argo_configure_analysis_template — mode=execute creates AnalysisTemplate
         - create_stable_canary_services — apply=True creates Services
+        - argo_update_rollout — image/spec update on live rollout (FINDING 5)
     """
-    logger.info("Building HumanInTheLoopMiddleware for Argo Rollouts execution tools")
+    logger.info("Building SafeResumeHITLMiddleware for Argo Rollouts execution tools")
 
-    return HumanInTheLoopMiddleware(
+    return SafeResumeHITLMiddleware(
         interrupt_on={
             "argo_delete_rollout": _make_interrupt_config(
                 "argo_delete_rollout", _build_rollouts_approval_description,
@@ -642,6 +726,10 @@ def build_argo_rollouts_hitl_middleware() -> HumanInTheLoopMiddleware:
             ),
             "create_stable_canary_services": _make_interrupt_config(
                 "create_stable_canary_services", _build_rollouts_approval_description,
+            ),
+            "argo_update_rollout": _make_interrupt_config(
+                "argo_update_rollout", _build_rollouts_approval_description,
+                allowed_decisions=["approve", "edit", "reject"],
             ),
         },
         description_prefix="⚠️ Argo Rollouts Operation — Approval Required",
@@ -832,8 +920,8 @@ def _build_traefik_approval_description(
         return f"Approval required for Traefik operation: {tool_name}."
 
 
-def build_traefik_hitl_middleware() -> HumanInTheLoopMiddleware:
-    """Create a ``HumanInTheLoopMiddleware`` configured for Traefik operations.
+def build_traefik_hitl_middleware() -> SafeResumeHITLMiddleware:
+    """Create a ``SafeResumeHITLMiddleware`` configured for Traefik operations.
 
     Gated tools (from SKILL.md safety rule #6):
         - traefik_manage_weighted_routing — live traffic routing
@@ -842,10 +930,11 @@ def build_traefik_hitl_middleware() -> HumanInTheLoopMiddleware:
         - traefik_nginx_migration — apply and revert are cluster mutations
         - traefik_manage_tcp_routing — TCP has no health rollback (rule #9)
         - traefik_configure_service_affinity — disable loses sticky state
+        - traefik_generate_routing_manifest — generate+apply routing (FINDING 7)
     """
-    logger.info("Building HumanInTheLoopMiddleware for Traefik execution tools")
+    logger.info("Building SafeResumeHITLMiddleware for Traefik execution tools")
 
-    return HumanInTheLoopMiddleware(
+    return SafeResumeHITLMiddleware(
         interrupt_on={
             "traefik_manage_weighted_routing": _make_interrupt_config(
                 "traefik_manage_weighted_routing", _build_traefik_approval_description,
@@ -869,6 +958,10 @@ def build_traefik_hitl_middleware() -> HumanInTheLoopMiddleware:
             ),
             "traefik_configure_service_affinity": _make_interrupt_config(
                 "traefik_configure_service_affinity", _build_traefik_approval_description,
+                allowed_decisions=["approve", "reject"],
+            ),
+            "traefik_generate_routing_manifest": _make_interrupt_config(
+                "traefik_generate_routing_manifest", _build_traefik_approval_description,
                 allowed_decisions=["approve", "reject"],
             ),
         },
@@ -899,6 +992,10 @@ def build_app_operator_middleware(
     # 0. Operation context injection
     middleware.append(AppOperationContextMiddleware())
     logger.info("Middleware: AppOperationContextMiddleware (before_model)")
+
+    # 0b. Plan lock enforcement (re-injects approved plan before every model call)
+    middleware.append(PlanLockMiddleware())
+    logger.info("Middleware: PlanLockMiddleware (before_model)")
 
     # 1. Per-tool write_file guard
     wf_limit = write_file_limit or _WRITE_FILE_RUN_LIMIT

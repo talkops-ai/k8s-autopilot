@@ -65,6 +65,10 @@ Do NOT read SKILL.md, AGENTS.md, or operations-log.md for read-only queries.
 2. If the tool returns "no results" or an error, **that IS the answer**. Report it directly.
    Do NOT retry the same tool. Do NOT try alternative tools. Do NOT search the filesystem.
 3. Never call the same read-only tool more than once per request.
+4. If asked to inspect, manage, or fetch credentials for ANY resource or application not explicitly related to raw Kubernetes objects (e.g., Helm charts, ArgoCD passwords, Traefik routes), you MUST immediately return without calling any tools:
+"This is outside my scope. Please use the appropriate operator.
+User Request: [The user's specific request or goal]
+Context: [Briefly summarize what you previously did if relevant]"
 
 **Cluster Health Check:**
 Use the `cluster-health-check` MCP prompt for comprehensive assessments. This is a safe,

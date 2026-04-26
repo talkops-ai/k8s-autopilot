@@ -5,7 +5,7 @@ This module provides middleware for tool-level approvals using LangChain's
 HumanInTheLoopMiddleware. This enables automatic interrupts on sensitive tool calls.
 """
 
-from typing import Dict, Any, List, Optional, Literal
+from typing import Dict, Any, List, Optional, Literal, cast
 from langchain.agents import create_agent
 from langchain_core.tools import BaseTool
 
@@ -81,7 +81,7 @@ def create_hitl_middleware_config(
     
     try:
         middleware = HumanInTheLoopMiddleware(
-            interrupt_on=interrupt_config,
+            interrupt_on=cast(Dict[str, Any], interrupt_config),
             description_prefix=description_prefix
         )
         
@@ -198,7 +198,7 @@ def create_supervisor_with_hitl(
         agent = create_agent(
             model=model,
             tools=tools,
-            middleware=middleware_list if middleware_list else None,
+            middleware=middleware_list or [],
             checkpointer=checkpointer,
             **agent_kwargs
         )

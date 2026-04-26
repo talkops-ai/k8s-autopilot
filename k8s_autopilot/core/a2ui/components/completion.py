@@ -23,12 +23,21 @@ class CompletionComponent(BaseComponent):
     def build(self, ctx: RenderContext) -> List[dict]:
         message = ctx.content_str if ctx.content_str else "Task completed successfully."
         
+        markdown_text = (
+            f"### ✅ Complete\n\n"
+            f"{message.strip()}\n"
+        )
+
         return [
             {
                 "beginRendering": {
                     "surfaceId": "completion",
                     "root": "completion-root",
-                    "styles": {"primaryColor": "#22C55E", "font": "Inter"}
+                    "styles": {
+                        "primaryColor": "#22C55E",
+                        "foregroundColor": "#F8FAFC",
+                        "font": "Inter",
+                    }
                 }
             },
             {
@@ -37,45 +46,10 @@ class CompletionComponent(BaseComponent):
                     "components": [
                         {
                             "id": "completion-root",
-                            "component": {"Card": {"child": "completion-content"}}
-                        },
-                        {
-                            "id": "completion-content",
-                            "component": {
-                                "Column": {
-                                    "children": {"explicitList": ["success-header", "divider", "message-text"]}
-                                }
-                            }
-                        },
-                        {
-                            "id": "success-header",
-                            "component": {
-                                "Row": {
-                                    "children": {"explicitList": ["check-icon", "success-title"]},
-                                    "alignment": "center"
-                                }
-                            }
-                        },
-                        {
-                            "id": "check-icon",
-                            "component": {"Icon": {"name": {"literalString": "check"}}}
-                        },
-                        {
-                            "id": "success-title",
                             "component": {
                                 "Text": {
-                                    "usageHint": "h2",
-                                    "text": {"literalString": "✅ Complete"}
-                                }
-                            }
-                        },
-                        {"id": "divider", "component": {"Divider": {}}},
-                        {
-                            "id": "message-text",
-                            "component": {
-                                "Text": {
+                                    "text": {"path": "markdown"},
                                     "usageHint": "body",
-                                    "text": {"path": "message"}
                                 }
                             }
                         }
@@ -87,7 +61,7 @@ class CompletionComponent(BaseComponent):
                     "surfaceId": "completion",
                     "path": "/",
                     "contents": [
-                        {"key": "message", "valueString": message}
+                        {"key": "markdown", "valueString": markdown_text}
                     ]
                 }
             }

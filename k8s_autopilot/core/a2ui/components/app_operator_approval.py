@@ -337,34 +337,17 @@ class AppOperatorApprovalComponent(BaseComponent):
                  for r in action_reqs):
             title_icon = "🔄"
 
-        # ── Build context line components ────────────────────────────
-        context_lines = [
-            ln for ln in (context_text or "").split("\n") if ln.strip()
-        ]
-        if not context_lines:
-            context_lines = [f"Phase: {phase}"]
-
-        context_line_ids = [f"ctx-line-{i}" for i in range(len(context_lines))]
-
-        context_line_components = []
-        for idx, line in enumerate(context_lines):
-            is_header = not line.startswith("  ")
-            context_line_components.append({
-                "id": context_line_ids[idx],
-                "component": {
-                    "Text": {
-                        "usageHint": "body" if is_header else "caption",
-                        "text": {"literalString": line},
-                    }
-                },
-            })
+        # ── Build Markdown Text ──────────────────────────────────────
+        title_str = f"{title_icon} App Operation — {phase_display}"
+        markdown_text = (
+            f"### {title_str}\n\n"
+            f"**{question}**\n\n"
+            f"{context_text}\n"
+        )
 
         column_children = [
-            "approval-header",
-            "divider1",
-            "question-text",
-            *context_line_ids,
-            "divider2",
+            "markdown-text",
+            "divider",
             "action-row",
         ]
 
@@ -375,6 +358,7 @@ class AppOperatorApprovalComponent(BaseComponent):
                     "root": "approval-root",
                     "styles": {
                         "primaryColor": "#f97316",
+                        "foregroundColor": "#E2E8F0",
                         "font": "Inter",
                     },
                 }
@@ -386,12 +370,6 @@ class AppOperatorApprovalComponent(BaseComponent):
                         {
                             "id": "approval-root",
                             "component": {
-                                "Card": {"child": "approval-content"},
-                            },
-                        },
-                        {
-                            "id": "approval-content",
-                            "component": {
                                 "Column": {
                                     "children": {
                                         "explicitList": column_children,
@@ -400,48 +378,15 @@ class AppOperatorApprovalComponent(BaseComponent):
                             },
                         },
                         {
-                            "id": "approval-header",
-                            "component": {
-                                "Row": {
-                                    "children": {
-                                        "explicitList": [
-                                            "header-icon",
-                                            "header-title",
-                                        ],
-                                    },
-                                    "alignment": "center",
-                                }
-                            },
-                        },
-                        {
-                            "id": "header-icon",
-                            "component": {
-                                "Icon": {
-                                    "name": {"literalString": "warning"},
-                                }
-                            },
-                        },
-                        {
-                            "id": "header-title",
+                            "id": "markdown-text",
                             "component": {
                                 "Text": {
-                                    "usageHint": "h3",
-                                    "text": {"path": "title"},
-                                }
-                            },
-                        },
-                        {"id": "divider1", "component": {"Divider": {}}},
-                        {
-                            "id": "question-text",
-                            "component": {
-                                "Text": {
+                                    "text": {"path": "markdown"},
                                     "usageHint": "body",
-                                    "text": {"path": "question"},
                                 }
-                            },
+                            }
                         },
-                        *context_line_components,
-                        {"id": "divider2", "component": {"Divider": {}}},
+                        {"id": "divider", "component": {"Divider": {}}},
                         {
                             "id": "action-row",
                             "component": {
@@ -528,14 +473,7 @@ class AppOperatorApprovalComponent(BaseComponent):
                     "surfaceId": "app-op-approval",
                     "path": "/",
                     "contents": [
-                        {
-                            "key": "title",
-                            "valueString": (
-                                f"{title_icon} App Operation — "
-                                f"{phase_display}"
-                            ),
-                        },
-                        {"key": "question", "valueString": question},
+                        {"key": "markdown", "valueString": markdown_text},
                         {
                             "key": "phaseId",
                             "valueString": phase if phase else "unknown",

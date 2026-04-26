@@ -290,6 +290,14 @@ class MCPClient:
                 )
                 self._sessions[name] = session
 
+                # Attempt to lower logging verbosity to 'warning' to prevent console spam.
+                # Wrapped in a try/except to ensure it doesn't impact servers that don't support it.
+                try:
+                    await session.set_logging_level("warning")
+                    logger.debug("Set logging level to warning", extra={"server": name})
+                except Exception as e:
+                    logger.debug("Could not set log level (may not be supported)", extra={"server": name, "error": str(e)})
+
                 server_tools = await load_mcp_tools(session)
                 logger.info(
                     "Connected to MCP server",

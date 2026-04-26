@@ -71,7 +71,7 @@ Kubernetes infrastructure requests to the appropriate coordinator.
 | Create / generate / update Helm charts | ``transfer_to_helm_operator`` |
 | K8s cluster ops (pods, scaling, exec, events) | ``transfer_to_k8s_operator`` |
 | ArgoCD projects / repos / apps / sync / debug | ``transfer_to_app_operator`` |
-| Argo Rollouts canary / blue-green / analysis | ``transfer_to_app_operator`` |
+| Argo Rollouts canary / blue-green / analysis / list | ``transfer_to_app_operator`` |
 | Traefik routing, middleware, traffic mgmt | ``transfer_to_app_operator`` |
 | Out-of-scope / greetings / clarification | ``request_human_feedback`` |
 
@@ -86,6 +86,7 @@ Kubernetes infrastructure requests to the appropriate coordinator.
 - "Create an ArgoCD project" → transfer_to_app_operator
 - "Sync my-app ArgoCD application" → transfer_to_app_operator
 - "Set 80/20 canary split" → transfer_to_app_operator
+- "Show me the rollout list" → transfer_to_app_operator
 - "Configure Traefik weighted routing" → transfer_to_app_operator
 
 **OUT-OF-SCOPE REQUEST HANDLING:**
@@ -101,15 +102,94 @@ Available tools:
 - request_human_feedback: Human feedback or clarification
 
 **TASK DESCRIPTION CRAFTING (for transfer_to_* tools):**
-Craft a human-readable task_description from the user's intent.
+Translate the user's intent into a clear DevOps-aware task description.
+If the user uses non-technical language, map it to the correct domain:
+
+| User says | Translate to | Tool |
+|---|---|---|
+| "deploy" / "ship" / "release" | Create or sync ArgoCD Application | transfer_to_app_operator |
+| "rollback" / "undo" / "revert" | ArgoCD rollback or Rollout abort | transfer_to_app_operator |
+| "zero downtime" / "gradual" | Argo Rollouts canary/blue-green | transfer_to_app_operator |
+| "split traffic" / "A/B test" | Traefik weighted routing | transfer_to_app_operator |
+| "scale up" / "more capacity" | K8s scaling or HPA | transfer_to_k8s_operator |
+| "check" / "status" / "health" | Read-only diagnostics | appropriate operator |
+
 Parse the request, extract intent, create a clear description.
 Do NOT pass raw user messages verbatim.
+
+**CROSS-DOMAIN RE-ROUTING (CRITICAL):**
+If a coordinator returns a message containing "outside my scope" (typically formatted with "User Request:" and "Context:"):
+→ Do NOT summarize the context to the user. Do NOT complete the workflow.
+→ Read the "User Request" section to determine the correct coordinator tool.
+→ Call the correct coordinator tool immediately. Do NOT ask the user for permission.
+→ Pass both the "User Request" and "Context" in the task parameter to the new coordinator.
+Example: If a coordinator returns "User Request: Show the rollout list", you MUST call `transfer_to_app_operator`.
+
+**ERROR RECOVERY:**
+If a coordinator returns an error (e.g., "encountered an error", MCP unavailable):
+→ Use `request_human_feedback` to inform the user what happened and suggest alternatives.
+→ Do NOT retry the same coordinator in a loop. Max 1 retry, then report to user.
 
 **CRITICAL RULES:**
 - Always call tools immediately, don't describe what you will do
 - Do NOT do chart generation/validation/K8s ops yourself
 - You are a ROUTER, not a CREATOR
+- When a coordinator defers to another domain, YOU must re-route — never leave the user stranded
 """.strip()
+
+
+# ---------------------------------------------------------------------------
+# Cross-domain handoff detection
+# ---------------------------------------------------------------------------
+
+# Phrases that coordinators emit when a request is outside their domain.
+# Case-insensitive matching. Patterns are broad enough to catch natural
+# language variations while specific enough to avoid false positives.
+_HANDOFF_PATTERNS: tuple[str, ...] = (
+    "use the k8s operator",
+    "use the kubernetes operator",
+    "use the kubernetes assistant",
+    "use the helm operator",
+    "use the app operator",
+    "use the k8s-operator",
+    "use the k8s cluster",
+    "k8s operator to inspect",
+    "k8s operator can",
+    "kubernetes operator can",
+    "kubernetes assistant can",
+    "helm operator can",
+    "app operator can",
+    "outside my scope",
+    "outside of my scope",
+    "beyond my scope",
+    "not within my capabilities",
+    "different domain",
+    "another operator",
+    "so the kubernetes operator can take over",
+    "so the k8s operator can take over",
+    "so the helm operator can take over",
+    "so the app operator can take over",
+    "returning to coordinator for re-routing",
+)
+
+
+def _detect_cross_domain_handoff(content: Any) -> bool:
+    """Detect if a coordinator message contains a cross-domain handoff signal.
+
+    When a coordinator determines that the user's request requires a
+    different domain operator, it emits natural language like
+    "Use the K8s Operator to inspect raw Kubernetes objects."
+
+    This function detects such signals so the supervisor can re-route
+    instead of treating the response as a final completion.
+
+    Returns True if any handoff pattern matches.
+    """
+    text = _extract_content_text(content)
+    if not text:
+        return False
+    content_lower = text.lower()
+    return any(pattern in content_lower for pattern in _HANDOFF_PATTERNS)
 
 
 # ---------------------------------------------------------------------------
@@ -383,9 +463,6 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
             }
 
             # ── Store bridging (AWS reference pattern) ─────────────────────
-            # The outer config carries __pregel_runtime with the supervisor's
-            # store=None. We MUST override it with the deep agent's InMemoryStore
-            # so MemoryMiddleware works inside the deep agent graph.
             child_store = getattr(deep_agent_graph, "store", None)
             if child_store is None:
                 bound = getattr(deep_agent_graph, "bound", None)
@@ -414,69 +491,145 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
 
             child_config["recursion_limit"] = 250
 
-            # Invoke the deep agent
-            # Invoke the deep agent
-            # CRITICAL: GraphInterrupt/NodeInterrupt MUST propagate naturally
-            # so the supervisor graph detects __interrupt__ in its stream.
-            # Reference: aws-orchestrator transfer_to_terraform (no try/except)
+            # ── Interrupt Bridging (Parent <-> Subgraph) ───────────────────
+            child_state = deep_agent_graph.get_state(cast("RunnableConfig", child_config))
+            is_paused = bool(getattr(child_state, "next", None))
+
+            if is_paused:
+                logger.info(f"{tool_name} resuming paused subgraph")
+                
+                payload = None
+                if getattr(child_state, "tasks", None):
+                    interrupts = getattr(child_state.tasks[0], "interrupts", [])
+                    if interrupts:
+                        payload = interrupts[0].value
+                
+                resume_val = interrupt(payload or {})
+                current_input = Command(resume=resume_val)
+            else:
+                current_input = child_input
+
+            # ── Invoke + process result ────────────────────────────────────
             try:
                 final_state = await deep_agent_graph.ainvoke(
-                    child_input,
+                    current_input,
                     config=cast("RunnableConfig", child_config),
                 )
             except GraphInterrupt:
-                # Let interrupt exceptions bubble up to the supervisor graph.
-                # The supervisor's _run_stream will detect __interrupt__
-                # and yield _build_interrupt_response with require_user_input=True.
-                logger.info(
-                    f"{tool_name} paused for human input (interrupt)",  # noqa: G004
-                )
+                logger.info(f"{tool_name} paused for human input (interrupt)")
+                
+                # Fetch payload to bubble up to supervisor
+                child_state = deep_agent_graph.get_state(cast("RunnableConfig", child_config))
+                payload = None
+                if getattr(child_state, "tasks", None):
+                    interrupts = getattr(child_state.tasks[0], "interrupts", [])
+                    if interrupts:
+                        payload = interrupts[0].value
+                
+                # Bubble up the interrupt to the parent supervisor graph.
+                # This raises GraphInterrupt natively!
+                interrupt(payload or {})
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.error(
-                    f"{tool_name} execution failed",  # noqa: G004
+                    f"{tool_name} ainvoke failed",  # noqa: G004
                     extra={"error": str(exc)},
                 )
-                msg = f"{tool_name} failed: {exc}"
-                raise AgentExecutionError(msg) from exc
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=(
+                                    f"{tool_name} encountered an error: {exc}\n\n"
+                                    f"The {phase_name} coordinator was unable to "
+                                    f"complete the request."
+                                ),
+                                tool_call_id=tool_call_id,
+                                name=tool_name,
+                            )
+                        ],
+                        "status": "error",
+                    }
+                )
 
-            if final_state is None:
-                msg = f"{tool_name} yielded no state"
-                raise AgentExecutionError(msg)
+            try:
+                if final_state is None:
+                    msg = f"{tool_name} yielded no state"
+                    raise AgentExecutionError(msg)  # noqa: TRY301
 
-            # Coerce to dict
-            if isinstance(final_state, dict):
-                child_state_dict: dict[str, Any] = cast("dict[str, Any]", final_state)
-            elif hasattr(final_state, "model_dump"):
-                child_state_dict = cast("dict[str, Any]", final_state.model_dump())
-            else:
-                child_state_dict = cast("dict[str, Any]", dict(final_state))
+                # Coerce to dict
+                if isinstance(final_state, dict):
+                    child_state_dict: dict[str, Any] = cast(
+                        "dict[str, Any]", final_state,
+                    )
+                elif hasattr(final_state, "model_dump"):
+                    child_state_dict = cast(
+                        "dict[str, Any]", final_state.model_dump(),
+                    )
+                else:
+                    child_state_dict = cast(
+                        "dict[str, Any]", dict(final_state),
+                    )
 
-            # Fetch structured output payload from coordinator
-            payload = coordinator.output_transform(child_state_dict)
+                # Fetch structured output payload from coordinator
+                payload = coordinator.output_transform(child_state_dict)
 
-            # Update workflow state
-            wf = k8sAutopilotSupervisorAgent._coerce_workflow_state(dict(runtime.state))
-            wf.set_phase_complete(phase_name)
-            wf.last_agent = tool_name
-            wf.next_agent = None
+                # Update workflow state
+                wf = k8sAutopilotSupervisorAgent._coerce_workflow_state(
+                    dict(runtime.state),
+                )
+                wf.set_phase_complete(phase_name)
+                wf.last_agent = tool_name
+                wf.next_agent = None
 
-            # Build tool message for the coordinator
-            final_msg_content = payload.get("final_message") or f"{tool_name} completed."
-            tool_msg = ToolMessage(
-                content=final_msg_content,
-                tool_call_id=tool_call_id,
-            )
+                # Build tool message for the coordinator
+                final_msg_content = (
+                    payload.get("final_message") or f"{tool_name} completed."
+                )
+                tool_msg = ToolMessage(
+                    content=final_msg_content,
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                )
 
-            return Command(
-                update={
-                    "workflow_state": wf.model_dump(),
-                    output_key: payload.get(output_key, {}),
-                    "messages": [tool_msg],
-                    "status": "completed",
-                    "workflow_complete": wf.workflow_complete,
-                }
-            )
+                # Detect cross-domain handoff signals
+                is_handoff = _detect_cross_domain_handoff(final_msg_content)
+                effective_status = "handoff" if is_handoff else "completed"
+
+                return Command(
+                    update={
+                        "workflow_state": wf.model_dump(),
+                        output_key: payload,
+                        "messages": [tool_msg],
+                        "status": effective_status,
+                        "workflow_complete": (
+                            False if is_handoff else wf.workflow_complete
+                        ),
+                    }
+                )
+
+            except Exception as exc:  # noqa: BLE001
+                # Post-invoke processing failed (output_transform, state
+                # coercion, etc.).  Return error as ToolMessage so the
+                # supervisor LLM can report gracefully.
+                logger.error(
+                    f"{tool_name} post-processing failed",  # noqa: G004
+                    extra={"error": str(exc)},
+                )
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=(
+                                    f"{tool_name} completed but result "
+                                    f"processing failed: {exc}"
+                                ),
+                                tool_call_id=tool_call_id,
+                            )
+                        ],
+                        "status": "error",
+                    }
+                )
 
         _coordinator_tool.__doc__ = tool_doc
         return _coordinator_tool
@@ -850,6 +1003,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         - Only top-level updates (ns must be empty).
         - Skip in_progress status (e.g. after HITL resume).
         - Skip HITL tool ToolMessages.
+        - Skip cross-domain handoff signals — let the LLM re-route.
         """
         if ns:
             return None
@@ -859,6 +1013,24 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
             return None
 
         if tools_data.get("status") == "in_progress":
+            return None
+
+        # Cross-domain handoff: the coordinator indicated another domain
+        # should handle the request.  Let the LLM model node see the
+        # ToolMessage so it can call the correct coordinator next.
+        if tools_data.get("status") == "handoff":
+            logger.info(
+                "Cross-domain handoff detected — letting supervisor LLM re-route",
+            )
+            return None
+
+        # Coordinator error: the deep agent crashed (e.g. MCP server
+        # unreachable).  The error is packaged as a ToolMessage by
+        # _coordinator_tool.  Let the LLM see it and respond gracefully.
+        if tools_data.get("status") == "error":
+            logger.info(
+                "Coordinator error — letting supervisor LLM handle gracefully",
+            )
             return None
 
         messages = tools_data.get("messages", [])
@@ -871,6 +1043,18 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 continue
 
             content = _extract_content_text(getattr(msg, "content", ""))
+
+            # If the coordinator deferred to another domain, don't short-circuit.
+            # Let the supervisor LLM reason about the message and call the
+            # correct coordinator.
+            if _detect_cross_domain_handoff(content):
+                logger.info(
+                    "Cross-domain handoff detected in message — "
+                    "letting supervisor LLM re-route",
+                    extra={"subagent": name, "preview": content[:200]},
+                )
+                return None
+
             logger.info(
                 "Subagent completed",
                 extra={"subagent": name, "preview": content[:200]},

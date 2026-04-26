@@ -41,3 +41,23 @@ After every state-modifying app operation, the coordinator MUST call `log_app_op
 6. **Autonomous Promotion Ceiling**: Rollouts sub-agent may autonomously promote canary steps up to 50% traffic. At ≥50%, MUST pause for human approval. `promote_full` always requires explicit approval.
 7. **Rollout-specific safety rules** (workloadRef integration gate, abort recovery protocol, AnalysisTemplate prerequisites, Inconclusive handling): see `SKILL.md` in `argo-rollouts-gitops`.
 8. **Traefik-specific safety rules** (generate-before-apply, weight zeroing protection, TCP no-rollback, sourceCriterion for rate limits, ACME interception): see `SKILL.md` in `traefik-edge-routing`.
+
+## Plan Immutability — Intent Lock Protocol
+1. **Once approved, execution MUST match the plan.** The coordinator stores the plan as a structured artifact. The `PlanLockMiddleware` re-injects it before every model call and validates intent alignment. Deviations are blocked.
+2. **Plan lifecycle**: Created at coordinator → Approved by user → Locked in state → Sub-agent reads as constraint → Middleware validates → Cleared after execution.
+3. **Plan-locked delegation format**: `[STATE-MODIFYING] [PLAN-LOCKED] {exact parameters}`. Sub-agents receiving this prefix MUST NOT re-plan or modify parameters.
+
+## Rejection Protocol
+1. If the user REJECTS a plan, the sub-agent MUST stop immediately and return to the coordinator.
+2. Do NOT retry with a modified plan — the coordinator handles re-engagement.
+3. Maximum 2 plan presentations per user request. After 2 rejections, ask the user to rephrase their requirements.
+
+## Deviation Reporting
+1. If execution results differ from the plan (e.g., tool returned unexpected values), report the discrepancy explicitly.
+2. Include: planned parameters, actual results, specific deviations.
+3. The operations journal MUST log both the planned and actual values for auditability.
+
+## Intent Translation (for non-DevOps users)
+1. The coordinator MUST translate natural language to DevOps parameters before delegation. See the Intent Translation table in the coordinator prompt.
+2. When user intent is ambiguous, present options: "Did you mean X or Y?" — do NOT guess.
+3. NEVER assume the user knows Kubernetes/ArgoCD terminology. Present plans in plain English with blast-radius warnings for production namespaces.
