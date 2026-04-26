@@ -20,6 +20,7 @@ Usage::
 import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from deepagents.middleware.summarization import create_summarization_tool_middleware
 from langchain.agents.middleware import HumanInTheLoopMiddleware, AgentMiddleware, AgentState
 from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
 from langchain_core.messages import SystemMessage
@@ -883,6 +884,8 @@ def build_app_operator_middleware(
     model_call_limit: Optional[int] = None,
     enable_tool_retry: Optional[bool] = None,
     extra_middleware: Optional[List[Any]] = None,
+    model: Optional[str] = None,
+    backend: Optional[Any] = None,
 ) -> List[Any]:
     """Assemble the middleware stack for the AppOperatorCoordinator deep agent."""
     from langchain.agents.middleware import (
@@ -903,7 +906,7 @@ def build_app_operator_middleware(
         ToolCallLimitMiddleware(
             tool_name="write_file",
             run_limit=wf_limit,
-            exit_behavior="end", 
+            exit_behavior="end",
         )
     )
 
@@ -934,11 +937,30 @@ def build_app_operator_middleware(
                 backoff_factor=1.5,
                 initial_delay=0.5,
                 max_delay=10.0,
-                on_failure="continue", 
+                on_failure="continue",
             )
         )
 
-    # 5. Extra middleware
+    # 5. Summarization tool — lets the coordinator proactively compress its
+    #    message history between task delegations (after request_chat_continue)
+    #    rather than waiting until the automatic 85%-threshold reactive
+    #    summarization, which can cause mid-generation token overflow crashes.
+    #    Requires deepagents>=1.6.0 (available as of 0.5.x in this fork).
+    _model = model or (config.get_llm_config().get("model") if config else None)
+    _backend = backend
+    if _model and _backend:
+        try:
+            middleware.append(
+                create_summarization_tool_middleware(_model, _backend)
+            )
+            logger.info("Middleware: SummarizationToolMiddleware added")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SummarizationToolMiddleware unavailable — skipping",
+                extra={"error": str(exc)},
+            )
+
+    # 6. Extra middleware
     if extra_middleware:
         middleware.extend(extra_middleware)
 

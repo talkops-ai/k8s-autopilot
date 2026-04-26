@@ -48,6 +48,10 @@ All sub-agents connect directly to their respective MCP servers.
 
 Before doing anything, classify the user request:
 
+**CONVERSATIONAL / OUT-OF-SCOPE** (e.g., "thanks", "done", "looks good", "no further questions", greetings, or any message indicating the workflow is finished):
+→ Do NOT call any tools.
+→ Just reply directly with a polite conversational message. This signals to the supervisor that your workflow is complete.
+
 **READ-ONLY** (list apps, check status, get logs, list repos, list projects, get details):
 → Delegate to the sub-agent immediately with a clear task description.
 → Do NOT call `log_app_operation`.
@@ -103,15 +107,51 @@ What would you like to do next?
 What would you like to do next?
 ```
 
+## CRITICAL: Parameter Completeness — Resolve Before Delegating
+
+Before delegating ANY task, verify the user's request contains the required identifiers
+(see AGENTS.md § Parameter Completeness for the full lookup table).
+
+**If required identifiers are MISSING:**
+
+1. **Check the operations journal** (auto-injected by AppOperationContextMiddleware).
+   If a recent operation has the resource name, use it: "Using deployment '{name}' from the previous operation."
+
+2. **Smart discovery** — if only the resource name is missing but namespace/context is available:
+   → Delegate a READ-ONLY discovery task to the sub-agent to list available resources.
+   → Example: task(argo-rollouts-onboarder): "[READ-ONLY] List all deployments in namespace '{ns}'"
+   → Present the discovered list to the user and ask them to pick.
+
+3. **Ask the user directly** — only if discovery returned nothing useful or namespace is also unknown.
+   Reply directly (no sub-agent): "To proceed, I need: [specific missing params]."
+
+**NEVER delegate a STATE-MODIFYING task with fabricated or guessed resource names.**
+
+## CRITICAL: Task Delegation Format
+
+**ALWAYS prefix the task message with the classification you determined in step 1.**
+This prevents the sub-agent from re-classifying and avoids expensive fallthrough to wrong workflows.
+
+```
+# Read-only:
+task(traefik-edge-router): "[READ-ONLY] Get the YAML manifest of TraefikService 'rollout-canary-ingress-wrr' in namespace 'canary-demo'. Return findings."
+
+# State-modifying:
+task(traefik-edge-router): "[STATE-MODIFYING] Create a weighted canary route for service 'my-app' in namespace 'staging'."
+```
+
+**Include all relevant context** the sub-agent needs (resource names, namespaces, specific fields requested)
+so it can execute the task in a **single MCP call** without needing to ask follow-up questions.
+
 ## Workflow — State-Modifying ArgoCD Operations
-1. task(argocd-onboarder): "{user request}" — include full context (app name, namespace, repo).
+1. task(argocd-onboarder): "[STATE-MODIFYING] {user request}" — include full context (app name, namespace, repo).
 2. The sub-agent generates a plan and presents it for approval via `request_human_input`.
 3. State-modifying tools are additionally gated by `HumanInTheLoopMiddleware`.
 4. **Log the operation**: call `log_app_operation` with action, app_name, namespace, etc.
 5. **[Next Steps Gate]**: Pass the formatted summary into `request_chat_continue`.
 
 ## Workflow — Traefik/Argo Rollouts (State-Modifying Only)
-1. task(argo-rollouts-onboarder) or task(traefik-edge-router): "{user request}"
+1. task(argo-rollouts-onboarder) or task(traefik-edge-router): "[STATE-MODIFYING] {user request}"
 2. Call `log_app_operation` after successful mutations.
 3. Call `request_chat_continue` with the result summary.
 
@@ -125,7 +165,7 @@ You have a limited number of steps (~150 total). Be efficient:
 - NEVER interact with Kubernetes directly using bash commands.
 - ALWAYS delegate to the relevant sub-agent.
 - ALWAYS call log_app_operation after state-modifying GitOps/ArgoCD operations.
-- ALWAYS call request_chat_continue after EVERY operation (read-only AND state-modifying) to keep the conversation alive.
+- ALWAYS call request_chat_continue after presenting operation results to keep the conversation alive. Do NOT call it for conversational closures (e.g., "thanks", "I am good here", or when the user indicates they are finished).
 """
 
 class AppOperatorCoordinator(BaseDeepAgent):
@@ -227,7 +267,11 @@ class AppOperatorCoordinator(BaseDeepAgent):
         checkpointer = self.build_checkpointer()
         tools = await self.get_tools()
         subagents = await self.get_subagent_specs()
-        middleware = build_app_operator_middleware(config=self._config)
+        middleware = build_app_operator_middleware(
+            config=self._config,
+            model=self.get_model(),
+            backend=self.make_backend,
+        )
 
         self._agent = create_deep_agent(
             model=self.get_model(),

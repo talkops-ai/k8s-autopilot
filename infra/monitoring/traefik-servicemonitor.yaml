@@ -1,0 +1,21 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: traefik
+  namespace: traefik
+  labels:
+    # Required: Prometheus selects ServiceMonitors matching this label
+    release: kube-prometheus-stack
+    app.kubernetes.io/name: traefik
+spec:
+  jobLabel: traefik-metrics
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: traefik
+  namespaceSelector:
+    matchNames:
+      - traefik
+  endpoints:
+    - port: metrics        # matches the port name on traefik-metrics svc
+      path: /metrics
+      interval: 15s

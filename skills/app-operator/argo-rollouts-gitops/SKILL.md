@@ -94,13 +94,15 @@ For resource composition patterns during multi-step workflows, see `references/w
 | `validate_deployment_ready` | No | Pre-flight readiness check before any migration |
 | `convert_deployment_to_rollout` | Yes (`apply` flag) | Convert existing Deployment → Rollout; auto-preserves probes/limits/env |
 | `convert_rollout_to_deployment` | Yes (`apply` flag) | Reverse migration back to standard K8s Deployment |
-| `argo_manage_legacy_deployment` | Yes | Scale/delete legacy Deployment after workloadRef migration |
+| `argo_manage_legacy_deployment` | Yes | Scale/delete legacy Deployment **ONLY after workloadRef migration** (`convert_deployment_to_rollout`). NEVER use for image updates or routine rollout operations. |
 | `create_stable_canary_services` | Yes (`apply` flag) | Generate stable+canary Services (prefer `convert_deployment_to_rollout` mode instead) |
 | `generate_argocd_ignore_differences` | No | Generate ArgoCD `ignoreDifferences` config for Rollout integration |
 
 **Migration mode choice:**
 - `mode='direct'` — replaces the Deployment with a Rollout CRD (standalone clusters)
 - `mode='workloadRef'` — Rollout references the existing Deployment (ArgoCD/Helm-managed apps; no pod duplication)
+
+> **Note:** `argo_update_rollout` on workloadRef rollouts updates the backing Deployment — this is normal, NOT a trigger for `argo_manage_legacy_deployment`.
 
 ### Lifecycle Orchestration (4 tools)
 

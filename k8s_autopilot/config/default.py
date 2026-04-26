@@ -80,7 +80,7 @@ class DefaultConfig:
         },
         {
             "name": "traefik_mcp_server",
-            "url": "http://localhost:8001/mcp",
+            "url": "http://localhost:8769/mcp",
             "transport": "http",
             "disabled": False,
             "headers": {},
