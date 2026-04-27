@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING, cast
 
 from langchain.tools import tool, ToolRuntime
 from langgraph.store.memory import InMemoryStore
-from langgraph.checkpoint.memory import MemorySaver
+
 from deepagents import create_deep_agent
 from deepagents.backends.utils import create_file_data
 
@@ -312,7 +312,16 @@ class AppOperatorCoordinator(BaseDeepAgent):
         return store
 
     def build_checkpointer(self) -> Any:
-        return MemorySaver()
+        """Return None to inherit the parent supervisor's checkpointer.
+
+        Per-invocation mode (checkpointer=None) is the recommended pattern
+        for subagents invoked as tools.  The child inherits the parent's
+        checkpointer via the config passed to ainvoke(), enabling native
+        interrupt()/resume support without manual bridging.
+
+        Reference: LangGraph docs — Subgraph persistence / Per-invocation.
+        """
+        return None
 
     async def build_agent(self) -> Any:
         if getattr(self, "_agent", None):

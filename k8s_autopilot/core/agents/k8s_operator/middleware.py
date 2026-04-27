@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from langchain.agents.middleware import HumanInTheLoopMiddleware, AgentMiddleware, AgentState
 from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
-from k8s_autopilot.core.hitl.safe_resume import SafeResumeHITLMiddleware
+
 from langchain_core.messages import SystemMessage
 from k8s_autopilot.utils.logger import AgentLogger
 
@@ -255,8 +255,8 @@ def _build_k8s_approval_description(
 # Middleware factory — Kubernetes cluster ops
 # ---------------------------------------------------------------------------
 
-def build_k8s_cluster_ops_hitl_middleware() -> SafeResumeHITLMiddleware:
-    """Create a ``SafeResumeHITLMiddleware`` for Kubernetes cluster operations.
+def build_k8s_cluster_ops_hitl_middleware() -> HumanInTheLoopMiddleware:
+    """Create a ``HumanInTheLoopMiddleware`` for Kubernetes cluster operations.
 
     Gated tools (from SKILL.md safety rules #1–#8):
         - resources_delete — destructive, irreversible
@@ -266,9 +266,9 @@ def build_k8s_cluster_ops_hitl_middleware() -> SafeResumeHITLMiddleware:
         - pods_exec — shell access to containers
         - pods_run — creates real pods consuming resources
     """
-    logger.info("Building SafeResumeHITLMiddleware for K8s cluster ops tools")
+    logger.info("Building HumanInTheLoopMiddleware for K8s cluster ops tools")
 
-    return SafeResumeHITLMiddleware(
+    return HumanInTheLoopMiddleware(
         interrupt_on={
             "resources_delete": _make_interrupt_config(
                 "resources_delete", _build_k8s_approval_description,

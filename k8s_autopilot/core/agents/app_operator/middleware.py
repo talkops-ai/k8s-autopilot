@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from deepagents.middleware.summarization import create_summarization_tool_middleware
 from langchain.agents.middleware import HumanInTheLoopMiddleware, AgentMiddleware, AgentState
 from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
-from k8s_autopilot.core.hitl.safe_resume import SafeResumeHITLMiddleware
+
 from langchain_core.messages import SystemMessage
 from k8s_autopilot.utils.logger import AgentLogger
 
@@ -638,11 +638,11 @@ def _make_interrupt_config(
 # Middleware factories — one per domain
 # ---------------------------------------------------------------------------
 
-def build_app_operator_hitl_middleware() -> SafeResumeHITLMiddleware:
-    """Create a ``SafeResumeHITLMiddleware`` configured for ArgoCD operations."""
-    logger.info("Building SafeResumeHITLMiddleware for ArgoCD execution tools")
+def build_app_operator_hitl_middleware() -> HumanInTheLoopMiddleware:
+    """Create a ``HumanInTheLoopMiddleware`` configured for ArgoCD operations."""
+    logger.info("Building HumanInTheLoopMiddleware for ArgoCD execution tools")
 
-    return SafeResumeHITLMiddleware(
+    return HumanInTheLoopMiddleware(
         interrupt_on={
             "create_application": _make_interrupt_config(
                 "create_application", _build_approval_description,
@@ -678,8 +678,8 @@ def build_app_operator_hitl_middleware() -> SafeResumeHITLMiddleware:
     )
 
 
-def build_argo_rollouts_hitl_middleware() -> SafeResumeHITLMiddleware:
-    """Create a ``SafeResumeHITLMiddleware`` configured for Argo Rollouts operations.
+def build_argo_rollouts_hitl_middleware() -> HumanInTheLoopMiddleware:
+    """Create a ``HumanInTheLoopMiddleware`` configured for Argo Rollouts operations.
 
     Gated tools (from SKILL.md safety rules and progressive delivery best practices):
         - argo_delete_rollout — destructive: removes CRD + all ReplicaSets
@@ -693,9 +693,9 @@ def build_argo_rollouts_hitl_middleware() -> SafeResumeHITLMiddleware:
         - create_stable_canary_services — apply=True creates Services
         - argo_update_rollout — image/spec update on live rollout (FINDING 5)
     """
-    logger.info("Building SafeResumeHITLMiddleware for Argo Rollouts execution tools")
+    logger.info("Building HumanInTheLoopMiddleware for Argo Rollouts execution tools")
 
-    return SafeResumeHITLMiddleware(
+    return HumanInTheLoopMiddleware(
         interrupt_on={
             "argo_delete_rollout": _make_interrupt_config(
                 "argo_delete_rollout", _build_rollouts_approval_description,
@@ -920,8 +920,8 @@ def _build_traefik_approval_description(
         return f"Approval required for Traefik operation: {tool_name}."
 
 
-def build_traefik_hitl_middleware() -> SafeResumeHITLMiddleware:
-    """Create a ``SafeResumeHITLMiddleware`` configured for Traefik operations.
+def build_traefik_hitl_middleware() -> HumanInTheLoopMiddleware:
+    """Create a ``HumanInTheLoopMiddleware`` configured for Traefik operations.
 
     Gated tools (from SKILL.md safety rule #6):
         - traefik_manage_weighted_routing — live traffic routing
@@ -932,9 +932,9 @@ def build_traefik_hitl_middleware() -> SafeResumeHITLMiddleware:
         - traefik_configure_service_affinity — disable loses sticky state
         - traefik_generate_routing_manifest — generate+apply routing (FINDING 7)
     """
-    logger.info("Building SafeResumeHITLMiddleware for Traefik execution tools")
+    logger.info("Building HumanInTheLoopMiddleware for Traefik execution tools")
 
-    return SafeResumeHITLMiddleware(
+    return HumanInTheLoopMiddleware(
         interrupt_on={
             "traefik_manage_weighted_routing": _make_interrupt_config(
                 "traefik_manage_weighted_routing", _build_traefik_approval_description,

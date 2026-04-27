@@ -152,7 +152,7 @@ _ENABLE_TOOL_RETRY = os.getenv("K8S_ENABLE_TOOL_RETRY", "false").lower() == "tru
 
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
-from k8s_autopilot.core.hitl.safe_resume import SafeResumeHITLMiddleware
+
 
 
 # Tools that require human approval before execution on live clusters.
@@ -217,8 +217,8 @@ def _build_approval_description(tool_name: str, tool_args: Dict[str, Any]) -> st
         return f"Approval required for {tool_name}."
 
 
-def build_helm_hitl_middleware() -> SafeResumeHITLMiddleware:
-    """Create a ``SafeResumeHITLMiddleware`` configured for Helm operations.
+def build_helm_hitl_middleware() -> HumanInTheLoopMiddleware:
+    """Create a ``HumanInTheLoopMiddleware`` configured for Helm operations.
 
     Gates every destructive Helm tool behind a structured HITL interrupt:
     - ``helm_install_chart``: approve / edit / reject (edit lets user tweak values)
@@ -230,12 +230,12 @@ def build_helm_hitl_middleware() -> SafeResumeHITLMiddleware:
     gated tool calls in the same model response.
 
     Returns:
-        Configured ``SafeResumeHITLMiddleware`` instance ready for
+        Configured ``HumanInTheLoopMiddleware`` instance ready for
         ``create_agent(middleware=[...])`` or ``_build_mcp_subagent()``.
     """
-    logger.info("Building SafeResumeHITLMiddleware for Helm execution tools")
+    logger.info("Building HumanInTheLoopMiddleware for Helm execution tools")
 
-    return SafeResumeHITLMiddleware(
+    return HumanInTheLoopMiddleware(
         interrupt_on={
             "helm_install_chart": InterruptOnConfig(
                 allowed_decisions=["approve", "edit", "reject"],

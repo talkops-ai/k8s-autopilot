@@ -491,44 +491,29 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
 
             child_config["recursion_limit"] = 250
 
-            # ── Interrupt Bridging (Parent <-> Subgraph) ───────────────────
-            child_state = deep_agent_graph.get_state(cast("RunnableConfig", child_config))
-            is_paused = bool(getattr(child_state, "next", None))
+            # ── Invoke child graph ─────────────────────────────────────────
+            #
+            # The child graph is compiled with checkpointer=None, so it uses
+            # per-invocation persistence — it inherits the parent supervisor's
+            # checkpointer via the config passed here.  This means:
+            #
+            #   1. interrupt() in the child (e.g. request_chat_continue)
+            #      propagates as GraphInterrupt through the parent graph.
+            #   2. Command(resume=X) from the parent flows to the child's
+            #      interrupt() automatically through LangGraph's replay.
+            #   3. No manual bridging (get_state/interrupt/while-loop) needed.
+            #
+            # Reference: LangGraph docs — Subgraph persistence / Per-invocation.
 
-            if is_paused:
-                logger.info(f"{tool_name} resuming paused subgraph")
-                
-                payload = None
-                if getattr(child_state, "tasks", None):
-                    interrupts = getattr(child_state.tasks[0], "interrupts", [])
-                    if interrupts:
-                        payload = interrupts[0].value
-                
-                resume_val = interrupt(payload or {})
-                current_input = Command(resume=resume_val)
-            else:
-                current_input = child_input
-
-            # ── Invoke + process result ────────────────────────────────────
             try:
                 final_state = await deep_agent_graph.ainvoke(
-                    current_input,
+                    child_input,
                     config=cast("RunnableConfig", child_config),
                 )
             except GraphInterrupt:
-                logger.info(f"{tool_name} paused for human input (interrupt)")
-                
-                # Fetch payload to bubble up to supervisor
-                child_state = deep_agent_graph.get_state(cast("RunnableConfig", child_config))
-                payload = None
-                if getattr(child_state, "tasks", None):
-                    interrupts = getattr(child_state.tasks[0], "interrupts", [])
-                    if interrupts:
-                        payload = interrupts[0].value
-                
-                # Bubble up the interrupt to the parent supervisor graph.
-                # This raises GraphInterrupt natively!
-                interrupt(payload or {})
+                logger.info(
+                    f"{tool_name} paused for human input (interrupt)",  # noqa: G004
+                )
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.error(
@@ -540,9 +525,10 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                         "messages": [
                             ToolMessage(
                                 content=(
-                                    f"{tool_name} encountered an error: {exc}\n\n"
-                                    f"The {phase_name} coordinator was unable to "
-                                    f"complete the request."
+                                    f"{tool_name} encountered an error: "
+                                    f"{exc}\n\n"
+                                    f"The {phase_name} coordinator was "
+                                    f"unable to complete the request."
                                 ),
                                 tool_call_id=tool_call_id,
                                 name=tool_name,
