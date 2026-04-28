@@ -783,6 +783,13 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
             # Determine if this is a simple approve/reject that needs
             # expansion for batch HumanInTheLoopMiddleware interrupts.
             # The middleware expects one decision per action_request.
+            #
+            # IMPORTANT: Only apply batch expansion when the pending
+            # interrupt is actually from HumanInTheLoopMiddleware
+            # (i.e., the checkpoint contains action_requests).  Direct
+            # interrupt() calls (request_user_input, request_chat_continue)
+            # use their own payload format and must pass through unchanged
+            # — otherwise form fields like repository/branch get stripped.
             decision_type: str | None = None
             if isinstance(resume_val, str) and resume_val in (
                 "approve", "reject",
@@ -792,8 +799,10 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 decision_type = resume_val["decision"]
 
             if decision_type:
-                # Query the graph's pending interrupt to count
-                # how many action_requests need individual decisions.
+                # Query the graph's pending interrupt to check whether
+                # it's a genuine HumanInTheLoopMiddleware interrupt
+                # (has action_requests) vs. a direct interrupt() call
+                # (request_user_input, request_chat_continue).
                 state_config = cast(
                     "RunnableConfig",
                     {"configurable": {"thread_id": context_id}},
@@ -801,22 +810,44 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 action_count = await self._get_pending_action_count(
                     state_config,
                 )
-                logger.info(
-                    "Expanding single decision for batch HITL resume",
-                    extra={
-                        "decision_type": decision_type,
-                        "action_count": action_count,
-                    },
-                )
-                mapped_decision = {
-                    "decisions": [
-                        {"type": decision_type}
-                        for _ in range(action_count)
-                    ]
-                }
-                stream_input = Command(resume=mapped_decision)
+
+                if action_count > 0:
+                    # Genuine HITL middleware interrupt — expand single
+                    # decision into one-per-action_request.
+                    logger.info(
+                        "Expanding single decision for batch HITL resume",
+                        extra={
+                            "decision_type": decision_type,
+                            "action_count": action_count,
+                        },
+                    )
+                    mapped_decision = {
+                        "decisions": [
+                            {"type": decision_type}
+                            for _ in range(action_count)
+                        ]
+                    }
+                    stream_input = Command(resume=mapped_decision)
+                else:
+                    # Direct interrupt() call (request_user_input, etc.)
+                    # — pass the full user response through unchanged
+                    # so form fields (repository, branch, etc.) are
+                    # preserved for the coordinator/tool.
+                    logger.info(
+                        "Non-HITL-middleware interrupt — passing "
+                        "resume value through unchanged",
+                        extra={
+                            "decision_type": decision_type,
+                            "resume_keys": (
+                                list(resume_val.keys())
+                                if isinstance(resume_val, dict)
+                                else type(resume_val).__name__
+                            ),
+                        },
+                    )
+                    stream_input = Command(resume=resume_val)
             else:
-                stream_input = query
+                stream_input = Command(resume=resume_val)
         else:
             # All valid resumes are wrapped as Command by A2AExecutor's `_wrap_resume` hook.
             # If we reach here, either the task is not paused, or it's a new conversational prompt.
@@ -1398,7 +1429,11 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         determine the correct count.
 
         Returns:
-            Number of pending action_requests (minimum 1).
+            Number of pending action_requests.  Returns 0 when the
+            pending interrupt is NOT from HumanInTheLoopMiddleware
+            (e.g., it's a direct ``interrupt()`` call from
+            ``request_user_input`` or ``request_chat_continue``).
+            Callers use this to distinguish interrupt types.
         """
         try:
             assert self._graph is not None
@@ -1421,9 +1456,9 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         except Exception:  # noqa: BLE001
             logger.warning(
                 "Could not inspect graph state for "
-                "pending action count — defaulting to 1",
+                "pending action count — defaulting to 0",
             )
-        return 1
+        return 0
 
     # ── Human-readable HITL summaries ─────────────────────────────────
 

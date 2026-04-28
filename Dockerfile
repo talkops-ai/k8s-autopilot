@@ -64,19 +64,25 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 # Install runtime dependencies and create application user
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl && \
+    apt-get install -y --no-install-recommends ca-certificates curl nodejs npm && \
     rm -rf /var/lib/apt/lists/* && \
     update-ca-certificates && \
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
+    install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl && \
+    rm kubectl && \
+    curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && \
+    helm version && \
     groupadd -r app && \
     useradd -r -g app -d /app -s /bin/bash app
-
-# Install Helm CLI
-RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash && \
-    helm version
 
 # Copy application artifacts from build stage
 COPY --from=uv --chown=app:app /app/.venv /app/.venv
 COPY --from=uv --chown=app:app /app/k8s_autopilot /app/k8s_autopilot
+
+# Copy agent skills, memory, and workspace
+COPY --from=uv --chown=app:app /app/skills /app/skills
+COPY --from=uv --chown=app:app /app/memory /app/memory
+COPY --from=uv --chown=app:app /app/workspace /app/workspace
 
 # Copy agent card for A2A protocol
 COPY --from=uv --chown=app:app /app/k8s_autopilot/card /app/k8s_autopilot/card

@@ -285,9 +285,46 @@ class MCPClient:
             all_tools: list[BaseTool] = []
 
             for name in self._server_configs:
-                session = await self._exit_stack.enter_async_context(
-                    self._client.session(name)
-                )
+                try:
+                    session = await self._exit_stack.enter_async_context(
+                        self._client.session(name)
+                    )
+                except Exception as conn_err:
+                    # ── Detect auth failures (expired/invalid tokens) ──
+                    err_str = str(conn_err).lower()
+                    sdef = next(
+                        (s for s in (self._config.get_mcp_config().get("servers") or [])
+                         if s.get("name") == name),
+                        {},
+                    )
+                    auth_var = sdef.get("auth_token_env_var", "")
+
+                    if any(kw in err_str for kw in ("401", "403", "unauthorized", "forbidden", "authentication")):
+                        logger.error(
+                            f"MCP server '{name}' rejected the connection — "
+                            f"likely an expired or invalid token. "
+                            f"Check the '{auth_var}' environment variable.",
+                            extra={
+                                "server": name,
+                                "auth_env_var": auth_var,
+                                "error": str(conn_err),
+                            },
+                        )
+                        raise MCPClientError(
+                            f"MCP server '{name}' authentication failed — "
+                            f"the token in '{auth_var}' appears to be expired "
+                            f"or invalid (HTTP 401/403). Generate a new token "
+                            f"and update your .env file."
+                        ) from conn_err
+                    else:
+                        logger.error(
+                            f"Failed to connect to MCP server '{name}'",
+                            extra={"server": name, "error": str(conn_err)},
+                        )
+                        raise MCPClientError(
+                            f"Failed to connect to MCP server '{name}': {conn_err}"
+                        ) from conn_err
+
                 self._sessions[name] = session
 
                 # Attempt to lower logging verbosity to 'warning' to prevent console spam.

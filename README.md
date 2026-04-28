@@ -1,776 +1,340 @@
+<p align="center">
+  <img src="docs/assets/k8s-autopilot-banner.png" alt="k8s-autopilot Banner">
+</p>
+
 # k8s-autopilot
+**A stateful, multi-agent AI system that orchestrates Kubernetes deployments, manages progressive GitOps delivery, and safely debugs your cluster through conversation.**
 
-> **Multi-Agent Framework for Kubernetes Automation (Generation & Management)**
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-0.2.x-green.svg)](https://github.com/langchain-ai/langgraph)
+[![Discord](https://img.shields.io/badge/Discord-Community-7289DA?logo=discord)](https://discord.gg/3nz5MQAA7)
+[![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=flat&logo=docker&logoColor=white)](https://hub.docker.com/)
 
-[![Discord](https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/hFt5DAYEVx) [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-sandeep2014/k8s--autopilot-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://hub.docker.com/r/sandeep2014/k8s-autopilot) [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?style=for-the-badge)](LICENSE) [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/) [![LangGraph](https://img.shields.io/badge/LangGraph-Multi--Agent-FF6B6B?style=for-the-badge)](https://github.com/langchain-ai/langgraph) [![A2A Protocol](https://img.shields.io/badge/Google%20A2A-Protocol-4285F4?style=for-the-badge)](https://github.com/google/a2a)
-
-**k8s-autopilot** is an intelligent, multi-agent framework that automates the lifecycle of Kubernetes operations. Built on LangChain and LangGraph, it unifies **Helm Chart Generation** (natural language → production-ready charts), **Helm Release Management** (install/upgrade/rollback via Helm MCP), and **ArgoCD GitOps Onboarding & Management** (projects/repos/apps via ArgoCD MCP) with Human-in-the-Loop safety.
-
----
-
-## 🎬 Demo
-
-See k8s-autopilot in action! Watch how it generates production-ready Helm charts and manages cluster deployments through natural language conversations:
-
-[![Watch Demo Video](demo/autopilot_demo_thumbnail.png)](demo/autopilot_demo.mp4)
-
-*Click the thumbnail above to download and watch the full demo video*
-
-> **💡 Quick Overview**: The demo showcases installing ArgoCD from a public Helm repository through natural language. Watch the agent discover the chart, plan the installation, and deploy to a Kubernetes cluster with interactive UI components and Human-in-the-Loop approval gates.
+[**Quick Start**](#getting-started) •
+[**Workflows**](#what-can-it-actually-do) •
+[**Architecture**](#architecture) •
+[**Report Bug**](#contact)
 
 ---
 
-## 🎯 What It Does
+## ⚡ Quick Overview
 
-k8s-autopilot automates the end-to-end lifecycle of Kubernetes operations, from initial design to active cluster management:
+See **k8s-autopilot** in action generating a Helm chart, validating it against best practices, and initiating a GitHub push via HITL approval:
 
-1. **📋 Planning**: Analyzes requirements, validates completeness, and designs Kubernetes architecture
-2. **⚙️ Generation**: Generates Helm templates, values files, and documentation
-3. **✅ Validation**: Validates charts, performs security scanning, and ensures production readiness
-4. **🛠️ Management**: Installs, upgrades, and rolls back Helm releases on active clusters via MCP
-5. **🚀 ArgoCD Onboarding**: Manages ArgoCD projects, repositories, and applications (create/update/delete/sync) via MCP
-6. **🔄 Self-Healing**: Automatically fixes common errors (YAML indentation, deprecated APIs, missing fields)
-7. **👤 Human-in-the-Loop**: Requests approvals at critical workflow points (plan review and tool-level approvals)
-
-### Current Capabilities
-
-**✅ Fully Supported**:
-- Helm chart planning and architecture design
-- Helm chart template generation (Deployment, Service, Ingress, ConfigMap, Secret, HPA, PDB, NetworkPolicy, etc.)
-- Traefik IngressRoute generation (modern CRD-based routing)
-- Helm chart validation (lint, template rendering, cluster compatibility)
-- Self-healing validation errors
-- Human-in-the-loop approvals
-- **Active Helm Management**: Install, Upgrade, Rollback, Uninstall charts
-- **Cluster Discovery**: Inspect releases and cluster state
-- **ArgoCD Onboarding & Management**: Projects, repositories, applications (create/update/delete/sync), diff/status
-
-📖 **ArgoCD onboarding docs**: [`docs/app_onboarding/README.md`](./docs/app_onboarding/README.md)  
-📖 **Helm management docs**: [`docs/helm_mgmt/README.md`](./docs/helm_mgmt/README.md)
-
-**🚧 Planned** (Future Releases):
-- Automated deployment to Kubernetes clusters
-- CI/CD pipeline generation
-- Sidecar and initcontainer YAML generation in Helm chart templates (currently: analysis/planning only)
-- Prometheus ServiceMonitor/PodMonitor resource generation (currently: monitoring labels/annotations only)
+![k8s-autopilot Demo](demo/helm_generation_demo.gif)
+> *The Helm Operator Coordinator automatically generating a chart, validating it with the Helm MCP server, and pausing for human approval before committing to GitHub.*
 
 ---
 
-## 🏗️ Architecture
+## ❓ Why k8s-autopilot?
 
-k8s-autopilot follows a **hierarchical supervisor-with-swarms** pattern, leveraging LangChain's Deep Agents and LangGraph for orchestration.
+### The Real Problem
+If you've spent hours debugging a `CrashLoopBackOff`, trying to figure out why an ArgoCD sync is stuck, or carefully orchestrating a zero-downtime canary rollout, you know the pain of Kubernetes sprawl. It’s not just about writing YAML—it’s about the massive cognitive load of context-switching between `kubectl`, Argo dashboards, Helm releases, and Prometheus metrics just to safely ship or rollback code.
 
-### High-Level Architecture
+### Our Solution
+**k8s-autopilot** is built to give you those hours back. We didn't just build a chatbot that generates YAML; we built a stateful, multi-agent AI system powered by the `deepagents` LangGraph framework that actually *understands* your cluster's context.
 
+You simply talk to the **Supervisor Agent**. Need to migrate a legacy deployment to an Argo Rollouts blue-green deployment with zero downtime? The Supervisor hands it off to the **App Operator**, which actively reads your cluster state, generates the `workloadRef` configurations, sets up Prometheus `AnalysisTemplates` for safety, and waits for your explicit Human-in-the-Loop (HITL) approval before touching a single resource. 
+
+---
+
+## 🚀 What can it actually do?
+
+k8s-autopilot natively supports dozens of complex, multi-step workflows across four major domains. It uses specialized "Skills" to execute these operations safely.
+
+### ☸️ Kubernetes Operations (K8s Operator)
+- **Automated Root Cause Analysis:** Ask the agent to "debug my failing pod" and it will automatically pull exit codes, scan previous container logs, check cluster events, and propose a fix for `CrashLoopBackOff` or `ImagePullBackOff`.
+- **Resource Pressure Investigation:** Deeply investigate `OOMKilled` containers by correlating pod memory limits with live `nodes_top` and `pods_top` stats.
+- **Safe Exec & Ephemeral Debugging:** Spin up temporary debug pods (like `netshoot` or `busybox`) to test DNS and connectivity, or safely exec into running containers.
+- **Multi-Cluster Context Switching:** Natively list multi-cluster targets and seamlessly switch kubeconfig contexts for cross-cluster operations.
+- **RBAC & Security Inspection:** Audit who has access by querying Roles, RoleBindings, and ServiceAccounts.
+
+### ⛴️ Progressive Delivery (App Operator — Argo Rollouts)
+- **Zero-Downtime Migrations:** Seamlessly convert standard K8s Deployments to Argo Rollouts using `workloadRef` without duplicating pods, dropping traffic, or causing ArgoCD GitOps drift.
+- **Canary & Blue-Green Orchestration:** Execute step-based canary traffic shifting or instant blue-green cutovers.
+- **Automated Rollbacks via Prometheus:** The agent configures `AnalysisTemplates` to automatically monitor error rates and P99 latency during a rollout, aborting instantly if thresholds are breached.
+- **A/B Testing Experiments:** Spin up ephemeral baseline vs. candidate pods to shadow-test new images against live production traffic before committing.
+- **Emergency Aborts:** Instantly revert traffic back to the stable ReplicaSet during a degraded rollout with a single command.
+
+### 🔄 GitOps & Edge Routing (App Operator — ArgoCD & Traefik)
+- **Declarative Onboarding:** Add new GitHub repositories and automatically provision isolated ArgoCD `AppProject` YAML manifests.
+- **Automated Sync Debugging:** If an app is `OutOfSync` or `Degraded`, the agent analyzes the ArgoCD sync events and provides actionable remediation.
+- **Traefik Edge Routing:** Set up weighted canary routes, TCP routing (Postgres/Redis), and traffic mirroring (shadow launches) at the edge.
+- **Resiliency Middlewares:** Automatically attach rate limits, circuit breakers, TLS termination, and IP allowlists to your Traefik routes.
+- **NGINX to Traefik Migration:** Automatically translate legacy NGINX Ingress annotations into native Traefik middleware and IngressRoute configurations.
+
+### 📦 Helm Lifecycle (Helm Operator)
+- **Intelligent Generation:** The agent reads the official chart `README` and `values.schema.json` to determine exactly which values are mandatory for your specific environment, prompting you only for what matters.
+- **Live Upgrades & Rollbacks:** Modify active releases using `--reuse-values` or rollback to specific known-good revisions using the persistent operations journal.
+- **GitHub Persistence:** Once a chart is generated and approved via HITL, the `github-agent` uses the GitHub MCP to commit the structured chart directly to your repository—no manual copy-pasting required.
+
+---
+
+## 🏗 Architecture
+
+k8s-autopilot leverages the production-grade **Deep Agent** pattern, operating a multi-tier hierarchy of agents, MCP servers, and HITL gates.
+
+```mermaid
+graph TD
+    User([User Request]) --> A2A[A2A Protocol / A2UI]
+    A2A --> Sup[Supervisor Agent]
+    
+    Sup -- "Transfer" --> HelmCoord[Helm Operator Coordinator]
+    Sup -- "Transfer" --> AppCoord[App Operator Coordinator]
+    Sup -- "Transfer" --> K8sCoord[K8s Operator Coordinator]
+    
+    subgraph "Helm Operator Domain"
+        HelmCoord --> HPlanner[helm-planner]
+        HelmCoord --> HGen[helm-generator]
+        HelmCoord --> HVal[helm-validator]
+        HelmCoord --> HOp[helm-operation]
+        HelmCoord --> GitHub[github-agent]
+    end
+    
+    subgraph "App Operator Domain"
+        AppCoord --> ArgoCD[argocd-onboarder]
+        AppCoord --> ArgoR[argo-rollouts-onboarder]
+        AppCoord --> Traefik[traefik-edge-router]
+    end
+    
+    subgraph "K8s Operator Domain"
+        K8sCoord --> K8sOp[k8s-cluster-ops]
+    end
+    
+    HVal -.-> HMCP[(Helm MCP)]
+    HOp -.-> HMCP
+    GitHub -.-> GMCP[(GitHub MCP)]
+    ArgoCD -.-> AMCP[(ArgoCD MCP)]
+    ArgoR -.-> ARMCP[(Argo Rollouts MCP)]
+    Traefik -.-> TMCP[(Traefik MCP)]
+    K8sOp -.-> KMCP[(Kubernetes MCP)]
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                           Supervisor Agent                           │
-│  - Routes user intent to the right workflow                           │
-│  - Orchestrates phases + shared state                                 │
-│  - Manages HITL (plan review + tool-level approvals)                  │
-└──────────────┬───────────────────────────┬───────────────────────────┘
-               │                           │
-     (Helm Chart Generation)        (Live Ops via MCP)
-               │                           │
-               ▼                           ▼
-┌────────────────────────────┐     ┌───────────────────────────────┐
-│ Planner Agent (Deep Agent) │     │ Helm Mgmt Agent (Deep Agent)   │
-└──────────────┬─────────────┘     └──────────────┬────────────────┘
-               │                                  │
-               ▼                                  ▼
-┌────────────────────────────┐     ┌───────────────────────────────┐
-│ Template Coordinator        │     │ Helm MCP Server                │
-│ (LangGraph StateGraph)      │     │ (reads/writes cluster via Helm) │
-└──────────────┬─────────────┘     └───────────────────────────────┘
-               │
-               ▼
-┌────────────────────────────┐
-│ Generator Agent (Validator) │
-└──────────────┬─────────────┘
-               │
-               ▼
-┌────────────────────────────┐
-│ HITL Gates                  │
-│ (interrupts + structured UI)│
-└────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────────┐
-│                 ArgoCD Onboarding Agent (Deep Agent)                 │
-│  - Projects / Repos / Apps (create/update/delete/sync)               │
-│  - Deterministic missing-input pauses + templated approvals          │
-└───────────────────────────────┬─────────────────────────────────────┘
-                                ▼
-                     ┌───────────────────────────────┐
-                     │ ArgoCD MCP Server               │
-                     │ (talks to your ArgoCD API)      │
-                     └───────────────────────────────┘
-```
-
-### Architecture Components
-
-#### 1. **Supervisor Agent**
-Central orchestrator that coordinates workflow phases and manages state flow between swarms.
-
-**Key Features**:
-- Tool-based delegation pattern (`create_agent()`)
-- State transformation between supervisor and swarm schemas
-- HITL gate management
-- Stream processing with interrupt detection
-
-📖 **[Supervisor Agent Documentation](./docs/helm_generation/supervisor/README.md)**
-
-#### 2. **Planner Agent**
-Deep agent that analyzes requirements and designs Kubernetes architecture.
-
-**Key Features**:
-- Requirement extraction from natural language
-- Gap detection and HITL clarification requests
-- Architecture planning following Bitnami standards
-- Resource estimation and scaling strategy
-
-📖 **[Planner Agent Documentation](./docs/helm_generation/planner/planner-agent-documentation.md)**
-
-#### 3. **Template Coordinator Agent**
-LangGraph-based coordinator that generates Helm chart templates and values files.
-
-**Key Features**:
-- 13 specialized generation tools
-- Dependency-aware execution
-- Phase-based workflow (core → conditional → documentation)
-- Traefik IngressRoute generation
-
-📖 **[Template Coordinator Documentation](./docs/helm_generation/template/README.md)**
-
-#### 4. **Generator Agent (Validator)**
-Deep agent that validates, self-heals, and ensures charts are production-ready.
-
-**Key Features**:
-- Helm validation (lint, template, dry-run)
-- Autonomous error fixing
-- Retry logic with human escalation
-- Workspace file management
-
-📖 **[Generator Agent Documentation](./docs/helm_generation/generator/README.md)**
-
-#### 5. **Helm Management Deep Agent**
-Specialized operational agent for managing Helm releases on active clusters.
-
-**Key Features**:
-- **Dual-Path Architecture**: Query Path (Fast) vs Workflow Path (Safe)
-- **5-Phase Workflow**: Discovery → Confirmation → Planning → Approval → Execution
-- **Context Awareness**: Upgrade detection and diffing
-- **Safety**: Strict HITL gates for all state-changing operations
-
-**Dependencies**:
-- **Helm MCP Server**: The Helm Management agent requires the [Helm MCP Server](./docs/mcp/helm-mcp-server.md) to be running and configured. The MCP server provides the underlying tools and resources for Helm operations (chart discovery, installation, validation, monitoring, etc.).
-
-📖 **[Helm Management Documentation](./docs/helm_mgmt/README.md)** | 📖 **[Helm MCP Server Documentation](./docs/mcp/helm-mcp-server.md)**
-
-#### 6. **ArgoCD Onboarding Deep Agent**
-Specialized operational agent for managing ArgoCD projects, repositories, and applications (GitOps onboarding).
-
-**Key Features**:
-- **Prerequisite-first** workflow: validates project/repo/app state before changes
-- **Agentic UX**: plan preview + clear approvals before mutations
-- **Safety**: deterministic missing-input pauses and templated approvals (create/delete/sync)
-- **Repo URL consistency**: avoids “repo not permitted in project” drift (SSH vs HTTPS)
-
-**Dependencies**:
-- **ArgoCD MCP Server**: required for ArgoCD workflows.
-  - Reference implementation: `https://github.com/talkops-ai/talkops-mcp/tree/main/src/argocd-mcp-server`
-
-📖 **[ArgoCD Onboarding Documentation](./docs/app_onboarding/README.md)**
+### The Flow in Practice:
+1. **Intent Extraction**: The Supervisor reads your request (e.g., "Deploy my frontend with zero downtime") and routes it to the App Operator.
+2. **Read-Only Discovery**: The App Operator queries the Kubernetes/ArgoCD MCP to understand the current state.
+3. **Planning & Approval**: A robust, step-by-step plan is generated and presented via the UI for your explicit approval (`[PLAN-LOCKED]`).
+4. **Execution**: The specialized sub-agent (e.g., `argo-rollouts-onboarder`) executes the pre-approved plan via the connected MCP server.
+5. **Summarization**: The agent logs the operation in its persistent journal and presents a formatted Markdown summary of the results.
 
 ---
 
-## 🚀 Quick Start
+## 🛑 Human-in-the-Loop — Governance You Can Trust
+
+AI shouldn't arbitrarily execute state-modifying operations on your cluster. k8s-autopilot enforces strict **Human-in-the-Loop (HITL)** governance.
+
+- **Read-Only Operations**: Queries like "list pods" or "check sync status" execute instantly.
+- **State-Modifying Operations**: Operations like "deploy app", "scale deployment", or "rollback release" trigger the `HumanInTheLoopMiddleware`. The agent constructs a clear plan, pauses the LangGraph execution, and renders an interactive approval card in the UI. **Nothing is modified until you click Approve.**
+- **Commit Gates**: For Helm charts, the agent will never push code to a repository without explicitly pausing to ask for your confirmation and branch details.
+
+---
+
+## 🧠 Skills and Memory — How the Agent Learns
+
+k8s-autopilot maintains persistence across sessions using a localized virtual filesystem.
+
+- **`/skills/`**: Contains the strict operational workflows (like the ones listed above) that dictate exactly how the agent must interact with MCP servers.
+- **`/memories/`**: Contains static governance files like `hitl-policies.md` which enforce operational rules. It also contains the **Operations Journal** (`operations-log.md`), allowing the agent to remember context (like the release name, namespace, and chart source) even after the LLM conversational window is summarized.
+
+---
+
+## 🛠 Tech Stack
+
+| Component | Technology | Purpose |
+| :--- | :--- | :--- |
+| **Agent Framework** | `deepagents` / LangGraph | State machine, orchestration, sub-graph routing. |
+| **LLM Interface** | LangChain Core | Tool execution, message schemas. |
+| **Tools/Integrations**| Model Context Protocol (MCP)| Standardized protocol for Helm, Argo, Traefik, K8s, GitHub. |
+| **User Interface** | A2UI / TalkOps A2A | Real-time streaming, HITL approval cards, markdown rendering. |
+| **Runtime** | Python 3.12+ | Core agent backend. |
+
+---
+
+## ⚙️ Configuration
+
+The agent dynamically loads configuration from `.env` or `default.py` and uses a three-tier LLM configuration—different models for different jobs:
+
+| Tier | Used by | Default | Why |
+|------|---------|---------|-----|
+| **Standard** | `LLM_MODEL` (e.g., fast parsing) | `gpt-4o-mini` | Fast and cost-effective for repetitive tasks and validation parsing |
+| **Higher** | `LLM_HIGHER_MODEL` (Supervisor) | `gpt-5-mini` | Stronger reasoning for accurate routing and HITL context generation |
+| **Deep Agent** | `LLM_DEEPAGENT_MODEL` (Coordinators) | `o4-mini` | Maximum capability for complex code generation and execution planning |
+
+> **Switching LLM providers:** Set `LLM_PROVIDER` (or `LLM_HIGHER_PROVIDER`, `LLM_DEEPAGENT_PROVIDER`) to `anthropic`, `google_genai`, `openai`, or `azure`. The system supports all of them natively.
+
+For the full list of configuration options—including your active MCP servers—see [`k8s_autopilot/config/default.py`](k8s_autopilot/config/default.py).
+
+---
+
+## 🚀 Getting Started
 
 ### Prerequisites
+- Docker & Docker Compose
+- Node.js (for local npx MCP servers)
+- Kubernetes Cluster (local Minikube/Kind or remote) with KUBECONFIG
+- Python 3.12+ (if running from source)
+- An LLM Provider API Key (OpenAI, Anthropic, or Gemini)
 
-- Python 3.12+
-- Helm CLI installed and in PATH (required for local usage; not needed if running via Docker image)
-- LLM API key (OpenAI, Anthropic)
-- TalkOps client installed: `pip install talkops-client` (or `uv pip install talkops-client` if using uv)
+### Quick Start with Docker Compose (recommended)
 
-### Installation
+No cloning required. You just need two files: `docker-compose.yml` and `.env`.
 
-#### Option 1: Docker Hub (Recommended for Quick Start)
+**1. Create a `docker-compose.yml`** — copy from this repo's [`docker-compose.yml`](docker-compose.yml), or use:
 
-**Pull and run the pre-built image from Docker Hub:**
+```yaml
+services:
+  k8s-autopilot:
+    image: talkopsai/k8s-autopilot:latest
+    container_name: k8s-autopilot
+    ports:
+      - "10102:10102"
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GITHUB_MCP_URL=${GITHUB_MCP_URL}
+      - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}
+      - HELM_WORKSPACE=${HELM_WORKSPACE}
+      - >-
+        MCP_SERVERS=[ {"name": "github_mcp", "url": "https://api.githubcopilot.com/mcp/", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": "GITHUB_PERSONAL_ACCESS_TOKEN"}, {"name": "helm_mcp_server", "url": "http://helm-mcp-server:9000/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "argocd_mcp_server", "url": "http://argocd-mcp-server:9001/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "traefik_mcp_server", "url": "http://traefik-mcp-server:9002/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "argo_rollout_mcp_server", "url": "http://argo-rollout-mcp-server:9003/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "kubernetes_mcp_server", "command": "npx", "transport": "stdio", "args": ["-y", "kubernetes-mcp-server@latest"]} ]
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_HIGHER_PROVIDER=${LLM_HIGHER_PROVIDER}
+      - LLM_HIGHER_MODEL=${LLM_HIGHER_MODEL}
+      - LLM_DEEPAGENT_PROVIDER=${LLM_DEEPAGENT_PROVIDER}
+      - LLM_DEEPAGENT_MODEL=${LLM_DEEPAGENT_MODEL}
+      - KUBECONFIG=/app/.kube/config
+    volumes:
+      - ./workspace/helm-charts:/app/workspace/helm-charts
+      - ${HOME}/.kube/config:/app/.kube/config:ro
+    depends_on:
+      - helm-mcp-server
+      - argocd-mcp-server
+    restart: unless-stopped
+    networks:
+      - k8s-autopilot-net
+
+  # ... (other services like helm-mcp-server, argocd-mcp-server, traefik, argo-rollouts)
+
+  talkops-ui:
+    image: talkopsai/talkops:latest
+    container_name: talkops-ui
+    environment:
+      - K8S_AGENT_URL=http://localhost:10102
+      - TALKOPS_ENABLE_LOGGING=false
+    ports:
+      - "8080:80"
+    depends_on:
+      - k8s-autopilot
+    restart: unless-stopped
+    networks:
+      - k8s-autopilot-net
+
+networks:
+  k8s-autopilot-net:
+    driver: bridge
+```
+
+**2. Create a `.env` file** in the same directory with your API keys and configuration:
 
 ```bash
-# Pull the latest version
-docker pull sandeep2014/k8s-autopilot:latest
-
-# Run the A2A server
-docker run -d -p 10102:10102 \
-  -e OPENAI_API_KEY=your_openai_key_here \
-  --name k8s-autopilot \
-  sandeep2014/k8s-autopilot:latest
+GOOGLE_API_KEY=your_google_api_key_here
+GITHUB_PERSONAL_ACCESS_TOKEN=your_github_pat_here
+HELM_WORKSPACE=./workspace/helm-charts
 ```
 
-> **Note:** It's recommended to mount a local volume to persist generated Helm charts. By default, the agent writes charts to `/tmp/helm-charts` inside the container. You can mount a local directory and optionally configure the agent to write to a different directory:
->
-> ```bash
-> docker run -d -p 10102:10102 \
->   -e OPENAI_API_KEY=your_openai_key_here \
->   -v /path/to/local/charts:/tmp/helm-charts \
->   --name k8s-autopilot \
->   sandeep2014/k8s-autopilot:latest
-> ```
->
-> This allows you to access the generated Helm charts from your host machine and use them to install applications on your Kubernetes cluster.
+> **Using OpenAI or Anthropic instead?** Set `LLM_PROVIDER=openai` (or `anthropic`) in your `.env`. The system supports all of them out of the box. See [`.env.example`](.env.example) for all supported providers.
 
-**Available Docker tags:**
-
-- `latest` - Latest stable release
-- `vX.Y.Z` - Specific version (release tag)
-
-#### Option 2: Standalone Installation
-
-1. **Install [uv](https://docs.astral.sh/uv/getting-started/installation/)** for dependency management
-
-2. **Create and activate a virtual environment with Python 3.12:**
-
-   ```sh
-   uv venv --python=3.12
-   source .venv/bin/activate  # On Unix/macOS
-   # or
-   .venv\Scripts\activate  # On Windows
-   ```
-
-3. **Install dependencies from pyproject.toml:**
-
-   ```sh
-   uv pip install -e .
-   ```
-
-4. **Create a `.env` file and add the following environment variables:**
-
-   ```sh
-   OPENAI_API_KEY=XXXXXXXXX
-   ```
-
-   > **Note:** All available configuration options can be found in [`k8s_autopilot/config/default.py`](k8s_autopilot/config/default.py). You can set any of these options via your `.env` file to customize the k8s-autopilot agent's behavior.
-
-5. **Start the A2A server with the agent card:**
-
-   ```sh
-   uv run --active k8s-autopilot \
-     --host localhost \
-     --port 10102 \
-     --agent-card k8s_autopilot/card/k8s_autopilot.json
-   ```
-
-### Working with Agents
-
-The easiest way to interact with k8s-autopilot is using the **TalkOps Web UI** via Docker Compose, which sets up the complete stack including the k8s-autopilot agent, Helm MCP Server, ArgoCD MCP Server, and TalkOps Web UI.
-
-1. **Create a `.env` file** in the project root with your LLM provider API key:
-
-   ```bash
-   # Required: LLM Provider API Key
-   OPENAI_API_KEY=your_openai_api_key_here
-   
-   # Required for ArgoCD workflows
-   ARGOCD_AUTH_TOKEN=argocd_auth_token
-   # Optional override (docker-compose.yml defaults to host.docker.internal)
-   # ARGOCD_SERVER_URL=https://host.docker.internal:9090
-
-   # Optional: Customize LLM models (defaults shown below)
-   # LLM_PROVIDER=openai
-   # LLM_MODEL=gpt-4o-mini
-   # LLM_HIGHER_MODEL=gpt-4o
-   # LLM_DEEPAGENT_MODEL=o1-mini
-   ```
-
-   > **Note:** For other LLM providers (Anthropic, Google Gemini, Azure, etc.), see the [LLM Provider Configuration Guide](docs/ONBOARDING_LLM_PROVIDER.md) for detailed setup instructions and supported models.
-
-2. **Start the services** using Docker Compose:
-
-   ```bash
-   docker-compose up -d
-   ```
-
-   This will start four services:
-   - **k8s-autopilot**: The main agent (port 10102)
-   - **helm-mcp-server**: Helm operations backend (port 9000 by default in `docker-compose.yml`)
-   - **argocd-mcp-server**: ArgoCD operations backend (port 8765 by default in `docker-compose.yml`)
-   - **talkops-ui**: Web interface (port 8080)
-
-   **Required (for ArgoCD workflows)**:
-   - Set (in `.env`):
-     - `ARGOCD_SERVER_URL`
-     - `ARGOCD_AUTH_TOKEN`
-     - `ARGOCD_MCP_SERVER_HOST/PORT/TRANSPORT`
-
-3. **Access the Web UI** by opening your browser to:
-
-   ```
-   http://localhost:8080
-   ```
-
-4. **Start chatting** with the agent to create Helm charts, manage releases, or query your cluster:
-
-   ```
-   Create a Helm chart for nginx
-   ```
-
-   or
-
-   ```
-   List all Helm releases in my cluster
-   ```
-
-   or
-
-   ```
-   Install argo-cd helm chart from this repository - https://argoproj.github.io/argo-helm
-   ```
-
-   The agent will guide you through the process, asking for clarifications if needed, and generate production-ready Helm charts or perform cluster operations via MCP servers.
-
-   **ArgoCD examples**:
-
-   ```
-   Onboard the application from the repository git@github.com:helm/examples.git located at charts/hello-world.
-   ```
-
-   ```
-   Delete application hello-world
-   ```
-
-5. **Access generated charts**: Charts are saved to `./helm_output` directory on your host machine.
-
----
-
-## 🔄 Workflows
-
-k8s-autopilot supports three primary workflows:
-
-1) **Helm Chart Generation** (create charts from scratch)
-2) **Helm Management** (manage Helm releases on live clusters via Helm MCP)
-3) **ArgoCD Onboarding & Management** (manage ArgoCD projects/repos/apps via ArgoCD MCP)
-
-### Workflow 1: Helm Chart Generation
-
-For creating production-ready Helm charts from natural language requirements:
-
-```
-User Request: "Create a Helm chart for nginx"
-    ↓
-1. Supervisor → Planner Agent
-   - Extracts requirements
-   - Detects gaps (if any) → HITL clarification
-   - Designs architecture
-   - Creates chart plan
-    ↓
-2. Supervisor → Template Coordinator
-   - Generates Chart.yaml
-   - Generates values.yaml
-   - Generates templates (Deployment, Service, IngressRoute, etc.)
-   - Generates README.md
-    ↓
-3. Supervisor → HITL Gate (Generation Review)
-   - Shows generated artifacts
-   - Requests workspace directory
-   - Human approval required
-    ↓
-4. Supervisor → Generator Agent (Validator)
-   - Writes chart files to workspace
-   - Runs helm lint validation
-   - Runs helm template validation
-   - Runs helm dry-run validation
-   - Self-heals errors (if possible)
-   - Escalates to human (if needed)
-    ↓
-5. Supervisor → Final Notification
-   - Workflow complete
-   - Deployment instructions provided
-```
-
-### Workflow 2: Helm Management (via MCP Server)
-
-For managing Helm releases on active Kubernetes clusters:
-
-```
-User Request: "Install argo-cd from https://argoproj.github.io/argo-helm"
-    ↓
-1. Supervisor → Helm Management Agent (Discovery Phase)
-   - Connects to Helm MCP Server
-   - Searches for chart in repository
-   - Retrieves chart metadata, README, and values schema
-   - Analyzes cluster context (existing releases, namespaces)
-    ↓
-2. Helm Management Agent → HITL Gate (Confirmation)
-   - Presents chart information and options
-   - Requests user confirmation for installation
-   - Collects custom values (if needed)
-    ↓
-3. Helm Management Agent → Planning Phase
-   - Generates installation plan via MCP server
-   - Validates values against schema
-   - Renders manifests for preview
-   - Checks dependencies and prerequisites
-    ↓
-4. Helm Management Agent → HITL Gate (Approval)
-   - Shows installation plan and resource estimates
-   - Displays rendered manifests
-   - Requests final approval before execution
-    ↓
-5. Helm Management Agent → Execution Phase
-   - Executes helm install via MCP server
-   - Monitors deployment health
-   - Reports status and next steps
-    ↓
-6. Supervisor → Final Notification
-   - Installation complete
-   - Release status and access instructions provided
-```
-
-**Key Differences**:
-- **Generation Workflow**: Creates new Helm charts from scratch, outputs to local filesystem
-- **Management Workflow**: Uses Helm MCP Server to interact with live clusters, performs actual deployments
-- **Both workflows**: Include multiple HITL gates for safety and human oversight
-
-**Supported Operations** (Management Workflow):
-- 🔍 **Query**: List releases, get release status, inspect cluster state
-- 📦 **Install**: Deploy new Helm releases with validation
-- ⬆️ **Upgrade**: Update existing releases with diff preview
-- ⏮️ **Rollback**: Revert to previous revisions
-- 🗑️ **Uninstall**: Remove releases from cluster
-
-### Workflow 3: ArgoCD Onboarding & Management (via MCP Server)
-
-For managing ArgoCD applications, repositories, and projects using GitOps patterns:
-
-```
-User Request: "Onboard the application from repo X at path Y"
-    ↓
-1. Orchestrator → Prerequisite validation
-   - Checks project exists and is configured correctly
-   - Checks repository registration and connectivity
-   - Checks whether application already exists
-    ↓
-2. Orchestrator → Plan preview (HITL)
-   - Shows a plain-English plan preview (goal/where/steps/risks)
-   - Requests plan approval (approve/reject)
-    ↓
-3. Execute with checkpoints
-   - Missing-input pauses only when a tool is about to run without required args
-   - Tool-level approvals for create/delete/sync
-    ↓
-4. Continuous validation
-   - Uses diff/status tools when available to confirm outcomes
-```
-
-📖 **ArgoCD onboarding docs**: [`docs/app_onboarding/README.md`](./docs/app_onboarding/README.md)
-
-### Human-in-the-Loop Gates
-
-**Mandatory Gates**:
-- **Generation Review**: After template generation completes
-  - Review generated artifacts
-  - Specify workspace directory
-  - Approval required before validation
-
-**Optional Gates**:
-- **Planning Review**: Currently auto-proceeds (can be enabled)
-- **Validation Escalation**: When validator cannot auto-fix errors
-
----
-
-## 🛠️ Technology Stack
-
-### Core Framework
-
-- **LangChain v1.0**: LLM integration and tool framework
-- **LangGraph v1.0**: Stateful graph orchestration
-- **Deep Agents**: Multi-step reasoning and autonomous problem-solving
-- **Pydantic v2**: Type-safe state schemas and validation
-
-### Kubernetes & Helm
-
-- **Helm CLI**: Chart validation and template rendering
-- **Traefik CRDs**: Modern ingress routing
-
-### State Management
-
-- **PostgreSQL Checkpointer**: Persistent state storage (preferred)
-- **MemorySaver**: In-memory checkpointing (fallback)
-- **State Reducers**: Concurrent update handling
-
-### User Interface & Integration
-
-- **A2UI (Agent-to-Agent UI)**: Rich interactive UI components (cards, buttons, forms) for enhanced user experience
-- **A2A Protocol**: Google's Agent-to-Agent communication protocol for enterprise agent ecosystems
-- **Programmatic UI Builders**: Type-safe UI generation without LLM hallucination
-- **Interactive HITL Gates**: Button-based approvals and structured input forms
-
-## LLM Providers
-
-k8s-autopilot supports a wide range of LLM providers including OpenAI, Anthropic, Google Gemini, Azure, and AWS Bedrock. The framework is designed to be provider-agnostic, allowing you to choose the best models for your specific requirements and budget.
-
-### LLM Configuration
-
-#### Multi-Provider Architecture
-
-The system utilizes a provider-agnostic abstraction layer to support various LLM backends:
-
-- **Multi-Provider Support**: Unified interface for 12+ LLM providers (OpenAI, Anthropic, Azure, Google Gemini, AWS Bedrock, etc.)
-- **Model Selection**: Configurable model selection per agent via config
-- **Parameter Tuning**: Adjustable temperature, max tokens, and other parameters
-- **Provider Switching**: Easy switching between different LLM providers via configuration
-- **Auto-Inference**: Automatic provider detection from model names
-
-#### Configuration
-
-LLM providers are configured via environment variables. The system supports a **Multi-Model Strategy**, allowing you to optimize for cost and performance by using different models for different roles.
-
-**Basic Configuration (.env):**
-```bash
-LLM_PROVIDER="openai"
-LLM_MODEL="gpt-4o"
-OPENAI_API_KEY="sk-..."
-```
-
-**Advanced / Hybrid Configuration:**
-You can mix providers to use high-reasoning models (like `o1-mini` or `claude-3-opus`) for the Supervisor and faster/cheaper models (like `gemini-1.5-flash` or `gpt-4o-mini`) for Sub-Agents.
+**3. Start everything:**
 
 ```bash
-# Supervisor (High Reasoning)
-LLM_DEEPAGENT_PROVIDER="openai"
-LLM_DEEPAGENT_MODEL="o1-mini"
+docker compose -f docker-compose.yml up -d
 
-# Sub-Agents (High Speed/Low Cost)
-LLM_PROVIDER="google_genai"
-LLM_MODEL="gemini-1.5-flash"
+# k8s-autopilot Agent running at http://localhost:10102
+# TalkOps UI running at http://localhost:8080
 ```
 
-For detailed configuration instructions, supported status, and API key setup for all 12+ providers (OpenAI, Anthropic, Gemini, Azure, Bedrock, etc.), please refer to the **[Onboarding Guide: Configuring LLM Providers](docs/ONBOARDING_LLM_PROVIDER.md)**.
+That's it. Open **http://localhost:8080** and start talking to the orchestrator.
 
-#### Supported Providers
+#### From Source
 
-- **OpenAI**: `gpt-4o`, `gpt-4-turbo`, `gpt-3.5-turbo`
-- **Anthropic**: `claude-3-opus-20240229`, `claude-3-sonnet-20240229`
-- **Azure OpenAI**: `azure_openai:model-name`
-- **Google Gemini**: `google_genai:gemini-2.5-flash-lite`
-- **AWS Bedrock**: Various models via `bedrock_converse` provider
+If you want to run it directly (for development or customization):
 
----
+1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) for dependency management.
 
-## 📋 Roadmap
+2. Clone the repo and create a virtual environment with Python 3.12:
 
-### Past Releases (v0.1.0)
+```bash
+git clone https://github.com/talkops-ai/k8s-autopilot.git
+cd k8s-autopilot
 
-**✅ Implemented**:
-- [x] Multi-agent architecture with supervisor pattern
-- [x] Planning agent with requirement extraction
-- [x] Template coordinator with 13 generation tools
-- [x] Generator agent with validation and self-healing
-- [x] HITL gates for approval workflows
-- [x] State transformation and persistence
-- [x] Traefik IngressRoute support
-- [x] **Helm Management Agent**: Live cluster operations
-- [x] Comprehensive documentation
+uv venv --python=3.12
+source .venv/bin/activate  # On Unix/macOS
+# or
+.venv\Scripts\activate  # On Windows
+```
 
-### Past Release (v0.2.0)
+3. Install dependencies from `pyproject.toml`:
 
-**✅ Implemented**:
-- [x] **Helm Management Agent**: Full lifecycle management (Install, Upgrade, Rollback) with active cluster state awareness
-- [x] **Multi-LLM Model Support**: Provider-agnostic architecture supporting a mix of models (OpenAI, Anthropic, Gemini, Bedrock) optimized for cost and performance
-- [x] **A2UI & A2A Protocol**: Seamless integration with Google's Agent-to-Agent (A2A) protocol and rich UI components via A2UI
-- [x] **ArgoCD Onboarding Agent**: Projects, repositories, and applications via ArgoCD MCP server with HITL plan review and tool-level approvals
+```bash
+uv pip install -e .
+```
 
-### Current Release (v0.3.0)
+4. Create a `.env` file and add your environment variables:
 
-**✅ Implemented (ArgoCD updates)**:
-- [x] **Agentic onboarding workflow**: prerequisite validation → plan preview → tool execution
-- [x] **Deterministic HITL**:
-  - Missing-input pauses only at tool boundaries (no repeated “clarification loops”)
-  - Tool-level approvals for `create_application` (always) and destructive ops like `delete_application`
-- [x] **Safe deletion flow**: exact-name confirmation step before `delete_application`
-- [x] **Repo URL consistency**: avoids SSH↔HTTPS drift that causes “repo not permitted in project”
-- [x] **No credential probing**: the agent does not ask for SSH secret names (assumes server-side config)
+```bash
+cp .env.example .env
+# Edit .env — at minimum set your LLM API key
+```
 
+> All available configuration options can be found in [`k8s_autopilot/config/default.py`](k8s_autopilot/config/default.py). You can set any of these via your `.env` file.
 
-### Future Releases
+5. Start the A2A server:
 
-**v0.4.0 - Enhanced Validation** (Planned):
-- [ ] Policy compliance checking
-- [ ] Helm unit test generation
-- [ ] Traefik IngressRoute improvements and enhanced features
+```bash
+k8s-autopilot --host localhost --port 10102
+```
 
-**v0.5.0 - Deployment Automation** (Planned):
-- [ ] Automated deployment to Kubernetes clusters
-- [ ] Deployment rollback capabilities
-- [ ] Multi-cluster deployment strategies
-- [ ] Deployment status monitoring
+To interact with the agent, we recommend using the **TalkOps UI** client. Pull and run it with Docker:
 
-**v0.6.0 - CI/CD Integration** (Planned):
-- [ ] GitHub Actions workflow generation
-- [ ] GitLab CI pipeline generation
-- [ ] Jenkins pipeline generation
+```bash
+docker run -d \
+  --name talkops-ui \
+  -p 8080:80 \
+  -e K8S_AGENT_URL=http://host.docker.internal:10102 \
+  talkopsai/talkops:latest
+```
 
-**v0.7.0 - Testing & Evaluation** (Planned):
-- [ ] Test case generation for Helm charts
-- [ ] Evaluation framework integration
-- [ ] Automated testing integration
-- [ ] Chart quality metrics and scoring
+Then open [http://localhost:8080](http://localhost:8080) in your browser.
 
-**v0.8.0 - Extended Capabilities** (Planned):
-- [ ] Application monitoring setup (Prometheus, Grafana)
-- [ ] Logging aggregation (ELK, Loki)
-- [ ] Service mesh integration (Istio, Linkerd)
-- [ ] Multi-cloud deployment support
+## 🛣 What's Next? (Our Roadmap)
+We've built a powerful foundation with multi-agent routing, progressive delivery, and deep observability. But we're not stopping there. Here is what we are actively working on next to make k8s-autopilot even better:
+
+- [ ] **Kargo Implementation**: We are bringing native support for [Kargo](https://kargo.akuity.io/) to help orchestrate complex, multi-stage continuous delivery pipelines across your environments.
+- [ ] **Autopilot Monitoring & Telemetry**: We want the agent to not just manage your cluster, but also be fully observable itself. We're adding deep monitoring capabilities so you can track the agent's performance, resource usage, and decision-making over time.
+- [ ] **Slack/Teams ChatOps Integration**: Bringing the full power of the Supervisor Agent directly into your team's chat platform so you can debug incidents collaboratively.
 
 ---
 
-## 🏛️ Architecture Principles
+## 💬 FAQ
 
-### 1. **Modular Swarm Design**
-Each agent swarm is independently deployable and scalable, allowing for:
-- Independent updates and versioning
-- Horizontal scaling of individual swarms
-- Easy addition of new capabilities
+**Q: Do I need all MCP servers running?**
+A: No. The agent can operate with a subset of servers. If a server is unavailable, the relevant deep agent will politely inform you that the capability is disabled.
 
-### 2. **Stateful Orchestration**
-LangGraph provides:
-- Explicit state management with reducers
-- Checkpointing for resumable workflows
-- Interrupt handling for HITL interactions (pause/resume)
-
-### 3. **Tool-Based Delegation**
-Supervisor uses tool wrappers instead of manual routing:
-- LLM decides routing dynamically
-- Simplified graph building
-- Easy to add new swarms
-
-### 4. **MCP-Backed Live Operations**
-All live cluster / control-plane actions are executed via MCP servers (e.g., Helm MCP, ArgoCD MCP):
-- Agents **read real state** before acting (no guessing)
-- Mutations are **auditable** and can be gated (see HITL)
-- Credentials are handled server-side (agents avoid prompting for secrets)
-
-### 5. **Human-Centric Design**
-HITL gates ensure safety without turning the system into a “chatbot loop”:
-- Human oversight at critical points
-- Plan previews in plain English (approve/reject)
-- Tool-level approvals for high-impact actions (e.g., create/delete/sync)
-- Deterministic missing-input pauses only when a required tool arg is missing
-- Escalation when autonomous fixes fail
-
-### 6. **Self-Healing Capabilities**
-Agents autonomously fix common recoverable errors:
-- YAML indentation issues
-- Deprecated API versions
-- Missing required fields
-- Retry logic with human escalation
-
+**Q: Does it support Anthropic or Gemini?**
+A: Yes! Simply change `LLM_PROVIDER=anthropic` and set `LLM_MODEL=claude-3-5-sonnet-latest` in your `.env`.
 
 ---
 
 ## 🤝 Contributing
-
-We welcome contributions! Please see below details.
-
-### Development Setup
-
-```bash
-# Clone repository
-git clone https://github.com/talkops-ai/k8s-autopilot.git
-cd k8s-autopilot
-
-# Install uv (if not already installed)
-# See: https://docs.astral.sh/uv/getting-started/installation/
-
-# Create virtual environment with Python 3.12
-uv venv --python=3.12
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install development dependencies
-uv pip install -e .
-
-```
-
-### Development Workflow
-
-1. **Fork the repository**
-2. **Create a feature branch** (`git checkout -b feature/amazing-feature`)
-3. **Commit your changes** (`git commit -m 'Add amazing feature'`)
-4. **Push to the branch** (`git push origin feature/amazing-feature`)
-5. **Open a Pull Request**
-
-### Contributing Guidelines
-
-- Follow the existing code style and conventions
-- Add tests for new features
-- Update documentation as needed
-- Ensure all tests pass before submitting PR
-- Write clear, descriptive commit messages
-
-### Code Style
-
-- **Formatting**: Black
-- **Linting**: Ruff
-- **Type Checking**: mypy
-- **Documentation**: Google-style docstrings
+Contributions are welcome! Whether it's adding a new MCP server integration, fixing bugs, or improving prompts, please feel free to open a PR. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
 ## 📝 License
-
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgments
-
-- **LangChain Team**: For the excellent LangChain and LangGraph frameworks
-- **Google A2A Protocol**: For the Agent-to-Agent communication protocol enabling enterprise agent ecosystems
-- **A2UI**: For rich, structured UI components (forms/cards/buttons) used in Human-in-the-Loop flows
-- **Argo Project / ArgoCD**: For GitOps application delivery patterns and tooling
-- **Model Context Protocol (MCP) ecosystem**: For standardizing tool access between agents and control planes
-- **Kubernetes**: For the core platform that makes declarative orchestration possible
-- **Helm**: For packaging, templating, and lifecycle management of Kubernetes apps
-- **CNCF**: For Kubernetes and Helm community standards and stewardship
-- **Traefik**: For modern ingress routing capabilities
+This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## 💬 Community & Support
-
-Join our community to get help, share ideas, and contribute to the project!
-
-### Discord Community
-
-**Join our Discord**
-
-Connect with other users, developers, and contributors:
-
-- 💡 **Get Help**: Ask questions and get support from the community
-- 🚀 **Share Projects**: Showcase your Helm charts and use cases
-- 🐛 **Report Issues**: Discuss bugs and feature requests
-- 🤝 **Collaborate**: Find contributors and collaborate on improvements
-- 📢 **Stay Updated**: Get notified about new releases and updates
-
-[Join the Discord Server →](https://discord.gg/hFt5DAYEVx)
-
-### Getting Support
-
-- **Discord**: For real-time help and discussions, join our Discord community
-- **GitHub Issues**: For bug reports and feature requests, use [GitHub Issues](https://github.com/talkops-ai/k8s-autopilot/issues)
-- **Documentation**: Check our comprehensive [documentation](./docs/) for guides and references
-
----
-
-## 🌟 Star Us
-
-If you find k8s-autopilot helpful, please consider starring our repository:
-
-⭐ [https://github.com/talkops-ai/k8s-autopilot](https://github.com/talkops-ai/k8s-autopilot)
-
-
----
-
-**Built with ❤️ for the DevOps and Infrastructure community**
+## 📞 Contact
+- **Discord**: [Join the K8s Autopilot Server](https://discord.gg/3nz5MQAA7)
+- **GitHub Issues**: [Open an issue](https://github.com/talkops-ai/k8s-autopilot/issues)
