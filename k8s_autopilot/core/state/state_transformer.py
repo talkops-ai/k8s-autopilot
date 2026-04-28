@@ -42,23 +42,21 @@ class StateTransformer:
         - Creates empty handoff_metadata dict
         """
         messages = [HumanMessage(content=supervisor_state["user_query"])]
-        # Get status and convert to string value to avoid Pydantic serialization warnings
-        # PlanningSwarmState.status now accepts str | WorkflowStatus
-        status = supervisor_state.get("status", WorkflowStatus.PENDING)
-        if isinstance(status, WorkflowStatus):
-            status_value = status.value  # Convert enum to string
-        else:
-            status_value = str(status)  # Ensure it's a string
+        # Get status as string (supervisor now uses plain strings)
+        status_value = supervisor_state.get("status", "pending")
+        if isinstance(status_value, WorkflowStatus):
+            status_value = status_value.value
         
-        # Preserve existing plan/requirements if available to prevent loop
-        existing_plan = supervisor_state.get("planner_output")
+        # Preserve existing plan from coordinator output if available
+        existing_output = supervisor_state.get("helm_generation_output") or {}
+        existing_plan = existing_output.get("planner_output") if isinstance(existing_output, dict) else None
 
         return {
             "messages": messages,
             "remaining_steps": None,  # Required by Deep Agent TodoListMiddleware
             "active_agent": "requirement_analyzer",  # Start with supervisor
             "chart_plan": existing_plan,
-            "status": status_value,  # Use string value to avoid serialization warnings
+            "status": str(status_value),
             "todos": [],
             "workspace_files": {},
             "handoff_metadata": {},
@@ -92,7 +90,7 @@ class StateTransformer:
             
             # Use helper method to set phase complete
             workflow_state_obj.set_phase_complete("planning")
-            workflow_state_obj.last_swarm = "planning_swarm"
+            workflow_state_obj.last_agent = "planning_swarm"
             
             # Return object directly to avoid Pydantic serialization warnings
             updated_workflow_state = workflow_state_obj
@@ -134,8 +132,7 @@ class StateTransformer:
 
         return {
             "messages": summary_messages,
-            "llm_input_messages": summary_messages,
-            "planner_output": planning_output,
+            "helm_generation_output": {"planner_output": planning_output},
             "workflow_state": updated_workflow_state
         }
     
@@ -157,7 +154,7 @@ class StateTransformer:
         - pending_dependencies, coordinator_state, tool_results, errors
         based on the planner_output, so we don't set them here.
         """
-        messages = [HumanMessage(content=supervisor_state["user_query"])]
+        messages = [HumanMessage(content=supervisor_state.get("user_query", ""))]
         
         # Prepare workflow state with generation phase
         workflow_state = supervisor_state.get("workflow_state")
@@ -171,18 +168,18 @@ class StateTransformer:
             
             # Update phase
             workflow_state_obj.current_phase = "generation"
-            workflow_state_obj.next_swarm = "template_supervisor"
+            workflow_state_obj.next_agent = "template_supervisor"
         else:
              # Fallback if no workflow state exists
             workflow_state_obj = {
                 "current_phase": "generation",
-                "next_swarm": "template_supervisor"
+                "next_agent": "template_supervisor"
             }
 
         return {
             # Core fields
             "messages": messages,
-            "planner_output": supervisor_state.get("planner_output"),
+            "planner_output": (supervisor_state.get("helm_generation_output") or {}).get("planner_output"),
             "workflow_state": workflow_state_obj, # Pass workflow state to generation swarm
             
             # Generated artifacts (will be populated by tools)
@@ -219,7 +216,7 @@ class StateTransformer:
             
             # Use helper method to set phase complete
             workflow_state_obj.set_phase_complete("generation")
-            workflow_state_obj.last_swarm = "generation_swarm"
+            workflow_state_obj.last_agent = "generation_swarm"
             
             # Return object directly to avoid Pydantic serialization warnings
             updated_workflow_state = workflow_state_obj
@@ -244,8 +241,9 @@ class StateTransformer:
 
         return {
             "messages": summary_messages,
-            "llm_input_messages": summary_messages,
-            "helm_chart_artifacts": generation_state.get("final_helm_chart"),
+            "helm_generation_output": {
+                "helm_chart_artifacts": generation_state.get("final_helm_chart"),
+            },
             "workflow_state": updated_workflow_state
         }
     
@@ -265,7 +263,8 @@ class StateTransformer:
         
         Also pre-writes chart files to filesystem to avoid context overload.
         """
-        generated_chart = supervisor_state.get("helm_chart_artifacts", {}) or {}
+        gen_output = supervisor_state.get("helm_generation_output") or {}
+        generated_chart = gen_output.get("helm_chart_artifacts", {}) if isinstance(gen_output, dict) else {}
         
         # Extract chart name from Chart.yaml if available
         chart_name = "my-app"  # default
@@ -326,10 +325,7 @@ class StateTransformer:
                             files_written.append(filename)
                         except Exception as e:
                             # Log but continue
-                            state_transformer_logger.log_structured(
-                                level="WARNING",
-                                message=f"Failed to pre-write chart file: {filename}",
-                                extra={
+                            state_transformer_logger.warning(f"Failed to pre-write chart file: {filename}", extra={
                                     "filename": filename,
                                     "error": str(e),
                                     "error_type": type(e).__name__,
@@ -338,10 +334,7 @@ class StateTransformer:
                             )
             except Exception as e:
                 # If directory creation fails, agent will handle it
-                state_transformer_logger.log_structured(
-                    level="WARNING",
-                    message=f"Failed to create chart directory",
-                    extra={
+                state_transformer_logger.warning(f"Failed to create chart directory", extra={
                         "chart_path": chart_path,
                         "error": str(e),
                         "error_type": type(e).__name__,
@@ -488,7 +481,7 @@ Chart files should be at: {chart_path}"""
                 f"Review validation results and FIX them before proceeding."
             )
         
-        workflow_state_obj.last_swarm = "validation_swarm"
+        workflow_state_obj.last_agent = "validation_swarm"
             
         # Return object directly to avoid Pydantic serialization warnings
         updated_workflow_state = workflow_state_obj
@@ -511,8 +504,9 @@ Chart files should be at: {chart_path}"""
         # Build return dictionary with all validation data
         return_dict = {
             "messages": summary_messages,
-            "llm_input_messages": summary_messages,
-            "validation_results": validation_results,
+            "helm_generation_output": {
+                "validation_results": validation_results,
+            },
             "workflow_state": updated_workflow_state
         }
         
@@ -629,7 +623,6 @@ Chart files should be at: {chart_path}"""
         else:
             # Fallback if no workflow state exists
             workflow_state_obj = SupervisorWorkflowState(
-                workflow_id=original_supervisor_state.get("task_id", ""),
                 current_phase="helm_mgmt"
             )
         
@@ -657,7 +650,7 @@ Chart files should be at: {chart_path}"""
         
         # Mark helm_mgmt phase as complete (similar to validation_to_supervisor)
         workflow_state_obj.set_phase_complete("helm_mgmt")
-        workflow_state_obj.last_swarm = "helm_mgmt_swarm"
+        workflow_state_obj.last_agent = "helm_mgmt_swarm"
         workflow_state_obj.current_phase = "helm_mgmt"  # Ensure current_phase is set
         
         # Return object directly to avoid Pydantic serialization warnings
@@ -678,11 +671,11 @@ Chart files should be at: {chart_path}"""
         # IMPORTANT: Set status="completed" and active_phase to match last_swarm
         return_dict = {
             "messages": summary_messages,
-            "llm_input_messages": summary_messages,
             "workflow_state": updated_workflow_state,
-            "helm_mgmt_response": last_content,  # Store response for supervisor to extract
-            "status": "completed",  # Mark as completed (was "pending")
-            "active_phase": "helm_mgmt_swarm"  # Match last_swarm value
+            "helm_mgmt_output": {
+                "response": last_content,
+            },
+            "status": "completed",
         }
         
         return return_dict
@@ -809,7 +802,6 @@ Chart files should be at: {chart_path}"""
         else:
             # Fallback if no workflow state exists
             workflow_state_obj = SupervisorWorkflowState(
-                workflow_id=original_supervisor_state.get("task_id", ""),
                 current_phase="argocd_onboarding"
             )
         
@@ -867,7 +859,7 @@ Chart files should be at: {chart_path}"""
 
         # Mark argocd_onboarding phase as complete (HITL/input handling happens in the ArgoCD subgraph)
         workflow_state_obj.set_phase_complete("argocd_onboarding")
-        workflow_state_obj.last_swarm = "argocd_onboarding_swarm"
+        workflow_state_obj.last_agent = "argocd_onboarding_swarm"
         workflow_state_obj.current_phase = "argocd_onboarding"
         
         # Return object directly to avoid Pydantic serialization warnings
@@ -887,11 +879,12 @@ Chart files should be at: {chart_path}"""
         # Build return dictionary
         return_dict = {
             "messages": summary_messages,
-            "llm_input_messages": summary_messages,
             "workflow_state": updated_workflow_state,
-            "argocd_onboarding_response": last_content,  # Store response for supervisor to extract
+            "argocd_output": {
+                "response": last_content,
+                "state_summary": state_summary,
+            },
             "status": "completed",
-            "active_phase": "argocd_onboarding_swarm"
         }
         
         return return_dict

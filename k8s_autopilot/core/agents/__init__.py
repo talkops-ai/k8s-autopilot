@@ -1,38 +1,12 @@
 from .supervisor_agent import k8sAutopilotSupervisorAgent, create_k8sAutopilotSupervisorAgent
-from .helm_generator.planner import (
-    create_planning_swarm_deep_agent,
-    create_planning_swarm_deep_agent_factory
-)
-from .helm_generator.template import (
-    create_template_supervisor,
-    create_template_supervisor_factory
-)
-from .helm_generator.generator import (
-    create_validator_deep_agent,
-    create_validator_deep_agent_factory
-)
-from .helm_mgmt.helm_mgmt_agent import (
-    create_helm_mgmt_deep_agent,
-    create_helm_mgmt_deep_agent_factory
-)
-from .onboarding import (
-    ArgoCDOnboardingAgent,
-    create_argocd_onboarding_agent,
-    create_argocd_onboarding_agent_factory,
-)
+from .helm_operator.coordinator import HelmOperatorCoordinator
+from .k8s_operator.coordinator import K8sOperatorCoordinator
+from .app_operator.coordinator import AppOperatorCoordinator
 
 __all__ = [
     "k8sAutopilotSupervisorAgent",
     "create_k8sAutopilotSupervisorAgent",
-    "create_planning_swarm_deep_agent",
-    "create_planning_swarm_deep_agent_factory",
-    "create_template_supervisor",
-    "create_template_supervisor_factory",
-    "create_validator_deep_agent",
-    "create_validator_deep_agent_factory",
-    "create_helm_mgmt_deep_agent",
-    "create_helm_mgmt_deep_agent_factory",
-    "ArgoCDOnboardingAgent",
-    "create_argocd_onboarding_agent",
-    "create_argocd_onboarding_agent_factory",
+    "HelmOperatorCoordinator",
+    "K8sOperatorCoordinator",
+    "AppOperatorCoordinator",
 ]

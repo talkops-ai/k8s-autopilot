@@ -7,18 +7,81 @@
         "organization": "TalkOps AI",
         "url": "https://github.com/talkops-ai"
     },
-    "version": "1.0.0",
+    "version": "0.3.0",
     "documentationUrl": "https://github.com/talkops-ai/k8s-autopilot",
     "capabilities": {
-        "streaming": "True",
-        "pushNotifications": "True",
-        "stateTransitionHistory": "True",
+        "streaming": true,
+        "pushNotifications": true,
+        "stateTransitionHistory": true,
         "extensions": [
             {
                 "uri": "https://a2ui.org/a2a-extension/a2ui/v0.8",
-                "description": "Provides rich interactive UI components (cards, buttons, forms)",
+                "description": "Provides rich interactive UI components for Kubernetes orchestration workflows including module review, deployment cards, and approval gates.",
                 "params": {
-                    "acceptsInlineCustomCatalog": true
+                    "acceptsInlineCatalogs": true,
+                    "supportedCatalogIds": [
+                        "https://github.com/google/A2UI/blob/main/specification/v0_8/json/standard_catalog_definition.json"
+                    ]
+                }
+            },
+            {
+                "uri": "https://talkops.ai/a2a-extension/talkops-ui/v1",
+                "description": "TalkOps UI extension providing rich metadata for agent discovery, capabilities display, and MCP server information.",
+                "params": {
+                    "metadata": {
+                        "githubRepo": "https://github.com/talkops-ai/k8s-autopilot",
+                        "discordUrl": "https://discord.gg/RzqRy6uKAm",
+                        "placeholder": "Manage Kubernetes clusters, deploy Helm charts, and configure ArgoCD..."
+                    },
+                    "capabilityDescription": {
+                        "title": "What K8s Autopilot Does",
+                        "description": "The K8s Autopilot intelligently manages your Kubernetes clusters. It can generate Helm charts, configure ArgoCD applications, orchestrate Argo Rollouts for progressive delivery, and handle Traefik edge routing.",
+                        "features": [
+                            "🎯 Generates production-ready Helm charts from requirements",
+                            "⚙️ Intelligent cluster management, debugging, and scaling",
+                            "🔍 Progressive delivery with Argo Rollouts (Canary, Blue/Green)",
+                            "🧩 GitOps automation using ArgoCD applications and projects",
+                            "📦 Edge routing configuration with Traefik"
+                        ]
+                    },
+                    "mcpServers": [
+                        {
+                            "name": "Kubernetes MCP Server",
+                            "description": "Provides direct interaction with Kubernetes clusters, allowing the agent to read resources, check logs, and apply manifests.",
+                            "status": "active",
+                            "githubUrl": "https://github.com/talkops-ai/kubernetes-mcp-server"
+                        },
+                        {
+                            "name": "Helm MCP Server",
+                            "description": "Provides interaction with Helm for managing releases, validating charts, and retrieving chart values.",
+                            "status": "active",
+                            "githubUrl": "https://github.com/talkops-ai/helm-mcp-server"
+                        },
+                        {
+                            "name": "ArgoCD MCP Server",
+                            "description": "Provides integration with ArgoCD for creating applications, managing projects, and syncing GitOps state.",
+                            "status": "active",
+                            "githubUrl": "https://github.com/talkops-ai/argocd-mcp-server"
+                        },
+                        {
+                            "name": "Argo Rollouts MCP Server",
+                            "description": "Provides integration with Argo Rollouts for managing progressive delivery workflows, canary deployments, and analysis runs.",
+                            "status": "active",
+                            "githubUrl": "https://github.com/talkops-ai/argo-rollouts-mcp-server"
+                        },
+                        {
+                            "name": "Traefik MCP Server",
+                            "description": "Provides interaction with Traefik edge routing configurations, weighted load balancing, and middlewares.",
+                            "status": "active",
+                            "githubUrl": "https://github.com/talkops-ai/traefik-mcp-server"
+                        },
+                        {
+                            "name": "GitHub MCP Server",
+                            "description": "Provides GitHub integration for accessing repositories, committing generated Helm charts, and managing code workflows.",
+                            "status": "active",
+                            "githubUrl": "https://github.com/github/github-mcp-server"
+                        }
+                    ]
                 }
             }
         ]
@@ -41,7 +104,7 @@
     ],
     "skills": [
         {
-            "id": "helm_generator",
+            "id": "helm_operator",
             "name": "Helm Chart Generator",
             "description": "Designs and generates production-ready Helm charts from natural language requirements.",
             "tags": [
@@ -55,19 +118,35 @@
             ]
         },
         {
-            "id": "helm_manager",
-            "name": "Cluster Operations Manager",
-            "description": "Manages active Helm releases (Install, Upgrade, Rollback) on Kubernetes clusters.",
+            "id": "app_operator",
+            "name": "GitOps & Progressive Delivery",
+            "description": "Manages ArgoCD applications, orchestrates Argo Rollouts for canary deployments, and configures Traefik edge routing.",
             "tags": [
-                "operations",
-                "kubernetes",
-                "management"
+                "argocd",
+                "rollouts",
+                "traefik",
+                "gitops"
             ],
             "examples": [
-                "Install the nginx-ingress chart",
-                "Upgrade my-app to version 2.0.0",
-                "Rollback the last deployment of payment-service",
-                "List all failed releases in prod namespace"
+                "Onboard a new ArgoCD application for my python-worker repo",
+                "Promote the canary rollout to 50% traffic weight",
+                "Create a Traefik weighted service for blue-green deployment"
+            ]
+        },
+        {
+            "id": "k8s_operator",
+            "name": "Cluster Operations Manager",
+            "description": "Manages Kubernetes cluster resources, performs pod debugging, scaling, and general cluster administration.",
+            "tags": [
+                "kubernetes",
+                "operations",
+                "management",
+                "debugging"
+            ],
+            "examples": [
+                "Find out why the payment-service pod is crashing",
+                "List all failed releases in the prod namespace",
+                "Scale the frontend deployment to 5 replicas"
             ]
         }
     ]

@@ -19,12 +19,11 @@ from starlette.middleware.cors import CORSMiddleware
 from k8s_autopilot.config.config import Config
 from k8s_autopilot.core import A2AAutoPilotExecutor
 from k8s_autopilot.core.agents import (
+    k8sAutopilotSupervisorAgent,
     create_k8sAutopilotSupervisorAgent,
-    create_planning_swarm_deep_agent,
-    create_template_supervisor,
-    create_validator_deep_agent,
-    create_helm_mgmt_deep_agent,
-    create_argocd_onboarding_agent,
+    HelmOperatorCoordinator,
+    K8sOperatorCoordinator,
+    AppOperatorCoordinator,
 )
 from k8s_autopilot.utils.logger import AgentLogger, log_sync
 
@@ -32,9 +31,9 @@ from k8s_autopilot.utils.logger import AgentLogger, log_sync
 server_logger = AgentLogger("k8sAutopilotServer")
 
 @click.command()
-@click.option('--host', 'host', help='Server host')
-@click.option('--port', 'port', type=int, help='Server port')
-@click.option('--agent-card', 'agent_card', help='Path to agent card JSON file')
+@click.option('--host', 'host', default=None, help='Server host (default: from config)')
+@click.option('--port', 'port', type=int, default=None, help='Server port (default: from config)')
+@click.option('--agent-card', 'agent_card', default=None, help='Path to agent card JSON file (default: from config)')
 @click.option('--config-file', 'config_file', help='Path to configuration file')
 @log_sync
 def main(host: str, port: int, agent_card: str, config_file: str):
@@ -47,77 +46,55 @@ def main(host: str, port: int, agent_card: str, config_file: str):
         config_file: Path to configuration file
     """
     try:
-        server_logger.log_structured(
-            level="INFO",
-            message="Starting k8sAutopilot server",
-            extra={"host": host, "port": port, "agent_card": agent_card, "config_file": config_file}
-        )
-        config = Config()
+        server_logger.info("Starting k8sAutopilot server", extra={"host": host, "port": port, "agent_card": agent_card, "config_file": config_file})
         if config_file:
-            config.load_config(config_file)
-            config = Config(config)
+            config = Config.load_config(config_file)
+        else:
+            config = Config()
         
         host = host or config.a2a_server_host
         port = port or config.a2a_server_port
 
-        if not agent_card:
-            raise ValueError("Agent card is required")
-            
+        agent_card_path: str = agent_card or str(
+            config.get(
+                "A2A_AGENT_CARD",
+                "k8s_autopilot/card/k8s_autopilot.json",
+            )
+        )
+        
         # Load agent card
-        with Path(agent_card).open() as file:
+        with Path(agent_card_path).open() as file:
             data = json.load(file)
+        
+        # Inject dynamic URL from host/port resolution mirroring aws_orchestrator
+        if host and port:
+            data["url"] = f"http://{host}:{port}"
+            
         agent_card_obj: AgentCard = AgentCard(**data)
 
-        server_logger.log_structured(
-            level="INFO",
-            message="Agent card loaded successfully",
-        )
+        server_logger.info("Agent card loaded successfully",)
 
-        # Create Planning Swarm Deep Agent
-        planning_swarm_deep_agent = create_planning_swarm_deep_agent(config)
+        # Create Helm Operator Coordinator
+        helm_operator_coordinator = HelmOperatorCoordinator(config=config)
         
-        # Create Template Supervisor (for Helm chart generation)
-        template_supervisor = create_template_supervisor(
-            config=config,
-            name="template_supervisor"  # Must match the name expected in supervisor_agent.py
-        )
+        # Create K8s Operator Coordinator
+        k8s_operator_coordinator = K8sOperatorCoordinator(config=config)
 
-        # Create Validator Deep Agent
-        validator_deep_agent = create_validator_deep_agent(
-            config=config,
-            name="validator_deep_agent"  # Must match the name expected in supervisor_agent.py
-        )
-
-        # Create Helm Mgmt Deep Agent
-        # Note: This factory is async because it initializes the MCP client.
-        # We must run it synchronously here before the server loop starts.
-        helm_mgmt_deep_agent = asyncio.run(create_helm_mgmt_deep_agent(
-            config=config,
-            name="helm_mgmt_deep_agent"
-        ))
-
-        # Create ArgoCD Onboarding Agent
-        # Note: This factory is also async because it initializes its MCP client.
-        argocd_onboarding_agent = asyncio.run(create_argocd_onboarding_agent(
-            config=config,
-            name="argocd_onboarding_deep_agent"  # Must match name in supervisor_agent.py
-        ))
+        # Create App Operator Coordinator
+        app_operator_coordinator = AppOperatorCoordinator(config=config)
 
         # Create Supervisor Agent
         supervisor_agent = create_k8sAutopilotSupervisorAgent(
-            agents=[planning_swarm_deep_agent, template_supervisor, validator_deep_agent, helm_mgmt_deep_agent, argocd_onboarding_agent],
             config=config,
-            name="k8sAutopilotSupervisorAgent"
+            name="k8sAutopilotSupervisorAgent",
+            coordinators=[helm_operator_coordinator, k8s_operator_coordinator, app_operator_coordinator]
         )
 
         # Verify supervisor is ready
         if not supervisor_agent.is_ready():
             raise RuntimeError("k8sAutopilotSupervisorAgent failed to initialize properly")
 
-        server_logger.log_structured(
-            level="INFO",
-            message="Custom Supervisor Agent initialized successfully",
-            extra={
+        server_logger.info("Custom Supervisor Agent initialized successfully", extra={
                 "supervisor_name": supervisor_agent.name,
                 "available_agents": supervisor_agent.list_agents(),
                 "supervisor_ready": supervisor_agent.is_ready()
@@ -150,10 +127,7 @@ def main(host: str, port: int, agent_card: str, config_file: str):
             http_handler=request_handler,
         )
         
-        server_logger.log_structured(
-            level="INFO",
-            message=f"Starting k8sAutopilot Server on {host}:{port}",
-            extra={
+        server_logger.info(f"Starting k8sAutopilot Server on {host}:{port}", extra={
                 "host": host, 
                 "port": port, 
                 "log_level": config.log_level,
@@ -178,24 +152,15 @@ def main(host: str, port: int, agent_card: str, config_file: str):
             log_level=config.log_level.lower()
         )
     except FileNotFoundError as e:
-        server_logger.log_structured(
-            level="ERROR",
-            message=f"File not found: {e}",
-            extra={"error": str(e)}
+        server_logger.error(f"File not found: {e}", extra={"error": str(e)}
         )
         sys.exit(1)
     except json.JSONDecodeError as e:
-        server_logger.log_structured(
-            level="ERROR",
-            message=f"Invalid JSON in configuration file: {e}",
-            extra={"error": str(e)}
+        server_logger.error(f"Invalid JSON in configuration file: {e}", extra={"error": str(e)}
         )
         sys.exit(1)
     except Exception as e:
-        server_logger.log_structured(
-            level="ERROR",
-            message=f"An error occurred during server startup: {e}",
-            extra={"error": str(e), "error_type": type(e).__name__}
+        server_logger.error(f"An error occurred during server startup: {e}", extra={"error": str(e), "error_type": type(e).__name__}
         )
         sys.exit(1)
 

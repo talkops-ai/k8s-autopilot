@@ -5,7 +5,7 @@ This module provides middleware for tool-level approvals using LangChain's
 HumanInTheLoopMiddleware. This enables automatic interrupts on sensitive tool calls.
 """
 
-from typing import Dict, Any, List, Optional, Literal
+from typing import Dict, Any, List, Optional, Literal, cast
 from langchain.agents import create_agent
 from langchain_core.tools import BaseTool
 
@@ -23,11 +23,7 @@ try:
 except ImportError:
     HumanInTheLoopMiddleware = None  # type: ignore
     HITL_MIDDLEWARE_AVAILABLE = False
-    hitl_logger.log_structured(
-        level="WARNING",
-        message="HumanInTheLoopMiddleware not available. Tool-level HITL will be disabled.",
-        extra={"fallback": "custom_gates_only"}
-    )
+    hitl_logger.warning("HumanInTheLoopMiddleware not available. Tool-level HITL will be disabled.", extra={"fallback": "custom_gates_only"})
 
 
 # Default tool interrupt configurations
@@ -77,11 +73,7 @@ def create_hitl_middleware_config(
         })
     """
     if not HITL_MIDDLEWARE_AVAILABLE or HumanInTheLoopMiddleware is None:
-        hitl_logger.log_structured(
-            level="WARNING",
-            message="HumanInTheLoopMiddleware not available, returning None",
-            extra={"fallback": "custom_gates_only"}
-        )
+        hitl_logger.warning("HumanInTheLoopMiddleware not available, returning None", extra={"fallback": "custom_gates_only"})
         return None
     
     # Use provided tools or default
@@ -89,14 +81,11 @@ def create_hitl_middleware_config(
     
     try:
         middleware = HumanInTheLoopMiddleware(
-            interrupt_on=interrupt_config,
+            interrupt_on=cast(Dict[str, Any], interrupt_config),
             description_prefix=description_prefix
         )
         
-        hitl_logger.log_structured(
-            level="INFO",
-            message="Created HITL middleware configuration",
-            extra={
+        hitl_logger.info("Created HITL middleware configuration", extra={
                 "tool_count": len(interrupt_config),
                 "tools": list(interrupt_config.keys())
             }
@@ -105,10 +94,7 @@ def create_hitl_middleware_config(
         return middleware
         
     except Exception as e:
-        hitl_logger.log_structured(
-            level="ERROR",
-            message=f"Failed to create HITL middleware: {e}",
-            extra={"error": str(e), "error_type": type(e).__name__}
+        hitl_logger.error(f"Failed to create HITL middleware: {e}", extra={"error": str(e), "error_type": type(e).__name__}
         )
         return None
 
@@ -164,7 +150,7 @@ def create_supervisor_with_hitl(
         Agent instance with HITL middleware configured
         
     Example:
-        from langchain.chat_models import init_chat_model
+        from k8s_autopilot.utils.llm import create_model
         from k8s_autopilot.tools.deployment import deploy_to_cluster_tool
         
         model = init_chat_model("gpt-4o")
@@ -199,10 +185,7 @@ def create_supervisor_with_hitl(
     # Get tool names for logging
     tool_names = get_tool_names(tools)
     
-    hitl_logger.log_structured(
-        level="INFO",
-        message="Creating supervisor agent with HITL middleware",
-        extra={
+    hitl_logger.info("Creating supervisor agent with HITL middleware", extra={
             "tool_count": len(tools),
             "tool_names": tool_names,
             "hitl_enabled": middleware_config is not None,
@@ -215,27 +198,20 @@ def create_supervisor_with_hitl(
         agent = create_agent(
             model=model,
             tools=tools,
-            middleware=middleware_list if middleware_list else None,
+            middleware=middleware_list or [],
             checkpointer=checkpointer,
             **agent_kwargs
         )
         
-        hitl_logger.log_structured(
-            level="INFO",
-            message="Successfully created supervisor agent with HITL",
-            extra={
+        hitl_logger.info("Successfully created supervisor agent with HITL", extra={
                 "has_middleware": middleware_config is not None,
                 "has_checkpointer": checkpointer is not None
-            }
-        )
+            })
         
         return agent
         
     except Exception as e:
-        hitl_logger.log_structured(
-            level="ERROR",
-            message=f"Failed to create agent with HITL middleware: {e}",
-            extra={
+        hitl_logger.error(f"Failed to create agent with HITL middleware: {e}", extra={
                 "error": str(e),
                 "error_type": type(e).__name__,
                 "fallback": "creating_agent_without_middleware"
@@ -270,11 +246,7 @@ def add_hitl_to_existing_agent(
         Agent with HITL middleware added (or original agent if not possible)
     """
     if not HITL_MIDDLEWARE_AVAILABLE:
-        hitl_logger.log_structured(
-            level="WARNING",
-            message="Cannot add HITL middleware - not available",
-            extra={"returning_original": True}
-        )
+        hitl_logger.warning("Cannot add HITL middleware - not available", extra={"returning_original": True})
         return agent
     
     middleware_config = create_hitl_middleware_config(
@@ -289,11 +261,7 @@ def add_hitl_to_existing_agent(
         else:
             agent.middleware = [middleware_config]
         
-        hitl_logger.log_structured(
-            level="INFO",
-            message="Added HITL middleware to existing agent",
-            extra={"has_middleware": True}
-        )
+        hitl_logger.info("Added HITL middleware to existing agent", extra={"has_middleware": True})
     
     return agent
 

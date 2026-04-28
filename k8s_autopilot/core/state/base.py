@@ -253,156 +253,100 @@ class ErrorContext(BaseModel):
 
 
 class SupervisorWorkflowState(BaseModel):
-    """
-    Workflow state tracking for Helm chart generation supervisor.
+    """Workflow state tracking for the supervisor.
     
-    This schema provides:
-    - Type-safe workflow progress tracking aligned with K8s Autopilot phases
-    - Automatic phase transitions and completion detection
-    - Loop prevention and error detection
-    - Integration with langgraph-supervisor and HITL gates
+    Tracks which coordinators have completed. Internal workflow details
+    (phases, plans, artifacts) stay inside each coordinator's own state.
+    
+    Reference: aws-orchestrator SupervisorWorkflowState pattern.
     """
     
-    # Current workflow phase (aligned with active_phase in MainSupervisorState)
-    current_phase: Literal[
-        "requirements",
-        "planning",
-        "generation",
-        "validation",
-        "helm_mgmt",
-        "argocd_onboarding",
-        "error",
-        "complete"
-    ] = Field(default="requirements", description="Current workflow phase")
+    # Current workflow phase (set by supervisor router)
+    current_phase: Optional[str] = Field(
+        default=None,
+        description="Current workflow phase or coordinator name",
+    )
     
-    # Phase completion tracking
-    planning_complete: bool = Field(default=False, description="Planning phase complete (planning_output exists)")
-    generation_complete: bool = Field(default=False, description="Generation phase complete (generated_artifacts exists)")
-    validation_complete: bool = Field(default=False, description="Validation phase complete (validation_results populated)")
-    helm_mgmt_complete: bool = Field(default=False, description="Helm Management Agent phase complete (helm_mgmt_response populated)")
-    argocd_onboarding_complete: bool = Field(default=False, description="ArgoCD Onboarding Agent phase complete (argocd_onboarding_response populated)")
-    # HITL approval tracking (mirrors human_approval_status)
-    planning_approved: bool = Field(default=False, description="Planning approved by human")
-    generation_approved: bool = Field(default=False, description="Generation (Artifacts) approved by human")
-
+    # Agent handoff tracking
+    last_agent: Optional[str] = Field(default=None, description="Last coordinator that ran")
+    next_agent: Optional[str] = Field(default=None, description="Next coordinator to invoke")
+    
+    # Coordinator completion flags (set by coordinator.output_transform())
+    planning_complete: bool = Field(default=False)
+    generation_complete: bool = Field(default=False)
+    validation_complete: bool = Field(default=False)
+    helm_mgmt_complete: bool = Field(default=False)
+    argocd_onboarding_complete: bool = Field(default=False)
+    k8s_cluster_ops_complete: bool = Field(default=False)
+    app_operator_complete: bool = Field(default=False)
+    
+    # HITL approval tracking
+    planning_approved: bool = Field(default=False)
+    generation_approved: bool = Field(default=False)
     
     # Workflow control
     workflow_complete: bool = Field(default=False, description="Overall workflow complete")
-    loop_counter: int = Field(default=0, ge=0, le=30, description="Loop counter for infinite loop prevention")
-    last_phase_transition: Optional[datetime] = Field(default=None, description="Timestamp of last phase transition")
-    error_occurred: bool = Field(default=False, description="Whether an error occurred")
-    error_message: Optional[str] = Field(default=None, description="Error message if any")
+    loop_counter: int = Field(default=0, ge=0, le=50, description="Loop counter for infinite loop prevention")
+    error_occurred: bool = Field(default=False)
+    error_message: Optional[str] = Field(default=None)
     
-    # Agent/swarm handoff tracking
-    last_swarm: Optional[str] = Field(default=None, description="Last swarm that completed")
-    next_swarm: Optional[str] = Field(default=None, description="Next swarm to invoke")
-    handoff_reason: Optional[str] = Field(default=None, description="Reason for handoff")
+    def set_phase_complete(self, phase: str) -> None:
+        """Mark a specific phase as complete."""
+        mapping = {
+            "planning": "planning_complete",
+            "generation": "generation_complete",
+            "validation": "validation_complete",
+            "helm_mgmt": "helm_mgmt_complete",
+            "argocd_onboarding": "argocd_onboarding_complete",
+            "k8s_cluster_ops": "k8s_cluster_ops_complete",
+            "app_operator": "app_operator_complete",
+        }
+        attr = mapping.get(phase)
+        if attr:
+            setattr(self, attr, True)
+            self.last_agent = phase
+        
+        # Check if workflow is complete
+        if self._is_complete():
+            self.workflow_complete = True
+            self.current_phase = "complete"
     
-    # Workflow metadata
-    workflow_id: str = Field(default="", description="Unique workflow identifier")
-    started_at: datetime = Field(default_factory=datetime.utcnow, description="Workflow start time")
+    def set_approval(self, approval_type: str, approved: bool) -> None:
+        """Set human approval status for a phase."""
+        mapping = {
+            "planning": "planning_approved",
+            "generation": "generation_approved",
+        }
+        attr = mapping.get(approval_type)
+        if attr:
+            setattr(self, attr, approved)
     
-    @property
-    def is_complete(self) -> bool:
+    def _is_complete(self) -> bool:
         """Check if all required phases are complete."""
-        # For Helm chart generation: planning → generation → validation
         return all([
             self.planning_complete,
             self.planning_approved,
             self.generation_complete,
             self.generation_approved,
             self.validation_complete,
-            self.helm_mgmt_complete
         ])
-    
-    @property
-    def next_phase(self) -> Optional[str]:
-        """Determine the next phase based on completion status and approvals."""
-        if not self.planning_complete:
-            return "planning"
-        elif self.planning_complete and not self.planning_approved:
-            return "planning"  # Wait for approval
-        elif not self.generation_complete:
-            return "generation"
-        elif self.generation_complete and not self.generation_approved:
-            return "generation"  # Wait for artifact approval
-        elif not self.validation_complete:
-            return "validation"
-        elif not self.helm_mgmt_complete:
-            return "helm_mgmt"
-        else:
-            return "complete"
-    
-    def increment_loop_counter(self) -> None:
-        """Increment loop counter and check for limits."""
-        self.loop_counter += 1
-        if self.loop_counter > 30:
-            self.error_occurred = True
-            self.error_message = "Maximum iterations reached (30) - possible infinite loop"
-    
-    def set_phase_complete(self, phase: str) -> None:
-        """Mark a specific phase as complete and update state."""
-        if phase == "planning":
-            self.planning_complete = True
-            self.current_phase = "planning"
-        elif phase == "generation":
-            self.generation_complete = True
-            self.current_phase = "generation"
-        elif phase == "validation":
-            self.validation_complete = True
-            self.current_phase = "validation"
-        elif phase == "helm_mgmt":
-            self.helm_mgmt_complete = True
-            self.current_phase = "helm_mgmt"
-        elif phase == "argocd_onboarding":
-            self.argocd_onboarding_complete = True
-            self.current_phase = "argocd_onboarding"
-        
-        # Update transition timestamp
-        self.last_phase_transition = datetime.now(timezone.utc)
-        
-        # Check if workflow is complete
-        if self.is_complete:
-            self.workflow_complete = True
-            self.current_phase = "complete"
-    
-    def set_approval(self, approval_type: Literal["planning", "generation"], approved: bool) -> None:
-        """Set human approval status for a phase."""
-        if approval_type == "planning":
-            self.planning_approved = approved
-        elif approval_type == "generation":
-            self.generation_approved = approved
-        
-        self.last_phase_transition = datetime.now(timezone.utc)
-    
-    def set_swarm_handoff(self, from_swarm: str, to_swarm: str, reason: str) -> None:
-        """Track swarm handoff for debugging and monitoring."""
-        self.last_swarm = from_swarm
-        self.next_swarm = to_swarm
-        self.handoff_reason = reason
-        self.last_phase_transition = datetime.now(timezone.utc)
-        self.increment_loop_counter()
     
     def get_workflow_progress(self) -> Dict[str, Any]:
         """Get current workflow progress for monitoring."""
         return {
             "current_phase": self.current_phase,
+            "last_agent": self.last_agent,
+            "next_agent": self.next_agent,
             "planning_complete": self.planning_complete,
             "planning_approved": self.planning_approved,
             "generation_complete": self.generation_complete,
             "generation_approved": self.generation_approved,
             "validation_complete": self.validation_complete,
             "helm_mgmt_complete": self.helm_mgmt_complete,
-            "argocd_onboarding_complete": self.argocd_onboarding_complete,
+            "argocd_complete": self.argocd_onboarding_complete,
             "workflow_complete": self.workflow_complete,
             "loop_counter": self.loop_counter,
-            "last_swarm": self.last_swarm,
-            "next_swarm": self.next_swarm,
-            "handoff_reason": self.handoff_reason,
             "error_occurred": self.error_occurred,
-            "error_message": self.error_message,
-            "is_complete": self.is_complete,
-            "next_phase_suggestion": self.next_phase
         }
 
 
@@ -418,101 +362,69 @@ class WorkflowStatus(str, Enum):
     INTERRUPTED = "interrupted"
 
 class MainSupervisorState(AgentState):
-    """
-    State schema for the main supervisor agent.
+    """Minimal supervisor state — coordinators manage their own internal state.
     
-    Uses Annotated types with reducers for proper concurrent update handling.
-    NotRequired fields are populated during workflow execution by nodes.
+    The supervisor is now a router (create_agent + tool wrappers). Each coordinator
+    (HelmGeneration, HelmMgmt, ArgoCD) handles its own domain state internally.
+    The supervisor only sees messages, workflow progress, and coordinator output summaries.
+    
+    Reference: aws-orchestrator SupervisorState (~10 fields).
+    
+    Removed fields (now coordinator-internal):
+        llm_input_messages, remaining_steps, user_requirements, active_phase,
+        planner_output, helm_chart_artifacts, validation_results,
+        helm_mgmt_response, argocd_onboarding_response, human_approval_status,
+        tool_call_results_for_review, pending_tool_calls, tool_call_approvals,
+        error_state, file_artifacts, todos, workspace_dir
     """
-    # Required fields at invocation
+    # ── Required at invocation ─────────────────────────────────────────
     messages: Annotated[List[AnyMessage], add_messages]
-    llm_input_messages: Annotated[List[AnyMessage], add_messages]
     
-    # Deep Agent compatibility (required if supervisor uses Deep Agent features)
-    remaining_steps: Annotated[Optional[int], lambda x, y: y]  # Required by Deep Agent TodoListMiddleware
-    
-    # Core workflow data - initialized with defaults or populated by nodes
+    # ── Core identifiers ──────────────────────────────────────────────
     user_query: NotRequired[str]
-    user_requirements: NotRequired[ChartRequirements]
-    active_phase: NotRequired[Literal[
-        "requirements", 
-        "planning", 
-        "generation", 
-        "validation", 
-        "helm_mgmt",
-        "argocd_onboarding",
-        "error"
-    ]]
-    
-    # Phase outputs - populated during workflow execution
-    # Phase outputs - populated during workflow execution
-    planner_output:  NotRequired[Dict[str, Any]]
-    helm_chart_artifacts: NotRequired[Dict[str, str]]  # filepath -> content
-    validation_results: Annotated[List[ValidationResult], add]
-    helm_mgmt_response: NotRequired[str]
-    argocd_onboarding_response: NotRequired[str]
-    # HITL tracking - initialized with defaults
-    human_approval_status: NotRequired[Dict[str, ApprovalStatus]]
-    
-    # HITL: Use Case 1 - General feedback requests during execution
-    pending_feedback_requests: NotRequired[Dict[str, Any]]
-    # Structure: {
-    #   "feedback_id": {
-    #     "question": str,
-    #     "context": Dict[str, Any],
-    #     "phase": str,
-    #     "timestamp": datetime,
-    #     "status": "pending" | "answered"
-    #   }
-    # }
-    
-    # HITL: Use Case 2 - Review tool call results after execution
-    tool_call_results_for_review: NotRequired[Dict[str, Any]]
-    # Structure: {
-    #   "tool_call_id": {
-    #     "tool_name": str,
-    #     "tool_args": Dict[str, Any],
-    #     "tool_result": Any,
-    #     "phase": str,
-    #     "requires_review": bool,
-    #     "review_status": "pending" | "approved" | "rejected" | "modified"
-    #   }
-    # }
-    
-    # HITL: Use Case 4 - Critical tool call pre-approval (before execution)
-    pending_tool_calls: NotRequired[Dict[str, Any]]
-    # Structure: {
-    #   "tool_call_id": {
-    #     "tool_name": str,
-    #     "tool_args": Dict[str, Any],
-    #     "is_critical": bool,
-    #     "phase": str,
-    #     "reason": str,  # Why approval is needed
-    #     "status": "pending" | "approved" | "rejected" | "modified"
-    #   }
-    # }
-    
-    tool_call_approvals: NotRequired[Dict[str, ApprovalStatus]]
-    # Maps tool_call_id -> ApprovalStatus for critical tool calls
-    
-    # Workflow state tracking - initialized at start
-    workflow_state: NotRequired[SupervisorWorkflowState]
-
-    status: WorkflowStatus = WorkflowStatus.PENDING
-    
-    # Error tracking - populated on errors
-    error_state: NotRequired[ErrorContext]
-    
-    # File system artifacts (for Deep Agents) - populated during generation
-    file_artifacts: NotRequired[Annotated[Dict[str, str], lambda x, y: {**(x or {}), **(y or {})}]]
-
-    session_id: NotRequired[str] 
+    session_id: NotRequired[str]
     task_id: NotRequired[str]
-    # Todo tracking - populated during workflow
-    todos: Annotated[List[Dict], add]
     
-    # Workspace directory for chart generation/validation (set during security review)
-    workspace_dir: NotRequired[str]  # Default: "/tmp/helm-charts"
+    # ── Runtime context (injected into deep-agent config) ─────────────
+    context: NotRequired[Dict[str, Any]]
+    
+    # ── Workflow tracking ─────────────────────────────────────────────
+    status: NotRequired[str]  # "pending" | "working" | "completed" | "error"
+    current_phase: NotRequired[str]
+    workflow_state: NotRequired[SupervisorWorkflowState]
+    workflow_complete: NotRequired[bool]
+    
+    # ── Deep agent coordinator outputs (one per coordinator) ──────────
+    helm_operator_output: NotRequired[Dict[str, Any]]
+    app_operator_output: NotRequired[Dict[str, Any]]
+    k8s_operator_output: NotRequired[Dict[str, Any]]
+    
+    # ── HITL ──────────────────────────────────────────────────────────
+    pending_feedback_requests: NotRequired[Dict[str, Any]]
+
+
+# ============================================================================
+# Helm Planner State (K8s Operator — 2-phase pipeline)
+# Canonical definitions live in k8s_autopilot.core.state.helm_planner_state
+# Re-exported here for backward compatibility.
+# ============================================================================
+
+from k8s_autopilot.core.state.helm_planner_state import (  # noqa: F401
+    HelmPlannerWorkflowState,
+    HelmPlannerState,
+)
+
+
+class K8sOperatorContext(BaseModel):
+    """Runtime context for HelmOperatorCoordinator.
+
+    Injected via ``config["configurable"]["context"]`` during deep agent invocation.
+    Reference: aws-orchestrator TFCoordinatorContext
+    """
+    session_id: str = Field(default="", description="A2A session/context ID")
+    task_id: str = Field(default="", description="A2A task ID")
+    org_name: str = Field(default="default_org", description="Organization namespace for memory scoping")
+    workspace_dir: str = Field(default="/tmp/helm-charts", description="Physical workspace for generated charts")
 
 
 class PlanningSwarmState(AgentState):

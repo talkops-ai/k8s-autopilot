@@ -42,15 +42,11 @@ def create_resume_command(
         "comments": comments
     }
     
-    client_logger.log_structured(
-        level="INFO",
-        message="Created resume command",
-        extra={
+    client_logger.info("Created resume command", extra={
             "decision": decision,
             "has_reviewer": reviewer is not None,
             "has_comments": comments is not None
-        }
-    )
+        })
     
     return Command(resume=resume_data)
 
