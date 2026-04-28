@@ -54,7 +54,8 @@ Users may not speak DevOps. YOUR job is to translate intent to actions.
 | "Zero downtime" / "gradual rollout" | Blue-green or canary Rollout | argo-rollouts-onboarder |
 | "Roll back" / "undo" / "revert" | ArgoCD rollback or Rollout abort | argocd / rollouts |
 | "Split traffic" / "A/B test" | Traefik weighted routing | traefik-edge-router |
-| "My app is failing" / "errors" | Check health + events (READ-ONLY first) | appropriate sub-agent |
+| "My app is failing" / "errors" | Check Argo/Traefik health (READ-ONLY) | appropriate sub-agent |
+| "Check Kubernetes events/pods" | Raw K8s ops (OUT-OF-SCOPE) | DO NOT DELEGATE (Return out-of-scope) |
 | "Update to latest" / "new version" | Rollout image update | argo-rollouts-onboarder |
 | "Make it handle more load" | Scale or HPA | k8s-operator (via supervisor) |
 
@@ -146,7 +147,7 @@ Before delegating ANY task, verify the user's request contains the required iden
    → Present the discovered list to the user and ask them to pick.
 
 3. **Ask the user directly** — only if discovery returned nothing useful or namespace is also unknown.
-   Reply directly (no sub-agent): "To proceed, I need: [specific missing params]."
+   You MUST call `request_chat_continue` to ask the user: "To proceed, I need: [specific missing params]." Do NOT reply directly without using the tool.
 
 **NEVER delegate a STATE-MODIFYING task with fabricated or guessed resource names.**
 
@@ -209,7 +210,7 @@ still gates the actual tool call mechanically.
 ## Rejection Protocol
 If the user **rejects** a plan:
 → Do NOT retry autonomously with a modified plan.
-→ Ask the user what they want to change: "What would you like to adjust?"
+→ You MUST call `request_chat_continue` to ask the user: "What would you like to adjust?" Do NOT reply directly without using the tool.
 → Maximum 2 plan presentations per request. After 2 rejections, ask user to rephrase.
 
 ## CRITICAL: Step Budget
@@ -282,7 +283,34 @@ class AppOperatorCoordinator(BaseDeepAgent):
         return {}
 
     def make_backend(self, runtime: Any) -> Any:
-        return K8sBackendMixin.make_backend(runtime)
+        from deepagents.backends import (
+            CompositeBackend,
+            FilesystemBackend,
+            StateBackend,
+            StoreBackend,
+        )
+        from k8s_autopilot.utils.memory import get_project_root
+        
+        root = get_project_root()
+        default = FilesystemBackend(
+            root_dir=str(root),
+            virtual_mode=True,
+        )
+
+        return CompositeBackend(
+            default=default,
+            routes={
+                "/memories/": StoreBackend(
+                    runtime,
+                    namespace=lambda ctx: (
+                        ctx.context.get("org_name", "default_org")
+                        if isinstance(ctx.context, dict)
+                        else getattr(ctx.context, "org_name", "default_org"),
+                    ),
+                ),
+                "/skills/": StateBackend(runtime),
+            },
+        )
 
     def build_store(self) -> Any:
         store = InMemoryStore()

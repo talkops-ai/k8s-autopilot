@@ -429,126 +429,173 @@ def _build_mcp_subagent(
         from k8s_autopilot.utils.llm import create_model
         from langchain.agents import create_agent
 
-        # Lazily connect to MCP right before execution
-        async with create_mcp_client(Config(), server_filter=server_filter) as mcp_client:
-            tools = mcp_client.get_tools()
+        try:
+            # Lazily connect to MCP right before execution
+            async with create_mcp_client(Config(), server_filter=server_filter) as mcp_client:
+                tools = mcp_client.get_tools()
 
-            from k8s_autopilot.core.hitl.tools import create_hitl_tools
-            from langchain_core.tools import StructuredTool
+                from k8s_autopilot.core.hitl.tools import create_hitl_tools
+                from langchain_core.tools import StructuredTool
 
-            # Generic MCP resource reader — parameterized by server_name
-            _res_server = mcp_resource_server_name
+                # Generic MCP resource reader — parameterized by server_name
+                _res_server = mcp_resource_server_name
 
-            async def read_mcp_resource(uri: str) -> str:
-                """Read content of a specific MCP resource by URI.
+                async def read_mcp_resource(uri: str) -> str:
+                    """Read content of a specific MCP resource by URI.
 
-                STRICT URI FORMAT RULES:
-                You MUST use exactly one of these formats. DO NOT append `/values`, `?namespace=`, or guess URIs.
-                - `helm://releases`
-                - `helm://releases/[release_name]` (WARNING: namespace filtering is NOT supported. NEVER put namespace in URI)
-                - `helm://charts`
-                - `helm://charts/[repo]/[name]`
-                - `helm://charts/[repo]/[name]/readme`
-                - `kubernetes://cluster-info`
-                - `kubernetes://namespaces`
-                - `helm://best_practices`
-                """
-                try:
-                    res = await mcp_client.read_resource(uri, server_name=_res_server)
-                    if hasattr(res, 'contents') and res.contents:
-                        for item in res.contents:
-                            if hasattr(item, 'text'):
-                                return item.text
-                    return str(res)
-                except Exception as e:
-                    return f"Error reading resource {uri}: {str(e)}"
+                    STRICT URI FORMAT RULES:
+                    You MUST use exactly one of these formats. DO NOT append `/values`, `?namespace=`, or guess URIs.
+                    - `helm://releases`
+                    - `helm://releases/[release_name]` (WARNING: namespace filtering is NOT supported. NEVER put namespace in URI)
+                    - `helm://charts`
+                    - `helm://charts/[repo]/[name]`
+                    - `helm://charts/[repo]/[name]/readme`
+                    - `kubernetes://cluster-info`
+                    - `kubernetes://namespaces`
+                    - `helm://best_practices`
+                    """
+                    try:
+                        res = await mcp_client.read_resource(uri, server_name=_res_server)
+                        if hasattr(res, 'contents') and res.contents:
+                            for item in res.contents:
+                                if hasattr(item, 'text'):
+                                    return item.text
+                        return str(res)
+                    except Exception as e:
+                        return f"Error reading resource {uri}: {str(e)}"
 
-            tools.extend(create_hitl_tools())
-            tools.append(
-                StructuredTool.from_function(
-                    func=None,
-                    coroutine=read_mcp_resource,
-                    name="read_mcp_resource",
-                    description=(
-                        "Read content of a specific MCP resource by URI "
-                        f"(server: {_res_server}). Use this to read "
-                        "helm releases, chart metadata, and cluster state natively."
-                    ),
-                )
-            )
-
-            # Build middleware list
-            middleware = []
-            if include_filesystem:
-                from deepagents.middleware.filesystem import FilesystemMiddleware
-                from deepagents.backends import FilesystemBackend
-                from k8s_autopilot.utils.memory import get_project_root
-
-                root = str(get_project_root())
-                middleware.append(
-                    FilesystemMiddleware(
-                        backend=FilesystemBackend(
-                            root_dir=root,
-                            virtual_mode=True,
+                tools.extend(create_hitl_tools())
+                tools.append(
+                    StructuredTool.from_function(
+                        func=None,
+                        coroutine=read_mcp_resource,
+                        name="read_mcp_resource",
+                        description=(
+                            "Read content of a specific MCP resource by URI "
+                            f"(server: {_res_server}). Use this to read "
+                            "helm releases, chart metadata, and cluster state natively."
                         ),
-                        custom_tool_descriptions={
-                            "read_file": (
-                                "Read a file from the workspace filesystem. "
-                                "Use this to read the EXACT content of generated "
-                                "Helm chart files before committing them to GitHub. "
-                                "ALWAYS use this tool — never guess file contents."
-                            ),
-                            "ls": (
-                                "List files in a workspace directory. "
-                                "Use this to discover all generated Helm chart files "
-                                "under /workspace/helm-charts/{chart}/."
-                            ),
-                        },
                     )
                 )
-                _subagent_logger.info(
-                    f"{name}: attached FilesystemMiddleware "
-                    f"with FilesystemBackend(root_dir={root!r})",
-                )
 
-            if hitl_builder is not None:
-                from langchain.agents.middleware import ToolRetryMiddleware
+                # Build middleware list
+                middleware = []
+                if include_filesystem:
+                    from deepagents.middleware.filesystem import FilesystemMiddleware
+                    from deepagents.backends import FilesystemBackend
+                    from k8s_autopilot.utils.memory import get_project_root
 
-                class CustomToolRetryMiddleware(ToolRetryMiddleware):
-                    def _should_retry_tool(self, tool_name: str) -> bool:
-                        # Never wrap or intercept HITL tools so that their GraphInterrupt bubbles up naturally.
-                        if tool_name == "request_human_input":
-                            return False
-                        return super()._should_retry_tool(tool_name)
-
-                middleware.append(hitl_builder())
-                middleware.append(
-                    CustomToolRetryMiddleware(
-                        max_retries=2,
-                        backoff_factor=1.5,
-                        initial_delay=0.5,
-                        max_delay=10.0,
-                        on_failure="continue",
+                    root = str(get_project_root())
+                    middleware.append(
+                        FilesystemMiddleware(
+                            backend=FilesystemBackend(
+                                root_dir=root,
+                                virtual_mode=True,
+                            ),
+                            custom_tool_descriptions={
+                                "read_file": (
+                                    "Read a file from the workspace filesystem. "
+                                    "Use this to read the EXACT content of generated "
+                                    "Helm chart files before committing them to GitHub. "
+                                    "ALWAYS use this tool — never guess file contents."
+                                ),
+                                "ls": (
+                                    "List files in a workspace directory. "
+                                    "Use this to discover all generated Helm chart files "
+                                    "under /workspace/helm-charts/{chart}/."
+                                ),
+                            },
+                        )
                     )
-                )
-                _subagent_logger.info(
-                    f"{name}: attached HumanInTheLoopMiddleware + ToolRetryMiddleware"
+                    _subagent_logger.info(
+                        f"{name}: attached FilesystemMiddleware "
+                        f"with FilesystemBackend(root_dir={root!r})",
+                    )
+
+                if hitl_builder is not None:
+                    from langchain.agents.middleware import ToolRetryMiddleware
+
+                    class CustomToolRetryMiddleware(ToolRetryMiddleware):
+                        def _should_retry_tool(self, tool_name: str) -> bool:
+                            # Never wrap or intercept HITL tools so that their GraphInterrupt bubbles up naturally.
+                            if tool_name == "request_human_input":
+                                return False
+                            return super()._should_retry_tool(tool_name)
+
+                    middleware.append(hitl_builder())
+                    middleware.append(
+                        CustomToolRetryMiddleware(
+                            max_retries=2,
+                            backoff_factor=1.5,
+                            initial_delay=0.5,
+                            max_delay=10.0,
+                            on_failure="continue",
+                        )
+                    )
+                    _subagent_logger.info(
+                        f"{name}: attached HumanInTheLoopMiddleware + ToolRetryMiddleware"
+                    )
+
+                # Lazily instantiate model and graph
+                cfg = Config()
+                model = create_model(cfg.get_llm_deepagent_config())
+                agent_graph = create_agent(
+                    model=model,
+                    tools=tools,
+                    middleware=middleware,
+                    system_prompt=system_prompt,
+                    name=name,
                 )
 
-            # Lazily instantiate model and graph
-            cfg = Config()
-            model = create_model(cfg.get_llm_deepagent_config())
-            agent_graph = create_agent(
-                model=model,
-                tools=tools,
-                middleware=middleware,
-                system_prompt=system_prompt,
-                name=name,
+                # Execute the LangGraph subagent synchronously with the open connection
+                result = await agent_graph.ainvoke(cast(Any, state), config)
+                return dict(result)
+
+        except Exception as exc:
+            # ── Let HITL interrupts propagate normally ────────────────
+            # GraphInterrupt is NOT an error — it's the standard
+            # control flow for interrupt()/HITL gates.  Re-raise so
+            # the coordinator and supervisor can pause and wait for
+            # user input.
+            from langgraph.errors import GraphInterrupt
+            if isinstance(exc, GraphInterrupt):
+                raise
+
+            # ── Surface MCP connection failures gracefully ────────────
+            # Instead of letting TaskGroup / auth errors crash the
+            # coordinator, return a meaningful error message as the
+            # subagent's output so the coordinator LLM can report it.
+            from langchain_core.messages import AIMessage
+
+            err_str = str(exc)
+            _subagent_logger.error(
+                f"{name}: MCP subagent execution failed",
+                extra={"error": err_str, "servers": server_filter},
             )
 
-            # Execute the LangGraph subagent synchronously with the open connection
-            result = await agent_graph.ainvoke(cast(Any, state), config)
-            return dict(result)
+            # Build a clear error message for the coordinator
+            if any(kw in err_str.lower() for kw in (
+                "authentication failed", "401", "403",
+                "unauthorized", "forbidden", "expired",
+            )):
+                error_msg = (
+                    f"FAILED: {name} could not connect to the MCP server "
+                    f"({', '.join(server_filter)}). The authentication token "
+                    f"appears to be expired or invalid. Please generate a new "
+                    f"GitHub Personal Access Token and update the "
+                    f"GITHUB_PERSONAL_ACCESS_TOKEN environment variable."
+                )
+            else:
+                error_msg = (
+                    f"FAILED: {name} encountered an error: {err_str}. "
+                    f"The MCP server(s) {server_filter} may be unreachable."
+                )
+
+            # Return state with error message so the coordinator
+            # receives it via the subagent's output messages.
+            messages = list(state.get("messages", []))
+            messages.append(AIMessage(content=error_msg))
+            return {**state, "messages": messages}
 
     return CompiledSubAgent(
         name=name,

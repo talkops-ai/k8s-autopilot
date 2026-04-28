@@ -6,35 +6,35 @@ services:
       - "10102:10102"
     environment:
       # Required: OpenAI API Key (loaded from .env file in the same directory)
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI}
 
-      # Helm MCP Server Configuration
-      # Connects to the 'helm-mcp-server' service defined below
-      - HELM_MCP_SERVER_HOST=helm-mcp-server
-      - HELM_MCP_SERVER_PORT=9000
-      - HELM_MCP_SERVER_TRANSPORT=sse
-      - HELM_MCP_SERVER_DISABLED=false
-
-      # ArgoCD MCP Server Configuration
-      # Connects to the 'argocd-mcp-server' service defined below
-      - ARGOCD_MCP_SERVER_HOST=argocd-mcp-server
-      - ARGOCD_MCP_SERVER_PORT=8765
-      - ARGOCD_MCP_SERVER_TRANSPORT=sse
-      - ARGOCD_MCP_SERVER_DISABLED=false
+      # Github MCP Server Configuration
+      # Connects to the 'github-mcp-server' service defined below
+      - GITHUB_MCP_URL=${GITHUB_MCP_URL}
+      - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}
+      # Physical path for charts  virtual agent path is workspace/helm-charts under AGENT_PROJECT_ROOT
+      - HELM_WORKSPACE=${HELM_WORKSPACE}
+      # MCP Server Configuration
+      - >-
+        MCP_SERVERS=[ {"name": "github_mcp", "url": "https://api.githubcopilot.com/mcp/", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": "GITHUB_PERSONAL_ACCESS_TOKEN"}, {"name": "helm_mcp_server", "url": "http://helm-mcp-server:9000/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "argocd_mcp_server", "url": "http://argocd-mcp-server:9001/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "traefik_mcp_server", "url": "http://traefik-mcp-server:9002/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "argo_rollout_mcp_server", "url": "http://argo-rollout-mcp-server:9003/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "kubernetes_mcp_server", "command": "npx", "transport": "stdio", "args": ["-y", "kubernetes-mcp-server@latest"]} ]
 
       # LLM Configuration
-      - LLM_PROVIDER=openai
-      - LLM_MODEL=gpt-4o-mini
-      - LLM_HIGHER_PROVIDER=openai
-      - LLM_HIGHER_MODEL=gpt-5-mini
-      - LLM_DEEPAGENT_PROVIDER=openai
-      - LLM_DEEPAGENT_MODEL=o4-mini
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_HIGHER_PROVIDER=${LLM_HIGHER_PROVIDER}
+      - LLM_HIGHER_MODEL=${LLM_HIGHER_MODEL}
+      - LLM_DEEPAGENT_PROVIDER=${LLM_DEEPAGENT_PROVIDER}
+      - LLM_DEEPAGENT_MODEL=${LLM_DEEPAGENT_MODEL}
 
       # Optional: Logging level
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=${LOG_LEVEL}
+      - KUBECONFIG=/app/.kube/config
     volumes:
       # Persist generated Helm charts to a local 'helm_output' directory
-      - ./helm_output:/tmp/helm-charts
+      - ./workspace/helm-charts:/app/workspace/helm-charts
+      # Mount your local kubeconfig so the server can access your cluster
+      - ${HOME}/.kube/config:/app/.kube/config:ro
     depends_on:
       - helm-mcp-server
       - argocd-mcp-server
@@ -48,6 +48,7 @@ services:
     environment:
       - MCP_PORT=9000
       - MCP_ALLOW_WRITE=true
+      - MCP_PATH=${MCP_PATH}
       - MCP_LOG_LEVEL=INFO
       # Explicitly set KUBECONFIG location to match the volume mount
       - KUBECONFIG=/app/.kube/config
@@ -73,19 +74,56 @@ services:
       - ARGOCD_INSECURE=${ARGOCD_INSECURE:-true}
 
       # SSH Key for Git Repository Access (optional)
-      - SSH_PRIVATE_KEY_PATH=/app/.ssh/id_rsa
+      - GIT_PASSWORD=${GITHUB_PERSONAL_ACCESS_TOKEN}
 
       # MCP Server Configuration
-      - MCP_PORT=8765
+      - MCP_PORT=9001
       - MCP_ALLOW_WRITE=true
       - MCP_LOG_LEVEL=INFO
-    volumes:
-      # Mount SSH key for Git repository access (optional, for SSH-based repos)
-      # NOTE: Ensure this path points to your SSH private key file
-      - ${HOME}/.ssh/id_ed25519:/app/.ssh/id_rsa:ro
+      - MCP_PATH=${MCP_PATH}
     ports:
       # Expose port 8765 for local debugging/direct access if needed
-      - "8765:8765"
+      - "9001:9001"
+    restart: unless-stopped
+    networks:
+      - k8s-autopilot-net
+
+  traefik-mcp-server:
+    image: talkopsai/traefik-mcp-server:latest
+    container_name: traefik-mcp-server
+    environment:
+      # MCP Server Configuration
+      - MCP_PORT=9002
+      - MCP_ALLOW_WRITE=true
+      - MCP_LOG_LEVEL=INFO
+      - KUBECONFIG=/app/.kube/config
+    volumes:
+      # Mount your local kubeconfig so the server can access your cluster
+      # NOTE: Ensure this path points to your valid kubeconfig file
+      - ${HOME}/.kube/config:/app/.kube/config:ro
+    ports:
+      # Expose port 8765 for local debugging/direct access if needed
+      - "9002:9002"
+    restart: unless-stopped
+    networks:
+      - k8s-autopilot-net
+
+  argo-rollout-mcp-server:
+    image: argo-rollout-mcp-server:latest
+    container_name: argo-rollout-mcp-server
+    environment:
+      # MCP Server Configuration
+      - MCP_PORT=9003
+      - MCP_ALLOW_WRITE=true
+      - MCP_LOG_LEVEL=INFO
+      - KUBECONFIG=/app/.kube/config
+    volumes:
+      # Mount your local kubeconfig so the server can access your cluster
+      # NOTE: Ensure this path points to your valid kubeconfig file
+      - ${HOME}/.kube/config:/app/.kube/config:ro
+    ports:
+      # Expose port 8765 for local debugging/direct access if needed
+      - "9003:9003"
     restart: unless-stopped
     networks:
       - k8s-autopilot-net
@@ -95,6 +133,7 @@ services:
     container_name: talkops-ui
     environment:
       - K8S_AGENT_URL=http://localhost:10102
+      - TALKOPS_ENABLE_LOGGING=false
     ports:
       - "8080:80"
     depends_on:
