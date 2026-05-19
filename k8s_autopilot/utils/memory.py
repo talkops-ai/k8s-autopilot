@@ -3,6 +3,7 @@ K8s Autopilot — Shared Backend factory and file seeding for deep agents.
 
 Routing:
     /memories/  → StoreBackend  (cross-thread persistence via LangGraph Store)
+    /shared/    → StoreBackend  (cross-domain scratchpad — shared across coordinators)
     /skills/    → StateBackend  (ephemeral — planner-generated skill files)
     /workspace/ → StateBackend  (ephemeral — generated Helm chart files)
     default     → LocalShellBackend (real filesystem + shell for helm/kubectl CLI)
@@ -11,6 +12,9 @@ The ``/workspace/`` route is intentionally virtual (StateBackend) so that
 ``write_file`` calls always succeed without needing real directory creation.
 Before execution against the disk, the coordinator must call ``sync_workspace_to_disk()``
 to materialise the virtual files onto the real filesystem.
+
+The ``/shared/`` route uses a global ``InMemoryStore`` instance so that
+all coordinators can read and write cross-domain findings.
 """
 
 import os
@@ -99,11 +103,12 @@ class K8sBackendMixin:
     all K8s Autopilot deep agents.
 
     Routing:
-        ``/memories/`` → ``StoreBackend`` (cross-thread persistence)
-        ``/skills/``   → ``StateBackend`` (ephemeral — skills)
+        ``/memories/``  → ``StoreBackend`` (cross-thread persistence)
+        ``/shared/``    → ``StoreBackend`` (cross-domain scratchpad)
+        ``/skills/``    → ``StateBackend`` (ephemeral — skills)
         ``/workspace/`` → ``StateBackend`` (ephemeral — generated chart files)
-        default        → ``LocalShellBackend`` (virtual FS under project root
-                         + ``execute`` for helm/kubectl CLI commands)
+        default         → ``LocalShellBackend`` (virtual FS under project root
+                          + ``execute`` for helm/kubectl CLI commands)
     """
 
     @staticmethod
@@ -140,6 +145,10 @@ class K8sBackendMixin:
                         if isinstance(ctx.context, dict)
                         else getattr(ctx.context, "org_name", "default_org"),
                     ),
+                ),
+                "/shared/": StoreBackend(
+                    runtime,
+                    namespace=lambda _ctx: ("shared",),
                 ),
                 "/skills/": StateBackend(runtime),
             },

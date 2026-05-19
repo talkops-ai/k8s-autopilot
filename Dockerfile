@@ -52,6 +52,17 @@ COPY . /app
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --python 3.12 --frozen --no-dev --no-editable
 
+# Install TalkOps MCP server binaries into the venv.
+# These are spawned as stdio subprocesses by the agent at runtime.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install -U \
+      talkops-prometheus-mcp-server \
+      talkops-alertmanager-mcp-server \
+      talkops-helm-mcp-server \
+      talkops-argocd-mcp-server \
+      talkops-argo-rollout-mcp-server \
+      talkops-traefik-mcp-server
+
 # Make the directory just in case it doesn't exist
 RUN mkdir -p /root/.local
 

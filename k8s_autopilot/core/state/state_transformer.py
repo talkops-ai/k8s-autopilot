@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Any, Optional, Literal, List
 from langchain_core.messages import HumanMessage, ToolMessage
 from k8s_autopilot.core.state.base import (
     MainSupervisorState,
@@ -10,6 +10,19 @@ from k8s_autopilot.core.state.base import (
     HelmAgentState
 )
 from k8s_autopilot.utils.logger import AgentLogger
+
+from k8s_autopilot.utils.logger import AgentLogger
+import json
+
+def extract_planning_summary(plan_dict: Dict) -> str:
+    """Extract a simple summary from a chart plan dictionary."""
+    if not plan_dict:
+        return "No plan available."
+    try:
+        summary = plan_dict.get("summary") or plan_dict.get("description") or "Plan generated."
+        return str(summary)
+    except Exception:
+        return "Plan details stored in state."
 
 # Create logger for StateTransformer
 state_transformer_logger = AgentLogger("StateTransformer")
@@ -41,14 +54,14 @@ class StateTransformer:
         - messages → messages (conversation history)
         - Creates empty handoff_metadata dict
         """
-        messages = [HumanMessage(content=supervisor_state["user_query"])]
+        messages = [HumanMessage(content=supervisor_state.get("user_query", ""))]
         # Get status as string (supervisor now uses plain strings)
         status_value = supervisor_state.get("status", "pending")
         if isinstance(status_value, WorkflowStatus):
             status_value = status_value.value
         
         # Preserve existing plan from coordinator output if available
-        existing_output = supervisor_state.get("helm_generation_output") or {}
+        existing_output = supervisor_state.get("helm_operator_output") or {}
         existing_plan = existing_output.get("planner_output") if isinstance(existing_output, dict) else None
 
         return {
@@ -56,7 +69,7 @@ class StateTransformer:
             "remaining_steps": None,  # Required by Deep Agent TodoListMiddleware
             "active_agent": "requirement_analyzer",  # Start with supervisor
             "chart_plan": existing_plan,
-            "status": str(status_value),
+            "status": status_value,
             "todos": [],
             "workspace_files": {},
             "handoff_metadata": {},
@@ -107,14 +120,14 @@ class StateTransformer:
         
         # Create summary of the plan for the LLM context
         try:
-             # Convert to dict for summary extraction
             if isinstance(planning_output, dict):
                 plan_dict = planning_output
-            else:
+            elif planning_output is not None:
                 # Handle Pydantic model (ChartPlan)
                 plan_dict = planning_output.model_dump() if hasattr(planning_output, 'model_dump') else dict(planning_output)
+            else:
+                plan_dict = {}
             
-            from k8s_autopilot.core.hitl.utils import extract_planning_summary
             plan_summary_text = extract_planning_summary(plan_dict)
         except Exception:
             plan_summary_text = "Chart plan details stored in state."
@@ -132,7 +145,7 @@ class StateTransformer:
 
         return {
             "messages": summary_messages,
-            "helm_generation_output": {"planner_output": planning_output},
+            "helm_operator_output": {"planner_output": planning_output},
             "workflow_state": updated_workflow_state
         }
     
@@ -179,7 +192,7 @@ class StateTransformer:
         return {
             # Core fields
             "messages": messages,
-            "planner_output": (supervisor_state.get("helm_generation_output") or {}).get("planner_output"),
+            "planner_output": (supervisor_state.get("helm_operator_output") or {}).get("planner_output"),
             "workflow_state": workflow_state_obj, # Pass workflow state to generation swarm
             
             # Generated artifacts (will be populated by tools)
@@ -241,7 +254,7 @@ class StateTransformer:
 
         return {
             "messages": summary_messages,
-            "helm_generation_output": {
+            "helm_operator_output": {
                 "helm_chart_artifacts": generation_state.get("final_helm_chart"),
             },
             "workflow_state": updated_workflow_state
@@ -263,7 +276,7 @@ class StateTransformer:
         
         Also pre-writes chart files to filesystem to avoid context overload.
         """
-        gen_output = supervisor_state.get("helm_generation_output") or {}
+        gen_output = supervisor_state.get("helm_operator_output") or {}
         generated_chart = gen_output.get("helm_chart_artifacts", {}) if isinstance(gen_output, dict) else {}
         
         # Extract chart name from Chart.yaml if available
@@ -406,17 +419,13 @@ Chart files should be at: {chart_path}"""
             
             # Note: We do NOT set phase complete here blindly anymore.
             # It will be set at the end based on validation results.
-            
-            # Return object directly to avoid Pydantic serialization warnings
-            updated_workflow_state = workflow_state_obj
         else:
             # Fallback if no workflow state exists
-            updated_workflow_state = {
-                # Do not assume complete by default
-                "validation_complete": False,
-                "last_swarm": "validation_swarm",
-                "current_phase": "validation"
-            }
+            workflow_state_obj = SupervisorWorkflowState(
+                validation_complete=False,
+                last_agent="validation_swarm",
+                current_phase="validation"
+            )
 
         # Determine validation status summary
         validation_results = validation_state.get("validation_results", [])
@@ -502,9 +511,9 @@ Chart files should be at: {chart_path}"""
         ]
 
         # Build return dictionary with all validation data
-        return_dict = {
+        return_dict: Dict[str, Any] = {
             "messages": summary_messages,
-            "helm_generation_output": {
+            "helm_operator_output": {
                 "validation_results": validation_results,
             },
             "workflow_state": updated_workflow_state
@@ -669,10 +678,10 @@ Chart files should be at: {chart_path}"""
         
         # Build return dictionary (similar to validation_to_supervisor)
         # IMPORTANT: Set status="completed" and active_phase to match last_swarm
-        return_dict = {
+        return_dict: Dict[str, Any] = {
             "messages": summary_messages,
             "workflow_state": updated_workflow_state,
-            "helm_mgmt_output": {
+            "helm_operator_output": {
                 "response": last_content,
             },
             "status": "completed",
@@ -877,10 +886,10 @@ Chart files should be at: {chart_path}"""
         ]
         
         # Build return dictionary
-        return_dict = {
+        return_dict: Dict[str, Any] = {
             "messages": summary_messages,
             "workflow_state": updated_workflow_state,
-            "argocd_output": {
+            "app_operator_output": {
                 "response": last_content,
                 "state_summary": state_summary,
             },

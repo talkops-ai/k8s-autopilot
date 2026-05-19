@@ -5,7 +5,7 @@ services:
     ports:
       - "10102:10102"
     environment:
-      # Required: OpenAI API Key (loaded from .env file in the same directory)
+      # Required: API Keys (loaded from .env file in the same directory)
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI}
 
@@ -15,9 +15,14 @@ services:
       - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}
       # Physical path for charts  virtual agent path is workspace/helm-charts under AGENT_PROJECT_ROOT
       - HELM_WORKSPACE=${HELM_WORKSPACE}
+
       # MCP Server Configuration
+      # Default: stdio transport for TalkOps MCP servers (binaries in the venv).
+      # Override MCP_SERVERS with an HTTP JSON array to use HTTP transport instead.
+      # Example HTTP override:
+      #   MCP_SERVERS=[{"name":"helm_mcp_server","url":"http://helm-svc:9000/mcp","transport":"http",...}]
       - >-
-        MCP_SERVERS=[ {"name": "github_mcp", "url": "https://api.githubcopilot.com/mcp/", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": "GITHUB_PERSONAL_ACCESS_TOKEN"}, {"name": "helm_mcp_server", "url": "http://helm-mcp-server:9000/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "argocd_mcp_server", "url": "http://argocd-mcp-server:9001/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "traefik_mcp_server", "url": "http://traefik-mcp-server:9002/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "argo_rollout_mcp_server", "url": "http://argo-rollout-mcp-server:9003/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "kubernetes_mcp_server", "command": "npx", "transport": "stdio", "args": ["-y", "kubernetes-mcp-server@latest"]} ]
+        MCP_SERVERS=[ {"name": "github_mcp", "url": "https://api.githubcopilot.com/mcp/", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": "GITHUB_PERSONAL_ACCESS_TOKEN"}, {"name": "helm_mcp_server", "command": "helm-mcp-server", "transport": "stdio", "args": [], "env": {"MCP_ALLOW_WRITE": "true"}}, {"name": "argocd_mcp_server", "command": "argocd-mcp-server", "transport": "stdio", "args": [], "env": {"MCP_ALLOW_WRITE": "true"}}, {"name": "traefik_mcp_server", "command": "traefik-mcp-server", "transport": "stdio", "args": [], "env": {}}, {"name": "argo_rollout_mcp_server", "command": "argo-rollout-mcp-server", "transport": "stdio", "args": [], "env": {}}, {"name": "prometheus-mcp-server", "command": "prometheus-mcp-server", "transport": "stdio", "args": [], "env": {}}, {"name": "alertmanager-mcp-server", "command": "alertmanager-mcp-server", "transport": "stdio", "args": [], "env": {}}, {"name": "kubernetes_mcp_server", "command": "npx", "transport": "stdio", "args": ["-y", "kubernetes-mcp-server@latest"]} ]
 
       # LLM Configuration
       - LLM_PROVIDER=${LLM_PROVIDER}
@@ -30,100 +35,31 @@ services:
       # Optional: Logging level
       - LOG_LEVEL=${LOG_LEVEL}
       - KUBECONFIG=/app/.kube/config
+
+      # Observability: Prometheus MCP server env vars
+      # Inherited by the prometheus-mcp-server stdio subprocess
+      - PROMETHEUS_BASE_URL=${PROMETHEUS_BASE_URL:-http://prometheus-operated.monitoring.svc:9090}
+      - PROMETHEUS_VERIFY_SSL=${PROMETHEUS_VERIFY_SSL:-false}
+      - PROMETHEUS_BACKEND_ID=${PROMETHEUS_BACKEND_ID:-default}
+      - PROMETHEUS_TYPE=${PROMETHEUS_TYPE:-prometheus}
+
+      # Observability: Alertmanager MCP server env vars
+      # Inherited by the alertmanager-mcp-server stdio subprocess
+      - ALERTMANAGER_BASE_URL=${ALERTMANAGER_BASE_URL:-http://alertmanager-operated.monitoring.svc:9093}
+      - ALERTMANAGER_VERIFY_SSL=${ALERTMANAGER_VERIFY_SSL:-false}
+      - ALERTMANAGER_BACKEND_ID=${ALERTMANAGER_BACKEND_ID:-default}
+      - AM_MAX_SILENCE_MINUTES=${AM_MAX_SILENCE_MINUTES:-1440}
+      - AM_SILENCE_WARNING_THRESHOLD=${AM_SILENCE_WARNING_THRESHOLD:-50}
+
+      # ArgoCD: env vars inherited by the argocd-mcp-server stdio subprocess
+      - ARGOCD_SERVER_URL=${ARGOCD_SERVER_URL:-https://argocd-server.argocd.svc:443}
+      - ARGOCD_AUTH_TOKEN=${ARGOCD_AUTH_TOKEN}
+      - ARGOCD_INSECURE=${ARGOCD_INSECURE:-true}
     volumes:
       # Persist generated Helm charts to a local 'helm_output' directory
       - ./workspace/helm-charts:/app/workspace/helm-charts
       # Mount your local kubeconfig so the server can access your cluster
       - ${HOME}/.kube/config:/app/.kube/config:ro
-    depends_on:
-      - helm-mcp-server
-      - argocd-mcp-server
-    restart: unless-stopped
-    networks:
-      - k8s-autopilot-net
-
-  helm-mcp-server:
-    image: talkopsai/helm-mcp-server:latest
-    container_name: helm-mcp-server
-    environment:
-      - MCP_PORT=9000
-      - MCP_ALLOW_WRITE=true
-      - MCP_PATH=${MCP_PATH}
-      - MCP_LOG_LEVEL=INFO
-      # Explicitly set KUBECONFIG location to match the volume mount
-      - KUBECONFIG=/app/.kube/config
-    volumes:
-      # Mount your local kubeconfig so the server can access your cluster
-      # NOTE: Ensure this path points to your valid kubeconfig file
-      - ${HOME}/.kube/config:/app/.kube/config:ro
-    ports:
-      # Expose port 9000 for local debugging/direct access if needed
-      - "9000:9000"
-    restart: unless-stopped
-    networks:
-      - k8s-autopilot-net
-
-  argocd-mcp-server:
-    image: talkopsai/argocd-mcp-server:latest
-    container_name: argocd-mcp-server
-    environment:
-      # ArgoCD Server Configuration
-      # NOTE: Use host.docker.internal to access ArgoCD server running on the host
-      - ARGOCD_SERVER_URL=${ARGOCD_SERVER_URL:-https://host.docker.internal:9090}
-      - ARGOCD_AUTH_TOKEN=${ARGOCD_AUTH_TOKEN}
-      - ARGOCD_INSECURE=${ARGOCD_INSECURE:-true}
-
-      # SSH Key for Git Repository Access (optional)
-      - GIT_PASSWORD=${GITHUB_PERSONAL_ACCESS_TOKEN}
-
-      # MCP Server Configuration
-      - MCP_PORT=9001
-      - MCP_ALLOW_WRITE=true
-      - MCP_LOG_LEVEL=INFO
-      - MCP_PATH=${MCP_PATH}
-    ports:
-      # Expose port 8765 for local debugging/direct access if needed
-      - "9001:9001"
-    restart: unless-stopped
-    networks:
-      - k8s-autopilot-net
-
-  traefik-mcp-server:
-    image: talkopsai/traefik-mcp-server:latest
-    container_name: traefik-mcp-server
-    environment:
-      # MCP Server Configuration
-      - MCP_PORT=9002
-      - MCP_ALLOW_WRITE=true
-      - MCP_LOG_LEVEL=INFO
-      - KUBECONFIG=/app/.kube/config
-    volumes:
-      # Mount your local kubeconfig so the server can access your cluster
-      # NOTE: Ensure this path points to your valid kubeconfig file
-      - ${HOME}/.kube/config:/app/.kube/config:ro
-    ports:
-      # Expose port 8765 for local debugging/direct access if needed
-      - "9002:9002"
-    restart: unless-stopped
-    networks:
-      - k8s-autopilot-net
-
-  argo-rollout-mcp-server:
-    image: talkopsai/argo-rollout-mcp-server:latest
-    container_name: argo-rollout-mcp-server
-    environment:
-      # MCP Server Configuration
-      - MCP_PORT=9003
-      - MCP_ALLOW_WRITE=true
-      - MCP_LOG_LEVEL=INFO
-      - KUBECONFIG=/app/.kube/config
-    volumes:
-      # Mount your local kubeconfig so the server can access your cluster
-      # NOTE: Ensure this path points to your valid kubeconfig file
-      - ${HOME}/.kube/config:/app/.kube/config:ro
-    ports:
-      # Expose port 8765 for local debugging/direct access if needed
-      - "9003:9003"
     restart: unless-stopped
     networks:
       - k8s-autopilot-net

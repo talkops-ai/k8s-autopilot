@@ -26,8 +26,10 @@ from k8s_autopilot.utils.user_input_tool import (
 from k8s_autopilot.utils.operations_context import create_log_k8s_operation_tool
 from k8s_autopilot.core.agents.k8s_operator.subagents import get_k8s_subagent_specs
 from k8s_autopilot.core.agents.k8s_operator.middleware import build_k8s_operator_middleware
+from k8s_autopilot.core.agents.k8s_operator.middleware import build_k8s_operator_middleware
 from k8s_autopilot.utils.memory import K8sBackendMixin, get_project_root
 from k8s_autopilot.utils.logger import AgentLogger
+from k8s_autopilot.utils.domain_summary import extract_domain_summary
 
 if TYPE_CHECKING:
     from k8s_autopilot.config.config import Config
@@ -337,6 +339,19 @@ class K8sOperatorCoordinator(BaseDeepAgent):
             if ctx.get(key) == "":
                 ctx.pop(key, None)
 
+        # ── Cross-domain context ──────────────────────────────────────
+        # If the supervisor routed here after another coordinator deferred
+        # with "outside my scope", inject the structured prior context so
+        # the K8s agent can use it instead of asking the user.
+        cross_domain = state.get("cross_domain_context")
+        if isinstance(cross_domain, dict) and cross_domain:
+            ctx["cross_domain_context"] = cross_domain
+
+        # Propagate accumulated domain summaries for the blackboard pattern
+        domain_summaries = state.get("domain_summaries")
+        if isinstance(domain_summaries, list) and domain_summaries:
+            ctx["domain_summaries"] = domain_summaries
+
         return ctx
 
     def output_transform(
@@ -363,6 +378,10 @@ class K8sOperatorCoordinator(BaseDeepAgent):
                 "messages": messages,
                 "structured_response": state.get("structured_response"),
             },
+            "domain_summary": extract_domain_summary(
+                domain="k8s",
+                final_message=final_message,
+            ),
         }
 
         return output

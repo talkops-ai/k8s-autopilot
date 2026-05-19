@@ -66,8 +66,21 @@ k8s-autopilot natively supports dozens of complex, multi-step workflows across f
 
 ### 📦 Helm Lifecycle (Helm Operator)
 - **Intelligent Generation:** The agent reads the official chart `README` and `values.schema.json` to determine exactly which values are mandatory for your specific environment, prompting you only for what matters.
+- **Multi-Phase Pipeline:** New chart requests flow through a full pipeline: `helm-planner` → `helm-skill-builder` (if needed) → `helm-generator` → `helm-validator` → HITL approval → `github-agent`.
+- **Live Cluster Operations:** The `helm-operation` sub-agent connects to the Helm MCP server for live install, upgrade, rollback, and uninstall operations with a full phased workflow (discovery → planning → dry-run → execution → verification).
 - **Live Upgrades & Rollbacks:** Modify active releases using `--reuse-values` or rollback to specific known-good revisions using the persistent operations journal.
 - **GitHub Persistence:** Once a chart is generated and approved via HITL, the `github-agent` uses the GitHub MCP to commit the structured chart directly to your repository—no manual copy-pasting required.
+
+### 🔭 Observability (Observability Operator — Prometheus & Alertmanager)
+- **PromQL Queries & Metric Exploration:** Ask natural language questions like "how much CPU is my app using?" and the agent translates them into precise PromQL queries via the Prometheus MCP server.
+- **Exporter Lifecycle Management:** Deploy, verify, and uninstall Prometheus exporters (Redis, PostgreSQL, etc.) for any service — including automatic health validation after installation.
+- **Synthetic Monitoring & Probes:** Set up endpoint monitoring using native Probe CRDs with Blackbox exporter, following the strict sequence: `prom_install_exporter` → `prom_apply_probe` → `prom_query_instant` for validation.
+- **Alerting & Recording Rules:** Author and deploy PrometheusRule CRDs (P1/P2 severity alerting rules) directly to Kubernetes namespaces using `k8s_crd` storage mode.
+- **TSDB Cardinality & FinOps:** Analyze label cardinality, identify high-cardinality metrics, and optimize storage costs.
+- **On-Call Alert Triage:** Get a human-readable on-call summary of all firing alerts, grouped by severity and service, with actionable remediation steps.
+- **Silence Lifecycle:** Create, preview blast radius, validate against policy, extend, and expire alert silences — all with mandatory dry-run previews before creation.
+- **Routing Audit & Governance:** Inspect Alertmanager routing trees, simulate "who gets paged?" scenarios, and audit default route misconfigurations.
+- **Integration Testing:** Push synthetic test alerts to validate that downstream notification channels (Slack, PagerDuty, email) are correctly configured.
 
 ---
 
@@ -83,11 +96,14 @@ graph TD
     Sup -- "Transfer" --> HelmCoord[Helm Operator Coordinator]
     Sup -- "Transfer" --> AppCoord[App Operator Coordinator]
     Sup -- "Transfer" --> K8sCoord[K8s Operator Coordinator]
+    Sup -- "Transfer" --> ObsCoord[Observability Coordinator]
     
     subgraph "Helm Operator Domain"
         HelmCoord --> HPlanner[helm-planner]
+        HelmCoord --> HSkill[helm-skill-builder]
         HelmCoord --> HGen[helm-generator]
         HelmCoord --> HVal[helm-validator]
+        HelmCoord --> HUpdate[helm-updater]
         HelmCoord --> HOp[helm-operation]
         HelmCoord --> GitHub[github-agent]
     end
@@ -102,6 +118,11 @@ graph TD
         K8sCoord --> K8sOp[k8s-cluster-ops]
     end
     
+    subgraph "Observability Domain"
+        ObsCoord --> PromOp[prometheus-operator]
+        ObsCoord --> AMOp[alertmanager-operator]
+    end
+    
     HVal -.-> HMCP[(Helm MCP)]
     HOp -.-> HMCP
     GitHub -.-> GMCP[(GitHub MCP)]
@@ -109,6 +130,8 @@ graph TD
     ArgoR -.-> ARMCP[(Argo Rollouts MCP)]
     Traefik -.-> TMCP[(Traefik MCP)]
     K8sOp -.-> KMCP[(Kubernetes MCP)]
+    PromOp -.-> PMCP[(Prometheus MCP)]
+    AMOp -.-> AlertMCP[(Alertmanager MCP)]
 ```
 
 ### The Flow in Practice:
@@ -118,24 +141,120 @@ graph TD
 4. **Execution**: The specialized sub-agent (e.g., `argo-rollouts-onboarder`) executes the pre-approved plan via the connected MCP server.
 5. **Summarization**: The agent logs the operation in its persistent journal and presents a formatted Markdown summary of the results.
 
+### JIT MCP Connections
+
+Sub-agents that interact with external systems use a **Just-In-Time (JIT)** connection pattern. Instead of holding open connections to all 7 MCP servers for the entire session, each sub-agent is wrapped in a `CompiledSubAgent` that only opens its MCP connection when that specific node is executed inside the LangGraph. The connection is closed immediately after the sub-agent completes, keeping resource usage minimal even with many registered tools.
+
+### Cross-Domain Handoff Protocol
+
+When a coordinator determines that a user's request belongs to a different domain, it emits a structured signal: `"This is outside my scope. Please use the appropriate operator."` along with `User Request:` and `Context:` sections. The Supervisor detects this via pattern matching, extracts structured context, and immediately re-routes to the correct coordinator with a `[CROSS-DOMAIN]` prefix — injecting the prior coordinator's findings so the user never has to repeat themselves.
+
+This "blackboard pattern" enables seamless multi-domain investigations. For example:
+- User asks the Observability operator about checkout service alerts → discovers 5 critical alerts.
+- Observability operator defers pod inspection to K8s operator.
+- Supervisor auto-routes: `[CROSS-DOMAIN] Source: observability. Prior findings: 5 critical alerts for checkout. User Request: Check pod status.`
+- K8s operator receives full context and executes immediately without re-asking.
+
+### Sub-Agent Reference
+
+| Domain | Sub-Agent | MCP Server | Connection | HITL Gated |
+| :--- | :--- | :--- | :--- | :--- |
+| **Helm** | `helm-planner` | — | Compiled Subgraph | No |
+| **Helm** | `helm-skill-builder` | — | Static Dict | No |
+| **Helm** | `helm-generator` | — | Static Dict | No |
+| **Helm** | `helm-validator` | — | Static Dict | No |
+| **Helm** | `helm-updater` | — | Static Dict | No |
+| **Helm** | `helm-operation` | `helm_mcp_server` | JIT MCP | ✅ |
+| **Helm** | `github-agent` | `github_mcp` | JIT MCP | No |
+| **App** | `argocd-onboarder` | `argocd_mcp_server` | JIT MCP | ✅ |
+| **App** | `argo-rollouts-onboarder` | `argo_rollout_mcp_server` | JIT MCP | ✅ |
+| **App** | `traefik-edge-router` | `traefik_mcp_server` | JIT MCP | ✅ |
+| **K8s** | `k8s-cluster-ops` | `kubernetes_mcp_server` | JIT MCP | ✅ |
+| **Observability** | `prometheus-operator` | `prometheus-mcp-server` | JIT MCP | ✅ |
+| **Observability** | `alertmanager-operator` | `alertmanager-mcp-server` | JIT MCP | ✅ |
+
 ---
 
 ## 🛑 Human-in-the-Loop — Governance You Can Trust
 
-AI shouldn't arbitrarily execute state-modifying operations on your cluster. k8s-autopilot enforces strict **Human-in-the-Loop (HITL)** governance.
+AI shouldn't arbitrarily execute state-modifying operations on your cluster. k8s-autopilot enforces strict **Human-in-the-Loop (HITL)** governance at multiple layers.
 
-- **Read-Only Operations**: Queries like "list pods" or "check sync status" execute instantly.
-- **State-Modifying Operations**: Operations like "deploy app", "scale deployment", or "rollback release" trigger the `HumanInTheLoopMiddleware`. The agent constructs a clear plan, pauses the LangGraph execution, and renders an interactive approval card in the UI. **Nothing is modified until you click Approve.**
+- **Read-Only Operations**: Queries like "list pods" or "check sync status" execute instantly — no approval needed.
+- **State-Modifying Operations**: Operations like "deploy app", "scale deployment", or "rollback release" trigger the `HumanInTheLoopMiddleware`. The agent constructs a clear plan, pauses the LangGraph execution via `interrupt()`, and renders an interactive approval card in the UI. **Nothing is modified until you click Approve.**
 - **Commit Gates**: For Helm charts, the agent will never push code to a repository without explicitly pausing to ask for your confirmation and branch details.
+
+### The `[PLAN-LOCKED]` Delegation Protocol
+
+Every state-modifying operation follows a mandatory **Intent → Plan → Approve → Execute** lifecycle:
+
+1. **Intent Extraction**: The coordinator translates the user's request into DevOps-aware parameters.
+2. **Plan Presentation**: A structured plan is presented via `request_user_input` with action details, resource names, namespaces, and impact assessment.
+3. **User Approval**: The LangGraph execution pauses (`interrupt()`) and the UI renders an approval card. The user must explicitly approve.
+4. **`[PLAN-LOCKED]` Execution**: After approval, the coordinator delegates to the sub-agent with the `[PLAN-LOCKED]` prefix: `task(sub-agent): "[STATE-MODIFYING] [PLAN-LOCKED] Execute exactly as specified..."`. This prefix tells the sub-agent to **skip its own planning phase** and execute the pre-approved parameters directly.
+5. **Mechanical HITL Backstop**: Even with `[PLAN-LOCKED]`, the `HumanInTheLoopMiddleware` still gates the actual MCP tool call as a background safety net.
+
+### Rejection Protocol
+
+If a user rejects a plan, the agent does **not** retry autonomously with modified parameters. It asks the user what to adjust, with a maximum of 2 plan presentations per request before asking the user to rephrase.
 
 ---
 
-## 🧠 Skills and Memory — How the Agent Learns
+## 🧠 Skills, Memory & Context Engineering
 
-k8s-autopilot maintains persistence across sessions using a localized virtual filesystem.
+k8s-autopilot maintains persistence and context awareness using a multi-layered virtual filesystem backed by a `CompositeBackend` that routes paths to different storage engines:
 
-- **`/skills/`**: Contains the strict operational workflows (like the ones listed above) that dictate exactly how the agent must interact with MCP servers.
-- **`/memories/`**: Contains static governance files like `hitl-policies.md` which enforce operational rules. It also contains the **Operations Journal** (`operations-log.md`), allowing the agent to remember context (like the release name, namespace, and chart source) even after the LLM conversational window is summarized.
+| Virtual Path | Backend | Purpose |
+| :--- | :--- | :--- |
+| `/skills/` | `StateBackend` (LangGraph state) | Operational workflow instructions loaded by sub-agents |
+| `/memories/` | `StoreBackend` (InMemoryStore, org-scoped) | Governance files and operations journals |
+| `/workspace/` | `FilesystemBackend` (real disk) | Generated chart files, synced via `sync_workspace_to_disk` |
+| `/shared/` | `StoreBackend` (shared namespace) | Cross-domain shared context |
+
+### Skills (`/skills/`)
+
+Skills are strict operational playbooks that dictate exactly how each sub-agent must interact with MCP servers. Each skill directory contains a `SKILL.md` (YAML frontmatter + step-by-step workflow) and a `references/` directory with domain-specific patterns.
+
+| Domain | Skill Directory | Sub-Agent |
+| :--- | :--- | :--- |
+| **Helm** | `helm-operator/helm-generator` | helm-generator |
+| **Helm** | `helm-operator/helm-skill-builder` | helm-skill-builder |
+| **Helm** | `helm-operator/helm-operation` | helm-operation |
+| **Helm** | `helm-operator/helm-validator` | helm-validator |
+| **Helm** | `helm-operator/helm-updater` | helm-updater |
+| **Helm** | `helm-operator/github-agent` | github-agent |
+| **App** | `app-operator/argocd-gitops` | argocd-onboarder |
+| **App** | `app-operator/argo-rollouts-gitops` | argo-rollouts-onboarder |
+| **App** | `app-operator/traefik-edge-routing` | traefik-edge-router |
+| **K8s** | `k8s-operator/kubernetes-cluster-ops` | k8s-cluster-ops |
+| **Observability** | `observability/prometheus` | prometheus-operator |
+| **Observability** | `observability/alertmanager` | alertmanager-operator |
+
+### Memory (`/memories/`)
+
+Each domain maintains two static governance files pre-seeded into the `InMemoryStore` at startup:
+
+- **`AGENTS.md`**: Defines agent interaction patterns, HITL gate schemas (button layouts, input fields), and parameter completeness lookup tables.
+- **`hitl-policies.md`**: Governance rules defining when HITL approval is mandatory vs. optional for each operation type.
+
+### Operations Journal (`operations-log.md`)
+
+The operations journal is the primary mechanism for **context persistence across conversation turns**. It solves a critical problem: when the LLM's conversation history is summarized (compressed), operational details like chart URLs, release names, and namespace targets are lost.
+
+The journal uses a 3-layer context engineering architecture:
+
+1. **Layer 1 — Tool writes**: After every state-modifying operation, the coordinator calls `log_*_operation` (e.g., `log_helm_operation`, `log_app_operation`, `log_k8s_operation`, `log_obs_operation`) to write a structured entry to `/memories/{domain}/operations-log.md`.
+2. **Layer 2 — Middleware re-injects**: The `OperationContextMiddleware` (`before_model` hook) reads the journal and re-injects it as a `SystemMessage` before every coordinator model call — surviving summarization.
+3. **Layer 3 — Prompt engineering**: Coordinator prompts, sub-agent prompts, and SKILL.md files all instruct the LLM to reference the journal for follow-up operations before asking the user.
+
+Journals are capped at 20 entries with automatic trimming of the oldest entries.
+
+### Supervisor Context Engineering
+
+The Supervisor agent uses its own 3-layer middleware stack to maintain routing accuracy across long sessions:
+
+1. **`SupervisorContextMiddleware`**: Re-injects accumulated domain summaries (what each coordinator accomplished) as a `SystemMessage` before every model call — ensuring cross-domain awareness survives summarization.
+2. **`SummarizationMiddleware`**: Auto-compresses conversation history when it exceeds ~75% of the context budget (default: 4000 tokens), keeping only the last 6 messages.
+3. **`ModelCallLimitMiddleware`**: Caps model calls at 15 per turn to prevent runaway routing loops — exits gracefully instead of throwing exceptions.
 
 ---
 
@@ -145,9 +264,24 @@ k8s-autopilot maintains persistence across sessions using a localized virtual fi
 | :--- | :--- | :--- |
 | **Agent Framework** | `deepagents` / LangGraph | State machine, orchestration, sub-graph routing. |
 | **LLM Interface** | LangChain Core | Tool execution, message schemas. |
-| **Tools/Integrations**| Model Context Protocol (MCP)| Standardized protocol for Helm, Argo, Traefik, K8s, GitHub. |
+| **Tools/Integrations**| Model Context Protocol (MCP)| Standardized protocol for Helm, Argo, Traefik, K8s, GitHub, Prometheus, Alertmanager. |
 | **User Interface** | A2UI / TalkOps A2A | Real-time streaming, HITL approval cards, markdown rendering. |
 | **Runtime** | Python 3.12+ | Core agent backend. |
+
+### MCP Servers
+
+k8s-autopilot connects to **7 MCP servers** — 6 TalkOps-native servers (PyPI packages, stdio transport) and 1 third-party (npx). All MCP servers default to **stdio transport** for in-process communication. Docker Compose deployments can override to HTTP transport.
+
+| MCP Server | Package / Command | Transport | Domain |
+| :--- | :--- | :--- | :--- |
+| `helm_mcp_server` | `helm-mcp-server` | stdio | Helm chart operations |
+| `argocd_mcp_server` | `argocd-mcp-server` | stdio | ArgoCD GitOps |
+| `traefik_mcp_server` | `traefik-mcp-server` | stdio | Traefik edge routing |
+| `argo_rollout_mcp_server` | `argo-rollout-mcp-server` | stdio | Argo Rollouts progressive delivery |
+| `prometheus-mcp-server` | `prometheus-mcp-server` | stdio | Prometheus monitoring & PromQL |
+| `alertmanager-mcp-server` | `alertmanager-mcp-server` | stdio | Alertmanager alerting & silences |
+| `github_mcp` | GitHub Copilot API | HTTP | GitHub file operations |
+| `kubernetes_mcp_server` | `npx kubernetes-mcp-server@latest` | stdio | Raw Kubernetes cluster ops |
 
 ---
 
@@ -171,7 +305,6 @@ For the full list of configuration options—including your active MCP servers�
 
 ### Prerequisites
 - Docker & Docker Compose
-- Node.js (for local npx MCP servers)
 - Kubernetes Cluster (local Minikube/Kind or remote) with KUBECONFIG
 - Python 3.12+ (if running from source)
 - An LLM Provider API Key (OpenAI, Anthropic, or Gemini)
@@ -179,6 +312,8 @@ For the full list of configuration options—including your active MCP servers�
 ### Quick Start with Docker Compose (recommended)
 
 No cloning required. You just need two files: `docker-compose.yml` and `.env`.
+
+> **Note:** All MCP servers (Helm, ArgoCD, Traefik, Argo Rollouts, Prometheus, Alertmanager) run **in-process via stdio transport** — no sidecar containers needed. The only external dependency is the Kubernetes MCP server (`npx`).
 
 **1. Create a `docker-compose.yml`** — copy from this repo's [`docker-compose.yml`](docker-compose.yml), or use:
 
@@ -190,30 +325,67 @@ services:
     ports:
       - "10102:10102"
     environment:
+      # Required: API Keys (loaded from .env file in the same directory)
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI}
+
+      # Github MCP Server Configuration
       - GITHUB_MCP_URL=${GITHUB_MCP_URL}
       - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}
       - HELM_WORKSPACE=${HELM_WORKSPACE}
+
+      # MCP Server Configuration
+      # Default: stdio transport for TalkOps MCP servers (binaries in the venv).
+      # Override MCP_SERVERS with an HTTP JSON array to use HTTP transport instead.
       - >-
-        MCP_SERVERS=[ {"name": "github_mcp", "url": "https://api.githubcopilot.com/mcp/", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": "GITHUB_PERSONAL_ACCESS_TOKEN"}, {"name": "helm_mcp_server", "url": "http://helm-mcp-server:9000/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "argocd_mcp_server", "url": "http://argocd-mcp-server:9001/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "traefik_mcp_server", "url": "http://traefik-mcp-server:9002/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "argo_rollout_mcp_server", "url": "http://argo-rollout-mcp-server:9003/mcp", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": null}, {"name": "kubernetes_mcp_server", "command": "npx", "transport": "stdio", "args": ["-y", "kubernetes-mcp-server@latest"]} ]
+        MCP_SERVERS=[
+        {"name": "github_mcp", "url": "https://api.githubcopilot.com/mcp/", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": "GITHUB_PERSONAL_ACCESS_TOKEN"},
+        {"name": "helm_mcp_server", "command": "helm-mcp-server", "transport": "stdio", "args": [], "env": {"MCP_ALLOW_WRITE": "true"}},
+        {"name": "argocd_mcp_server", "command": "argocd-mcp-server", "transport": "stdio", "args": [], "env": {"MCP_ALLOW_WRITE": "true"}},
+        {"name": "traefik_mcp_server", "command": "traefik-mcp-server", "transport": "stdio", "args": [], "env": {}},
+        {"name": "argo_rollout_mcp_server", "command": "argo-rollout-mcp-server", "transport": "stdio", "args": [], "env": {}},
+        {"name": "prometheus-mcp-server", "command": "prometheus-mcp-server", "transport": "stdio", "args": [], "env": {}},
+        {"name": "alertmanager-mcp-server", "command": "alertmanager-mcp-server", "transport": "stdio", "args": [], "env": {}},
+        {"name": "kubernetes_mcp_server", "command": "npx", "transport": "stdio", "args": ["-y", "kubernetes-mcp-server@latest"]}
+        ]
+
+      # LLM Configuration
       - LLM_PROVIDER=${LLM_PROVIDER}
       - LLM_MODEL=${LLM_MODEL}
       - LLM_HIGHER_PROVIDER=${LLM_HIGHER_PROVIDER}
       - LLM_HIGHER_MODEL=${LLM_HIGHER_MODEL}
       - LLM_DEEPAGENT_PROVIDER=${LLM_DEEPAGENT_PROVIDER}
       - LLM_DEEPAGENT_MODEL=${LLM_DEEPAGENT_MODEL}
+
+      # Logging & Kubeconfig
+      - LOG_LEVEL=${LOG_LEVEL}
       - KUBECONFIG=/app/.kube/config
+
+      # Observability: Prometheus MCP server env vars
+      # Inherited by the prometheus-mcp-server stdio subprocess
+      - PROMETHEUS_BASE_URL=${PROMETHEUS_BASE_URL:-http://prometheus-operated.monitoring.svc:9090}
+      - PROMETHEUS_VERIFY_SSL=${PROMETHEUS_VERIFY_SSL:-false}
+      - PROMETHEUS_BACKEND_ID=${PROMETHEUS_BACKEND_ID:-default}
+      - PROMETHEUS_TYPE=${PROMETHEUS_TYPE:-prometheus}
+
+      # Observability: Alertmanager MCP server env vars
+      # Inherited by the alertmanager-mcp-server stdio subprocess
+      - ALERTMANAGER_BASE_URL=${ALERTMANAGER_BASE_URL:-http://alertmanager-operated.monitoring.svc:9093}
+      - ALERTMANAGER_VERIFY_SSL=${ALERTMANAGER_VERIFY_SSL:-false}
+      - ALERTMANAGER_BACKEND_ID=${ALERTMANAGER_BACKEND_ID:-default}
+      - AM_MAX_SILENCE_MINUTES=${AM_MAX_SILENCE_MINUTES:-1440}
+      - AM_SILENCE_WARNING_THRESHOLD=${AM_SILENCE_WARNING_THRESHOLD:-50}
+
+      # ArgoCD: env vars inherited by the argocd-mcp-server stdio subprocess
+      - ARGOCD_SERVER_URL=${ARGOCD_SERVER_URL:-https://argocd-server.argocd.svc:443}
+      - ARGOCD_AUTH_TOKEN=${ARGOCD_AUTH_TOKEN}
+      - ARGOCD_INSECURE=${ARGOCD_INSECURE:-true}
     volumes:
       - ./workspace/helm-charts:/app/workspace/helm-charts
       - ${HOME}/.kube/config:/app/.kube/config:ro
-    depends_on:
-      - helm-mcp-server
-      - argocd-mcp-server
     restart: unless-stopped
     networks:
       - k8s-autopilot-net
-
-  # ... (other services like helm-mcp-server, argocd-mcp-server, traefik, argo-rollouts)
 
   talkops-ui:
     image: talkopsai/talkops:latest
@@ -237,17 +409,36 @@ networks:
 **2. Create a `.env` file** in the same directory with your API keys and configuration:
 
 ```bash
+# LLM Provider (choose one: google_genai, openai, anthropic, azure)
 GOOGLE_API_KEY=your_google_api_key_here
-GITHUB_PERSONAL_ACCESS_TOKEN=your_github_pat_here
+LLM_PROVIDER=google_genai
+LLM_MODEL=gemini-3.1-flash-lite-preview
+LLM_HIGHER_PROVIDER=google_genai
+LLM_HIGHER_MODEL=gemini-3.1-pro-preview
+LLM_DEEPAGENT_PROVIDER=google_genai
+LLM_DEEPAGENT_MODEL=gemini-3.1-pro-preview
+
+# GitHub (for Helm chart commits)
+GITHUB_PERSONAL_ACCESS_TOKEN=your_github_pat_with_repo_scope
+
+# Helm workspace
 HELM_WORKSPACE=./workspace/helm-charts
+
+# ArgoCD (update to match your cluster)
+ARGOCD_SERVER_URL=https://argocd-server.argocd.svc:443
+ARGOCD_AUTH_TOKEN=your_argocd_auth_token_here
+
+# Prometheus & Alertmanager (update to match your cluster)
+PROMETHEUS_BASE_URL=http://localhost:9090
+ALERTMANAGER_BASE_URL=http://localhost:9093
 ```
 
-> **Using OpenAI or Anthropic instead?** Set `LLM_PROVIDER=openai` (or `anthropic`) in your `.env`. The system supports all of them out of the box. See [`.env.example`](.env.example) for all supported providers.
+> **Using OpenAI or Anthropic instead?** Set `LLM_PROVIDER=openai` and `LLM_MODEL=gpt-4o` (or `anthropic` / `claude-3-5-sonnet-latest`) in your `.env`. The system supports all of them out of the box. See [`.env.example`](.env.example) for the full list of configuration options.
 
 **3. Start everything:**
 
 ```bash
-docker compose -f docker-compose.yml up -d
+docker compose up -d
 
 # k8s-autopilot Agent running at http://localhost:10102
 # TalkOps UI running at http://localhost:8080

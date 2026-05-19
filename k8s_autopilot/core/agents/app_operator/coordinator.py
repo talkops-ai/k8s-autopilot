@@ -27,6 +27,7 @@ from k8s_autopilot.core.agents.app_operator.subagents import get_app_subagent_sp
 from k8s_autopilot.core.agents.app_operator.middleware import build_app_operator_middleware
 from k8s_autopilot.utils.memory import K8sBackendMixin, get_project_root
 from k8s_autopilot.utils.logger import AgentLogger
+from k8s_autopilot.utils.domain_summary import extract_domain_summary
 
 if TYPE_CHECKING:
     from k8s_autopilot.config.config import Config
@@ -155,6 +156,7 @@ Before delegating ANY task, verify the user's request contains the required iden
 
 **ALWAYS prefix the task message with the classification you determined in step 1.**
 This prevents the sub-agent from re-classifying and avoids expensive fallthrough to wrong workflows.
+**IMPORTANT:** The `task` tool REQUIRES a `ctx` parameter. You MUST always pass an empty dictionary `{}` for the `ctx` parameter to prevent schema validation errors.
 
 ```
 # Read-only:
@@ -308,6 +310,10 @@ class AppOperatorCoordinator(BaseDeepAgent):
                         else getattr(ctx.context, "org_name", "default_org"),
                     ),
                 ),
+                "/shared/": StoreBackend(
+                    runtime,
+                    namespace=lambda _ctx: ("shared",),
+                ),
                 "/skills/": StateBackend(runtime),
             },
         )
@@ -434,6 +440,19 @@ class AppOperatorCoordinator(BaseDeepAgent):
             if ctx.get(key) == "":
                 ctx.pop(key, None)
 
+        # ── Cross-domain context ──────────────────────────────────────
+        # If the supervisor routed here after another coordinator deferred
+        # with "outside my scope", inject the structured prior context so
+        # the App agent can use it instead of asking the user.
+        cross_domain = state.get("cross_domain_context")
+        if isinstance(cross_domain, dict) and cross_domain:
+            ctx["cross_domain_context"] = cross_domain
+
+        # Propagate accumulated domain summaries for the blackboard pattern
+        domain_summaries = state.get("domain_summaries")
+        if isinstance(domain_summaries, list) and domain_summaries:
+            ctx["domain_summaries"] = domain_summaries
+
         return ctx
 
     def output_transform(
@@ -460,6 +479,10 @@ class AppOperatorCoordinator(BaseDeepAgent):
                 "messages": messages,
                 "structured_response": state.get("structured_response"),
             },
+            "domain_summary": extract_domain_summary(
+                domain="app",
+                final_message=final_message,
+            ),
         }
 
         return output

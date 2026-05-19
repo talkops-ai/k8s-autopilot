@@ -279,6 +279,7 @@ class SupervisorWorkflowState(BaseModel):
     argocd_onboarding_complete: bool = Field(default=False)
     k8s_cluster_ops_complete: bool = Field(default=False)
     app_operator_complete: bool = Field(default=False)
+    observability_complete: bool = Field(default=False)
     
     # HITL approval tracking
     planning_approved: bool = Field(default=False)
@@ -300,6 +301,7 @@ class SupervisorWorkflowState(BaseModel):
             "argocd_onboarding": "argocd_onboarding_complete",
             "k8s_cluster_ops": "k8s_cluster_ops_complete",
             "app_operator": "app_operator_complete",
+            "observability_operator": "observability_complete",
         }
         attr = mapping.get(phase)
         if attr:
@@ -398,6 +400,13 @@ class MainSupervisorState(AgentState):
     helm_operator_output: NotRequired[Dict[str, Any]]
     app_operator_output: NotRequired[Dict[str, Any]]
     k8s_operator_output: NotRequired[Dict[str, Any]]
+    observability_output: NotRequired[Dict[str, Any]]
+    
+    # ── Cross-domain context (for coordinator-to-coordinator handoffs) ─
+    cross_domain_context: NotRequired[Dict[str, Any]]
+    
+    # ── Domain summaries (blackboard for cross-domain awareness) ──────
+    domain_summaries: Annotated[List[Dict[str, Any]], operator.add]
     
     # ── HITL ──────────────────────────────────────────────────────────
     pending_feedback_requests: NotRequired[Dict[str, Any]]
@@ -676,7 +685,7 @@ class RequestClassification(BaseModel):
 class HelmAgentState(AgentState):
     """Master state schema for the agent"""
     # Message history (auto-managed by LangGraph)
-    messages: Annotated[list[BaseMessage], add_messages]
+    messages: Annotated[List[AnyMessage], add_messages]
     
     # User request information
     user_request: str

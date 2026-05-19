@@ -51,7 +51,7 @@ def create_resume_command(
     return Command(resume=resume_data)
 
 
-def extract_interrupt_data(response: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def extract_interrupt_data(response: Any) -> Optional[Dict[str, Any]]:
     """
     Extract HITL interrupt data from AgentResponse.
     

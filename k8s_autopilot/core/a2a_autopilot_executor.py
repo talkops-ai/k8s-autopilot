@@ -411,6 +411,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             },
         )
 
+        renderer: Optional[_StreamRenderer] = None
         try:
             stream_query: Union[str, Command] = (
                 query if isinstance(query, Command) else str(query or "")
@@ -471,6 +472,24 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 await renderer.close_thinking()
                 await self._handle_working(item, updater, task, context_id, use_ui, renderer.message_id)
 
+        except asyncio.CancelledError:
+            logger.warning(
+                "Task was cancelled by user.",
+                extra={"task_id": task.id, "agent_name": self.agent.name},
+            )
+            msg_id = renderer.message_id if renderer else None
+            await updater.update_status(
+                TaskState.canceled,
+                self._make_stream_message_text(
+                    "Task canceled.",
+                    msg_id,
+                    context_id,
+                    task.id,
+                ),
+                final=True,
+            )
+            await self._safe_complete(updater, task)
+            raise
         except Exception as e:
             logger.error(f"Exception in agent stream: {e}", extra={"agent_name": self.agent.name, "task_id": task.id},)
             raise

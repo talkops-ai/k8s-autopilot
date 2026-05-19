@@ -231,6 +231,7 @@ def _auto_discover_components() -> None:
             "k8s_autopilot.core.a2ui.components.completion",
             "k8s_autopilot.core.a2ui.components.k8s_operator_approval",
             "k8s_autopilot.core.a2ui.components.app_operator_approval",
+            "k8s_autopilot.core.a2ui.components.observability_operator_approval",
             "k8s_autopilot.core.a2ui.components.hitl_approval",
             "k8s_autopilot.core.a2ui.components.values_confirmation",
             "k8s_autopilot.core.a2ui.components.error",

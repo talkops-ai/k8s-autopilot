@@ -51,9 +51,29 @@ class DefaultConfig:
     # ── LangGraph ─────────────────────────────────────────────────────────
     RECURSION_LIMIT: int = 50
 
-    # ── MCP Servers (Helm & ArgoCD) ───────────────────────────────────────
-    # Each entry: {name, url, transport, disabled, headers, auth_token_env_var}
+    # ── Supervisor Context Engineering ────────────────────────────────
+    # Controls the supervisor's context summarization middleware.
+    # Industry standard: trigger at ~75% of effective context budget,
+    # keep 4–6 messages (last 2–3 coordinator round-trips).
+    SUPERVISOR_SUMMARIZATION_TRIGGER_TOKENS: int = 4000
+    SUPERVISOR_SUMMARIZATION_KEEP_MESSAGES: int = 6
+    SUPERVISOR_MODEL_CALL_LIMIT: int = 15
+
+    # ── MCP Servers ─────────────────────────────────────────────────────────
+    # Default transport is **stdio** for all TalkOps MCP servers (PyPI
+    # binaries installed in the venv).  To fall back to HTTP transport
+    # (e.g. when running MCP servers as separate containers), override
+    # MCP_SERVERS via the environment variable with a JSON array containing
+    # HTTP entries:
+    #   {"name": "helm_mcp_server", "url": "http://host:9000/mcp",
+    #    "transport": "http", ...}
+    #
+    # Stdio entry keys:
+    #   name, command, transport="stdio", args, env (optional dict)
+    # HTTP entry keys:
+    #   name, url, transport="http", disabled, headers, auth_token_env_var
     MCP_SERVERS: List[Dict[str, Any]] = [
+        # ── Remote HTTP (GitHub Copilot — always HTTP) ────────────────
         {
             "name": "github_mcp",
             "url": "https://api.githubcopilot.com/mcp/",
@@ -62,44 +82,56 @@ class DefaultConfig:
             "headers": {},
             "auth_token_env_var": "GITHUB_PERSONAL_ACCESS_TOKEN",
         },
+        # ── Stdio: TalkOps MCP servers (PyPI binaries) ────────────────
         {
             "name": "helm_mcp_server",
-            "url": "http://localhost:9000/mcp",
-            "transport": "http",
-            "disabled": False,
-            "headers": {},
-            "auth_token_env_var": None,
+            "command": "helm-mcp-server",
+            "transport": "stdio",
+            "args": [],
+            "env": {"MCP_ALLOW_WRITE": "true"},
         },
         {
             "name": "argocd_mcp_server",
-            "url": "http://localhost:8770/mcp",
-            "transport": "http",
-            "disabled": False,
-            "headers": {},
-            "auth_token_env_var": None,
+            "command": "argocd-mcp-server",
+            "transport": "stdio",
+            "args": [],
+            "env": {"MCP_ALLOW_WRITE": "true"},
         },
         {
             "name": "traefik_mcp_server",
-            "url": "http://localhost:8769/mcp",
-            "transport": "http",
-            "disabled": False,
-            "headers": {},
-            "auth_token_env_var": None,
+            "command": "traefik-mcp-server",
+            "transport": "stdio",
+            "args": [],
+            "env": {},
         },
         {
             "name": "argo_rollout_mcp_server",
-            "url": "http://localhost:8768/mcp",
-            "transport": "http",
-            "disabled": False,
-            "headers": {},
-            "auth_token_env_var": None,
+            "command": "argo-rollout-mcp-server",
+            "transport": "stdio",
+            "args": [],
+            "env": {},
         },
+        {
+            "name": "prometheus-mcp-server",
+            "command": "prometheus-mcp-server",
+            "transport": "stdio",
+            "args": [],
+            "env": {},
+        },
+        {
+            "name": "alertmanager-mcp-server",
+            "command": "alertmanager-mcp-server",
+            "transport": "stdio",
+            "args": [],
+            "env": {},
+        },
+        # ── Stdio: third-party (npx — unchanged) ─────────────────────
         {
             "name": "kubernetes_mcp_server",
             "command": "npx",
             "transport": "stdio",
             "args": ["-y", "kubernetes-mcp-server@latest"],
-        }
+        },
     ]
 
     MCP_DEFAULT_HOST: str = "localhost"

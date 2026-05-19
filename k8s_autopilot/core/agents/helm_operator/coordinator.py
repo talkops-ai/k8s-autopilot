@@ -52,6 +52,7 @@ from k8s_autopilot.utils.memory import (
     sync_workspace_to_disk,
 )
 from k8s_autopilot.utils.logger import AgentLogger
+from k8s_autopilot.utils.domain_summary import extract_domain_summary
 
 if TYPE_CHECKING:
     from k8s_autopilot.config.config import Config
@@ -322,7 +323,8 @@ class HelmOperatorCoordinator(BaseDeepAgent):
             coordinator_ctx: Dict[str, Any] = {}
             if config and hasattr(config, "get"):
                 configurable = config.get("configurable") or {}
-                coordinator_ctx = configurable.get("context") or config.get("context") or {}
+                ctx_raw = configurable.get("context") or config.get("context") or {}
+                coordinator_ctx = ctx_raw if isinstance(ctx_raw, dict) else {}
 
             # ── Enrich state with context values ──────────────────────────
             enriched_state: Dict[str, Any] = {
@@ -668,6 +670,19 @@ class HelmOperatorCoordinator(BaseDeepAgent):
             if ctx.get(key) == "":
                 ctx.pop(key, None)
 
+        # ── Cross-domain context ──────────────────────────────────────
+        # If the supervisor routed here after another coordinator deferred
+        # with "outside my scope", inject the structured prior context so
+        # the Helm agent can use it instead of asking the user.
+        cross_domain = state.get("cross_domain_context")
+        if isinstance(cross_domain, dict) and cross_domain:
+            ctx["cross_domain_context"] = cross_domain
+
+        # Propagate accumulated domain summaries for the blackboard pattern
+        domain_summaries = state.get("domain_summaries")
+        if isinstance(domain_summaries, list) and domain_summaries:
+            ctx["domain_summaries"] = domain_summaries
+
         logger.info(
             "build_context: K8sOperatorContext assembled",
             extra={
@@ -729,6 +744,10 @@ class HelmOperatorCoordinator(BaseDeepAgent):
                 "synced_paths": {k: str(v) for k, v in synced.items()},
                 "structured_response": state.get("structured_response"),
             },
+            "domain_summary": extract_domain_summary(
+                domain="helm",
+                final_message=final_message,
+            ),
         }
 
         logger.info(

@@ -39,6 +39,16 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 
+[project.optional-dependencies]
+mcp-servers = [
+    "talkops-prometheus-mcp-server>=0.1.0",
+    "talkops-alertmanager-mcp-server>=0.1.0",
+    "talkops-helm-mcp-server>=0.3.0",
+    "talkops-argocd-mcp-server>=0.2.0",
+    "talkops-argo-rollout-mcp-server>=0.1.0",
+    "talkops-traefik-mcp-server>=0.1.0",
+]
+
 [project.urls]
 homepage = "https://github.com/talkops-ai/k8s-autopilot"
 repository = "https://github.com/talkops-ai/k8s-autopilot.git"
