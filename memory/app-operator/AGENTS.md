@@ -61,3 +61,31 @@ After every state-modifying app operation, the coordinator MUST call `log_app_op
 1. The coordinator MUST translate natural language to DevOps parameters before delegation. See the Intent Translation table in the coordinator prompt.
 2. When user intent is ambiguous, present options: "Did you mean X or Y?" — do NOT guess.
 3. NEVER assume the user knows Kubernetes/ArgoCD terminology. Present plans in plain English with blast-radius warnings for production namespaces.
+
+## Shared Scratchpad — Cross-Domain Collaboration
+The `/shared/` directory is a cross-domain workspace visible to ALL coordinators.
+Use it to persist information that other domains might need.
+
+### Write Rules
+- Write ONLY distilled findings, never raw ArgoCD/Rollouts API output.
+- Use the naming convention: `/shared/app/{topic}.md`
+- Always include a `## Context` header with who wrote it and when.
+- Keep each file under 500 words.
+
+### Read Rules
+- At the START of any operation, check `/shared/` for relevant cross-domain context.
+- If the Observability agent has written alert data about a service, USE it when deciding deployment strategies.
+- If cross-domain context exists in `runtime.context.cross_domain_context`, prefer it over `/shared/` files.
+
+### What This Domain Writes
+| Trigger | Path | Content |
+|---|---|---|
+| App synced/created | `/shared/app/deployment-{name}.md` | App name, namespace, health, sync status, repo URL |
+| Rollout promoted | `/shared/app/rollout-{name}.md` | Rollout name, strategy, current step, traffic weights |
+
+### What This Domain Reads
+| Path | Written By | Use Case |
+|---|---|---|
+| `/shared/observability/triage-context.md` | Observability | Alert context for services being deployed |
+| `/shared/k8s/pod-status-{service}.md` | K8s Operator | Pod health for deployed services |
+| `/shared/helm/release-{name}.md` | Helm Operator | Release metadata for managed charts |

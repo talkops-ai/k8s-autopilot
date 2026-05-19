@@ -109,11 +109,25 @@ def _build_server_configs(
             servers[name] = entry
 
         elif transport == "stdio":
-            servers[name] = {
+            # Build a merged environment for the stdio subprocess:
+            #   1. Start with the parent process env (inherits PROMETHEUS_BASE_URL, KUBECONFIG, etc.)
+            #   2. Overlay server-specific env vars from config (MCP_ALLOW_WRITE, etc.)
+            #   3. Force MCP_TRANSPORT=stdio — this is critical because the server may
+            #      inherit MCP_TRANSPORT=http from the parent env, its own .env, or
+            #      hardcoded defaults, causing it to bind to HTTP instead of stdin/stdout.
+            server_env = sdef.get("env") or {}
+            merged_env = {
+                **os.environ,
+                **(server_env if isinstance(server_env, dict) else {}),
+                "MCP_TRANSPORT": "stdio",  # always force stdio
+            }
+            entry: dict[str, Any] = {
                 "command": sdef.get("command", "python"),
                 "args": sdef.get("args", []),
                 "transport": "stdio",
+                "env": merged_env,
             }
+            servers[name] = entry
         else:
             logger.warning("Unknown transport", extra={"server": name, "transport": transport})
 

@@ -43,6 +43,7 @@ logger = AgentLogger("OperationsContext")
 OPERATIONS_LOG_PATH = "/memories/helm-operator/operations-log.md"
 APP_OPERATIONS_LOG_PATH = "/memories/app-operator/operations-log.md"
 K8S_OPERATIONS_LOG_PATH = "/memories/k8s-operator/operations-log.md"
+OBS_OPERATIONS_LOG_PATH = "/memories/observability/operations-log.md"
 
 # Maximum entries kept in the journal to prevent unbounded growth.
 _MAX_JOURNAL_ENTRIES = 20
@@ -328,6 +329,13 @@ def get_k8s_operations_context_from_state(
     return _get_context_from_state(state, K8S_OPERATIONS_LOG_PATH, "K8s")
 
 
+def get_obs_operations_context_from_state(
+    state: Dict[str, Any],
+) -> Optional[str]:
+    """Read the Observability operations journal from agent state and return compact context."""
+    return _get_context_from_state(state, OBS_OPERATIONS_LOG_PATH, "Observability")
+
+
 # ---------------------------------------------------------------------------
 # Tool: log_k8s_operation
 # ---------------------------------------------------------------------------
@@ -397,3 +405,78 @@ def create_log_k8s_operation_tool() -> Any:
         )
 
     return log_k8s_operation
+
+
+# ---------------------------------------------------------------------------
+# Tool: log_obs_operation
+# ---------------------------------------------------------------------------
+
+def create_log_obs_operation_tool() -> Any:
+    """Factory that returns the ``log_obs_operation`` coordinator tool.
+
+    Called by the Observability coordinator after every successful
+    state-modifying observability operation to persist context
+    (target system, operation type, resource name, backend) so that
+    follow-up operations never need to re-ask the user.
+    """
+
+    @tool
+    def log_obs_operation(
+        action: str,
+        target_system: str,
+        operation_type: str,
+        resource_name: str,
+        runtime: ToolRuntime,
+        config: RunnableConfig,
+        backend_id: Optional[str] = None,
+        namespace: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> Command:
+        """Log a completed Observability operation to the persistent operations journal.
+
+        MUST be called after every successful state-modifying observability
+        operation (exporter install/uninstall, rule creation, silence
+        create/expire, ServiceMonitor apply). This ensures follow-up
+        operations have full context even after conversation summarization.
+
+        Args:
+            action: Operation type — install, uninstall, create, delete,
+                    upsert, expire, apply, configure.
+            target_system: "prometheus" or "alertmanager".
+            operation_type: Category — query, rule, silence, exporter,
+                            config, onboarding, triage.
+            resource_name: Name of the affected resource (e.g. exporter
+                           name, rule group, silence ID, ServiceMonitor).
+            backend_id: Prometheus/Alertmanager backend ID.
+            namespace: Target Kubernetes namespace (if applicable).
+            notes: Additional context.
+        """
+        entry_details = {
+            "Target System": target_system,
+            "Operation": operation_type,
+            "Resource": resource_name,
+            "Backend": backend_id,
+            "Namespace": namespace,
+            "Notes": notes,
+        }
+
+        logger.info(
+            "Logged observability operation to journal",
+            extra={
+                "action": action,
+                "target_system": target_system,
+                "operation_type": operation_type,
+                "resource_name": resource_name,
+            },
+        )
+
+        return _write_to_journal(
+            runtime=runtime,
+            log_path=OBS_OPERATIONS_LOG_PATH,
+            action=action,
+            entry_details=entry_details,
+            journal_title="Observability Operations Journal",
+            config=config,
+        )
+
+    return log_obs_operation

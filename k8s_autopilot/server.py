@@ -24,6 +24,7 @@ from k8s_autopilot.core.agents import (
     HelmOperatorCoordinator,
     K8sOperatorCoordinator,
     AppOperatorCoordinator,
+    ObservabilityCoordinator,
 )
 from k8s_autopilot.utils.logger import AgentLogger, log_sync
 
@@ -83,11 +84,14 @@ def main(host: str, port: int, agent_card: str, config_file: str):
         # Create App Operator Coordinator
         app_operator_coordinator = AppOperatorCoordinator(config=config)
 
+        # Create Observability Coordinator
+        observability_coordinator = ObservabilityCoordinator(config=config)
+
         # Create Supervisor Agent
         supervisor_agent = create_k8sAutopilotSupervisorAgent(
             config=config,
             name="k8sAutopilotSupervisorAgent",
-            coordinators=[helm_operator_coordinator, k8s_operator_coordinator, app_operator_coordinator]
+            coordinators=[helm_operator_coordinator, k8s_operator_coordinator, app_operator_coordinator, observability_coordinator]
         )
 
         # Verify supervisor is ready

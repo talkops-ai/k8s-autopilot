@@ -14,12 +14,13 @@ Architecture::
             )
               → yields AgentResponse (working / input_required / completed)
 
-Tool-wrapper delegation (4 tools)::
+Tool-wrapper delegation (5 tools)::
 
     SupervisorAgent (create_agent)
       → transfer_to_helm_operator  @tool → HelmOperatorCoordinator → Command
       → transfer_to_k8s_operator   @tool → HelmMgmtCoordinator    → Command
       → transfer_to_app_operator   @tool → ArgoCDCoordinator       → Command
+      → transfer_to_observability_operator @tool → ObservabilityCoordinator → Command
       → request_human_feedback     @tool → interrupt()
 
 Reference: aws-orchestrator-agent SupervisorAgent
@@ -27,6 +28,7 @@ Reference: aws-orchestrator-agent SupervisorAgent
 
 import json
 import re
+from datetime import datetime, timezone
 from collections.abc import AsyncGenerator
 from typing import Annotated, Any, cast
 
@@ -48,6 +50,7 @@ from k8s_autopilot.utils.exceptions import AgentExecutionError
 from k8s_autopilot.utils.llm import create_model
 from k8s_autopilot.utils.logger import AgentLogger, log_async, log_sync
 
+from .supervisor_middleware import build_supervisor_middleware
 from .types import AgentResponse, BaseAgent, BaseDeepAgent, BaseSubgraphAgent
 
 logger = AgentLogger("SupervisorAgent")
@@ -73,6 +76,8 @@ Kubernetes infrastructure requests to the appropriate coordinator.
 | ArgoCD projects / repos / apps / sync / debug | ``transfer_to_app_operator`` |
 | Argo Rollouts canary / blue-green / analysis / list | ``transfer_to_app_operator`` |
 | Traefik routing, middleware, traffic mgmt | ``transfer_to_app_operator`` |
+| Prometheus metrics, queries, exporters, rules, TSDB | ``transfer_to_observability_operator`` |
+| Alertmanager alerts, silences, routing, triage | ``transfer_to_observability_operator`` |
 | Out-of-scope / greetings / clarification | ``request_human_feedback`` |
 
 **VALID REQUEST EXAMPLES:**
@@ -88,9 +93,16 @@ Kubernetes infrastructure requests to the appropriate coordinator.
 - "Set 80/20 canary split" → transfer_to_app_operator
 - "Show me the rollout list" → transfer_to_app_operator
 - "Configure Traefik weighted routing" → transfer_to_app_operator
+- "What alerts are firing?" → transfer_to_observability_operator
+- "Query CPU metrics" → transfer_to_observability_operator
+- "Silence the noisy alerts" → transfer_to_observability_operator
+- "Install postgres exporter" → transfer_to_observability_operator
+- "Check cardinality" → transfer_to_observability_operator
+- "Create alerting rule for high error rate" → transfer_to_observability_operator
+- "Who gets paged for critical alerts?" → transfer_to_observability_operator
 
 **OUT-OF-SCOPE REQUEST HANDLING:**
-If a request is NOT related to Helm/ArgoCD/K8s/Traefik:
+If a request is NOT related to Helm/ArgoCD/K8s/Traefik/Prometheus/Alertmanager:
 1. **CRITICAL: Use request_human_feedback** - no direct text
 2. **Create dynamic, contextual messages** for the user
 3. **NEVER output text without calling request_human_feedback**
@@ -99,6 +111,7 @@ Available tools:
 - transfer_to_helm_operator: Helm chart generation/update
 - transfer_to_k8s_operator: K8s cluster ops (pods, scale, exec)
 - transfer_to_app_operator: ArgoCD, Argo Rollouts, Traefik
+- transfer_to_observability_operator: Prometheus monitoring, Alertmanager alerting
 - request_human_feedback: Human feedback or clarification
 
 **TASK DESCRIPTION CRAFTING (for transfer_to_* tools):**
@@ -113,6 +126,12 @@ If the user uses non-technical language, map it to the correct domain:
 | "split traffic" / "A/B test" | Traefik weighted routing | transfer_to_app_operator |
 | "scale up" / "more capacity" | K8s scaling or HPA | transfer_to_k8s_operator |
 | "check" / "status" / "health" | Read-only diagnostics | appropriate operator |
+| "what's firing" / "alerts" / "on-call" | Alert triage | transfer_to_observability_operator |
+| "silence" / "mute" / "suppress" | Create silence | transfer_to_observability_operator |
+| "metrics" / "query" / "PromQL" | Prometheus query | transfer_to_observability_operator |
+| "exporter" / "monitor postgres" | Exporter lifecycle | transfer_to_observability_operator |
+| "alerting rule" / "notify when" | Rule authoring | transfer_to_observability_operator |
+| "cardinality" / "TSDB" / "storage" | TSDB FinOps | transfer_to_observability_operator |
 
 Parse the request, extract intent, create a clear description.
 Do NOT pass raw user messages verbatim.
@@ -123,7 +142,12 @@ If a coordinator returns a message containing "outside my scope" (typically form
 → Read the "User Request" section to determine the correct coordinator tool.
 → Call the correct coordinator tool immediately. Do NOT ask the user for permission.
 → Pass both the "User Request" and "Context" in the task parameter to the new coordinator.
-Example: If a coordinator returns "User Request: Show the rollout list", you MUST call `transfer_to_app_operator`.
+→ **PREFIX the task with cross-domain context**: \
+  `[CROSS-DOMAIN] Source: {source_domain}. Prior findings: {context_summary}. User Request: {request}`
+Example: If observability coordinator returns "User Request: Check pod status for checkout":
+  `[CROSS-DOMAIN] Source: observability. Prior findings: 5 critical alerts for checkout service, silence created. User Request: Check pod status for checkout service`
+Example: If k8s coordinator returns "User Request: What alerts are firing?":
+  `[CROSS-DOMAIN] Source: k8s_operator. Prior findings: checkout pods restarting (CrashLoopBackOff). User Request: Check if any alerts are firing for checkout`
 
 **ERROR RECOVERY:**
 If a coordinator returns an error (e.g., "encountered an error", MCP unavailable):
@@ -151,6 +175,9 @@ _HANDOFF_PATTERNS: tuple[str, ...] = (
     "use the kubernetes assistant",
     "use the helm operator",
     "use the app operator",
+    "use the observability operator",
+    "use the prometheus operator",
+    "use the alertmanager operator",
     "use the k8s-operator",
     "use the k8s cluster",
     "k8s operator to inspect",
@@ -159,6 +186,7 @@ _HANDOFF_PATTERNS: tuple[str, ...] = (
     "kubernetes assistant can",
     "helm operator can",
     "app operator can",
+    "observability operator can",
     "outside my scope",
     "outside of my scope",
     "beyond my scope",
@@ -169,6 +197,7 @@ _HANDOFF_PATTERNS: tuple[str, ...] = (
     "so the k8s operator can take over",
     "so the helm operator can take over",
     "so the app operator can take over",
+    "so the observability operator can take over",
     "returning to coordinator for re-routing",
 )
 
@@ -186,10 +215,70 @@ def _detect_cross_domain_handoff(content: Any) -> bool:
     Returns True if any handoff pattern matches.
     """
     text = _extract_content_text(content)
-    if not text:
+    if not text:  # noqa: SIM103
         return False
     content_lower = text.lower()
     return any(pattern in content_lower for pattern in _HANDOFF_PATTERNS)
+
+# ---------------------------------------------------------------------------
+# Cross-domain handoff context extraction
+# ---------------------------------------------------------------------------
+
+def _extract_handoff_context(
+    message: str,
+    source_tool: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Extract structured handoff context from a coordinator out-of-scope message.
+
+    When a coordinator returns "This is outside my scope. Please use the
+    appropriate operator.\\nUser Request: ...\\nContext: ...", this function
+    parses the structured sections and produces a dict that the supervisor
+    stores in ``MainSupervisorState.cross_domain_context``.
+
+    The receiving coordinator can then read this context to avoid making
+    the user re-explain what was already discovered.
+
+    Args:
+        message: The raw coordinator output message.
+        source_tool: The tool name that produced the message (e.g.
+            ``transfer_to_observability_operator``).
+        payload: Optional full output payload from the coordinator for
+            extracting domain summaries.
+
+    Returns:
+        A structured dict with source_domain, user_request, prior_context,
+        domain_summary (if available), and timestamp.
+    """
+    source_domain = source_tool.replace("transfer_to_", "").replace(
+        "_operator", "",
+    )
+    context: dict[str, Any] = {
+        "source_domain": source_domain,
+        "source_tool": source_tool,
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+    }
+
+    # Parse "User Request:" section
+    if "User Request:" in message:
+        parts = message.split("User Request:", 1)
+        request_part = parts[1]
+        if "Context:" in request_part:
+            context["user_request"] = request_part.split("Context:")[0].strip()
+        else:
+            context["user_request"] = request_part.strip()
+
+    # Parse "Context:" section
+    if "Context:" in message:
+        context["prior_context"] = message.split("Context:", 1)[1].strip()
+
+    # Extract domain summary from payload if available
+    if payload and isinstance(payload, dict):
+        domain_summary = payload.get("domain_summary")
+        if domain_summary:
+            context["domain_summary"] = domain_summary
+
+    return context
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +474,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
             system_prompt=self.prompt_template,
             state_schema=MainSupervisorState,
             checkpointer=cast("MemorySaver", self.memory),
+            middleware=build_supervisor_middleware(self.config_instance),
         )
 
     # ── Tool wrappers ─────────────────────────────────────────────────
@@ -483,7 +573,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
 
             child_config["configurable"] = {
                 **configurable,
-                "thread_id": runtime.state.get("session_id", "default"),
+                "thread_id": f"{runtime.state.get('session_id', 'default')}:{tool_name}",
                 "context": coordinator.build_context(
                     supervisor_state=dict(runtime.state),
                 ),
@@ -582,17 +672,41 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 is_handoff = _detect_cross_domain_handoff(final_msg_content)
                 effective_status = "handoff" if is_handoff else "completed"
 
-                return Command(
-                    update={
-                        "workflow_state": wf.model_dump(),
-                        output_key: payload,
-                        "messages": [tool_msg],
-                        "status": effective_status,
-                        "workflow_complete": (
-                            False if is_handoff else wf.workflow_complete
-                        ),
-                    }
-                )
+                # ── Cross-domain context extraction ────────────────────
+                # When a coordinator says "outside my scope", extract
+                # structured context so the supervisor can inject it
+                # into the next coordinator's task description.
+                update_dict: dict[str, Any] = {
+                    "workflow_state": wf.model_dump(),
+                    output_key: payload,
+                    "messages": [tool_msg],
+                    "status": effective_status,
+                    "workflow_complete": (
+                        False if is_handoff else wf.workflow_complete
+                    ),
+                }
+
+                if "domain_summary" in payload:
+                    update_dict["domain_summaries"] = [payload["domain_summary"]]
+
+                if is_handoff:
+                    handoff_ctx = _extract_handoff_context(
+                        message=final_msg_content,
+                        source_tool=tool_name,
+                        payload=payload,
+                    )
+                    update_dict["cross_domain_context"] = handoff_ctx
+                    logger.info(
+                        f"{tool_name} cross-domain handoff detected",  # noqa: G004
+                        extra={
+                            "source_domain": handoff_ctx.get("source_domain"),
+                            "user_request": (
+                                handoff_ctx.get("user_request", "")[:100]
+                            ),
+                        },
+                    )
+
+                return Command(update=update_dict)
 
             except Exception as exc:  # noqa: BLE001
                 # Post-invoke processing failed (output_transform, state
@@ -623,10 +737,11 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
     def _create_agent_tools(self, primary_coordinator: BaseDeepAgent) -> list:
         """Create tool wrappers for each coordinator.
 
-        3 tools — one per domain coordinator:
+        4 tools — one per domain coordinator:
         - transfer_to_helm_operator: Helm chart generation/update
         - transfer_to_k8s_operator: K8s cluster operations
         - transfer_to_app_operator: App onboarding (ArgoCD, Argo Rollouts, Traefik)
+        - transfer_to_observability_operator: Prometheus monitoring, Alertmanager alerting
 
         Reference: aws-orchestrator SupervisorAgent._create_agent_tools
         """
@@ -682,6 +797,24 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 ),
                 output_key="app_operator_output",
                 phase_name="app_operator",
+            ))
+
+        # ── 4. Observability Operator (Prometheus + Alertmanager) ─────────
+        obs_op = self.agents.get("observability-coordinator")
+        if obs_op:
+            tools.append(self._make_coordinator_tool(
+                coordinator=obs_op,
+                tool_name="transfer_to_observability_operator",
+                tool_doc=(
+                    "Delegate observability and monitoring operations.\n\n"
+                    "Use for:\n"
+                    "- Prometheus: PromQL queries, metric exploration, exporter lifecycle\n"
+                    "- Prometheus: alerting/recording rules, ServiceMonitors, TSDB cardinality\n"
+                    "- Alertmanager: alert triage, on-call summary, silence lifecycle\n"
+                    "- Alertmanager: routing audit, governance review, integration testing"
+                ),
+                output_key="observability_output",
+                phase_name="observability_operator",
             ))
 
         return tools
@@ -899,7 +1032,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
             async for chunk in self._graph.astream(
                 stream_input,
                 config=config,
-                stream_mode=["updates", "messages"],
+                stream_mode=cast(Any, ["updates", "messages"]),
                 subgraphs=True,
                 version="v2",
             ):
@@ -1723,12 +1856,16 @@ def create_k8sAutopilotSupervisorAgent(  # noqa: N802
         from ...app_operator.coordinator import (
             create_app_operator_coordinator,
         )
+        from ...observability.coordinator import (
+            create_observability_coordinator,
+        )
 
         supervisor = create_k8sAutopilotSupervisorAgent(
             coordinators=[
                 create_helm_coordinator(config),
                 create_k8s_operator_coordinator(config),
                 create_app_operator_coordinator(config),
+                create_observability_coordinator(config),
             ],
             config=config,
         )

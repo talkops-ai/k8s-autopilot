@@ -35,3 +35,32 @@ The coordinator reads this file at session start to provide global context to th
 - Multi-cluster via kubeconfig contexts. Use `configuration_contexts_list` before cross-cluster operations.
 - Server modes: `--read-only` blocks all mutations; `--disable-destructive` blocks delete/update only.
 - Validation layer catches Kind/apiVersion typos and RBAC denials before hitting the K8s API.
+
+## Shared Scratchpad — Cross-Domain Collaboration
+The `/shared/` directory is a cross-domain workspace visible to ALL coordinators.
+Use it to persist information that other domains might need.
+
+### Write Rules
+- Write ONLY distilled findings, never raw kubectl output or full resource manifests.
+- Use the naming convention: `/shared/k8s/{topic}.md`
+- Always include a `## Context` header with who wrote it and when.
+- Keep each file under 500 words.
+
+### Read Rules
+- At the START of any investigation, check `/shared/` for relevant cross-domain context.
+- If the Observability agent has written alert triage data or RCA summaries, USE them.
+- If cross-domain context exists in `runtime.context.cross_domain_context`, prefer it over `/shared/` files.
+
+### What This Domain Writes
+| Trigger | Path | Content |
+|---|---|---|
+| Pod debugging done | `/shared/k8s/pod-status-{service}.md` | Pod health, restart counts, container states |
+| Resource audit done | `/shared/k8s/resource-audit-{namespace}.md` | Resource usage, limits, requests summary |
+| Cluster health check | `/shared/k8s/cluster-health.md` | Node status, capacity, resource pressure |
+
+### What This Domain Reads
+| Path | Written By | Use Case |
+|---|---|---|
+| `/shared/observability/triage-context.md` | Observability | Alert context for pods being investigated |
+| `/shared/observability/rca-{service}.md` | Observability | RCA findings about service issues |
+| `/shared/helm/release-{name}.md` | Helm Operator | Release details for deployments being debugged |
