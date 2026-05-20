@@ -86,6 +86,15 @@ RUN apt-get update && \
     groupadd -r app && \
     useradd -r -g app -d /app -s /bin/bash app
 
+# Install promtool (required for rule validation and testing tools)
+ARG PROMETHEUS_VERSION=3.4.1
+ARG TARGETARCH=amd64
+RUN curl -fsSL "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-${TARGETARCH}.tar.gz" \
+    | tar xz --strip-components=1 -C /usr/local/bin \
+        "prometheus-${PROMETHEUS_VERSION}.linux-${TARGETARCH}/promtool" && \
+    chmod +x /usr/local/bin/promtool && \
+    promtool --version
+
 # Copy application artifacts from build stage
 COPY --from=uv --chown=app:app /app/.venv /app/.venv
 COPY --from=uv --chown=app:app /app/k8s_autopilot /app/k8s_autopilot
