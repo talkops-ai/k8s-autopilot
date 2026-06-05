@@ -1,0 +1,12 @@
+id: update_chart_values
+description: "User requests to update values in an existing chart"
+user_request: >
+  Update the replicas to 3 in the api-server chart.
+context:
+  environment: development
+  session_id: eval-update-001
+expectations:
+  must_call_subagents:
+    - helm-updater
+    - helm-validator
+  final_outcome: chart_updated_awaiting_commit

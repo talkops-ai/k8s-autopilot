@@ -3,6 +3,8 @@
 import json
 from typing import List
 
+from copilotkit import a2ui
+
 from k8s_autopilot.core.a2ui.registry import (
     BaseComponent,
     RenderContext,
@@ -46,87 +48,70 @@ class ValuesConfirmationComponent(BaseComponent):
             f"{context_display}\n"
         )
 
-        return [
+        components = [
             {
-                "beginRendering": {
-                    "surfaceId": "values-form",
-                    "root": "values-root",
-                    "styles": {
-                        "primaryColor": "#818cf8",
-                        "foregroundColor": "#E2E8F0",
-                        "font": "Inter",
+                "id": "root",
+                "component": {
+                    "Column": {
+                        "children": {
+                            "explicitList": [
+                                "markdown-text",
+                                "divider",
+                                "action-row"
+                            ]
+                        }
                     }
                 }
             },
             {
-                "surfaceUpdate": {
-                    "surfaceId": "values-form",
-                    "components": [
-                        {
-                            "id": "values-root",
-                            "component": {
-                                "Column": {
-                                    "children": {
-                                        "explicitList": [
-                                            "markdown-text",
-                                            "divider",
-                                            "action-row"
-                                        ]
-                                    }
-                                }
-                            }
-                        },
-                        {
-                            "id": "markdown-text",
-                            "component": {
-                                "Text": {
-                                    "usageHint": "body",
-                                    "text": {"path": "markdown"}
-                                }
-                            }
-                        },
-                        {"id": "divider", "component": {"Divider": {}}},
-                        {
-                            "id": "action-row",
-                            "component": {
-                                "Row": {
-                                    "children": {"explicitList": ["accept-btn"]},
-                                    "distribution": "end"
-                                }
-                            }
-                        },
-                        {
-                            "id": "accept-btn",
-                            "component": {
-                                "Button": {
-                                    "child": "accept-text",
-                                    "primary": True,
-                                    "action": {
-                                        "name": "hitl_response",
-                                        "context": [
-                                            {"key": "decision", "value": {"literalString": "accept_defaults"}},
-                                            {"key": "phase", "value": {"literalString": "values_confirmation"}}
-                                        ]
-                                    }
-                                }
-                            }
-                        },
-                        {
-                            "id": "accept-text",
-                            "component": {
-                                "Text": {"text": {"literalString": "✅ Accept Defaults"}}
-                            }
-                        }
-                    ]
+                "id": "markdown-text",
+                "component": {
+                    "Text": {
+                        "usageHint": "body",
+                        "text": {"path": "markdown"}
+                    }
+                }
+            },
+            {"id": "divider", "component": {"Divider": {}}},
+            {
+                "id": "action-row",
+                "component": {
+                    "Row": {
+                        "children": {"explicitList": ["accept-btn"]},
+                        "distribution": "end"
+                    }
                 }
             },
             {
-                "dataModelUpdate": {
-                    "surfaceId": "values-form",
-                    "path": "/",
-                    "contents": [
-                        {"key": "markdown", "valueString": markdown_text}
-                    ]
+                "id": "accept-btn",
+                "component": {
+                    "Button": {
+                        "child": "accept-text",
+                        "primary": True,
+                        "action": {
+                            "name": "hitl_response",
+                            "context": [
+                                {"key": "decision", "value": {"literalString": "accept_defaults"}},
+                                {"key": "phase", "value": {"literalString": "values_confirmation"}}
+                            ]
+                        }
+                    }
+                }
+            },
+            {
+                "id": "accept-text",
+                "component": {
+                    "Text": {"text": {"literalString": "✅ Accept Defaults"}}
                 }
             }
         ]
+
+        operations = [
+            a2ui.create_surface("values-form"),
+            a2ui.update_components("values-form", components),
+            a2ui.update_data_model(
+                "values-form",
+                {"markdown": markdown_text},
+            ),
+        ]
+        return operations

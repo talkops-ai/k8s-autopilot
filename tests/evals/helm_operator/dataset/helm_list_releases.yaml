@@ -1,0 +1,10 @@
+id: helm_list_releases
+description: "User requests to list releases"
+user_request: >
+  List all releases in the default namespace.
+context:
+  environment: development
+  session_id: eval-list-001
+expectations:
+  must_call_subagents:
+    - helm-operation

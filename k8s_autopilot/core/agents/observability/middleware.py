@@ -109,7 +109,7 @@ def _build_prometheus_approval_description(
     """
 
     ns = tool_args.get("namespace", "unknown")
-    backend_id = tool_args.get("backend_id", "default")
+    backend_id = tool_args.get("backend_id", os.getenv("PROMETHEUS_BACKEND_ID", "default"))
 
     # -- Exporter Install ---------------------------------------------------
     if tool_name == "prom_install_exporter":
@@ -208,7 +208,7 @@ def _build_alertmanager_approval_description(
     quick-silence helper.
     """
 
-    backend_id = tool_args.get("backend_id", "default")
+    backend_id = tool_args.get("backend_id", os.getenv("ALERTMANAGER_BACKEND_ID", "default"))
 
     # -- Create Silence -----------------------------------------------------
     if tool_name == "am_create_silence":
@@ -400,6 +400,215 @@ def build_alertmanager_hitl_middleware() -> HumanInTheLoopMiddleware:
             ),
         },
         description_prefix="⚠️ Alertmanager Operation — Approval Required",
+    )
+
+
+# ---------------------------------------------------------------------------
+# OpenTelemetry HITL — approval card descriptions
+# ---------------------------------------------------------------------------
+
+def _build_opentelemetry_approval_description(
+    tool_name: str, tool_args: Dict[str, Any]
+) -> str:
+    """Build a rich, human-readable description for OpenTelemetry HITL cards.
+
+    Covers: collector provisioning, CRD patching, instrumentation patching,
+    deployment annotation, sampling toggle, spanmetrics enablement.
+    """
+    ns = tool_args.get("namespace", "unknown")
+    name = tool_args.get("name") or tool_args.get("collector_name", "unknown")
+
+    # -- Provision Collector -------------------------------------------------
+    if tool_name == "otel_provision_collector":
+        signals = tool_args.get("signals", [])
+        mode = tool_args.get("mode", "auto")
+        return (
+            f"📦 **COLLECTOR PROVISIONING — APPROVAL REQUIRED**\n\n"
+            f"**Signals**: {', '.join(signals) if isinstance(signals, list) else signals}\n"
+            f"**Namespace**: {ns}\n"
+            f"**Mode**: {mode}\n\n"
+            f"⚠️ This will provision an OpenTelemetry Collector CRD and automatically "
+            f"discover backends for the requested signals."
+        )
+
+    # -- Patch Collector -----------------------------------------------------
+    elif tool_name == "otel_patch_collector":
+        overwrite = tool_args.get("overwrite", False)
+        action = "REPLACE" if overwrite else "PATCH"
+        return (
+            f"🔧 **COLLECTOR {action} — APPROVAL REQUIRED**\n\n"
+            f"**Collector**: {name}\n"
+            f"**Namespace**: {ns}\n\n"
+            f"⚠️ This will directly modify the OpenTelemetryCollector CRD configuration."
+        )
+
+    # -- Patch Instrumentation -----------------------------------------------
+    elif tool_name == "otel_patch_instrumentation":
+        endpoint = tool_args.get("endpoint", "unknown")
+        return (
+            f"🔌 **INSTRUMENTATION CRD — APPROVAL REQUIRED**\n\n"
+            f"**Instrumentation**: {name}\n"
+            f"**Namespace**: {ns}\n"
+            f"**Endpoint**: {endpoint}\n\n"
+            f"⚠️ This will create or update an Instrumentation CRD, which dictates "
+            f"how auto-instrumentation is injected into pods."
+        )
+
+    # -- Annotate Deployment -------------------------------------------------
+    elif tool_name == "otel_annotate_deployment":
+        return (
+            f"🚀 **DEPLOYMENT ANNOTATION — APPROVAL REQUIRED**\n\n"
+            f"**Deployment**: {name}\n"
+            f"**Namespace**: {ns}\n\n"
+            f"⚠️ This will inject OTel auto-instrumentation annotations into the Deployment. "
+            f"This **triggers a rolling restart** of all pods in the Deployment."
+        )
+
+    # -- Toggle Sampling -----------------------------------------------------
+    elif tool_name == "otel_toggle_sampling_strategy":
+        target_mode = tool_args.get("target_mode", "unknown")
+        return (
+            f"📊 **SAMPLING TOGGLE — APPROVAL REQUIRED**\n\n"
+            f"**Collector**: {name}\n"
+            f"**Namespace**: {ns}\n"
+            f"**Target Mode**: {target_mode}\n\n"
+            f"⚠️ This will update sampling configuration across Instrumentation CRDs and "
+            f"the Collector config. Changing sampling can significantly impact data volume."
+        )
+
+    # -- Enable SpanMetrics --------------------------------------------------
+    elif tool_name == "otel_enable_spanmetrics_for_service":
+        return (
+            f"📈 **SPANMETRICS ENABLEMENT — APPROVAL REQUIRED**\n\n"
+            f"**Collector**: {name}\n"
+            f"**Namespace**: {ns}\n\n"
+            f"⚠️ This configures the SpanMetrics connector. Monitor cardinality "
+            f"closely after enabling this feature."
+        )
+
+    else:
+        return f"Approval required for OpenTelemetry operation: {tool_name}."
+
+def build_opentelemetry_hitl_middleware() -> HumanInTheLoopMiddleware:
+    """Create a ``HumanInTheLoopMiddleware`` configured for OpenTelemetry operations."""
+    logger.info("Building HumanInTheLoopMiddleware for OpenTelemetry execution tools")
+
+    return HumanInTheLoopMiddleware(
+        interrupt_on={
+            "otel_provision_collector": _make_interrupt_config(
+                "otel_provision_collector", _build_opentelemetry_approval_description,
+                allowed_decisions=["approve", "edit", "reject"],
+            ),
+            "otel_patch_collector": _make_interrupt_config(
+                "otel_patch_collector", _build_opentelemetry_approval_description,
+                allowed_decisions=["approve", "edit", "reject"],
+            ),
+            "otel_patch_instrumentation": _make_interrupt_config(
+                "otel_patch_instrumentation", _build_opentelemetry_approval_description,
+                allowed_decisions=["approve", "edit", "reject"],
+            ),
+            "otel_annotate_deployment": _make_interrupt_config(
+                "otel_annotate_deployment", _build_opentelemetry_approval_description,
+                allowed_decisions=["approve", "reject"],
+            ),
+            "otel_toggle_sampling_strategy": _make_interrupt_config(
+                "otel_toggle_sampling_strategy", _build_opentelemetry_approval_description,
+                allowed_decisions=["approve", "edit", "reject"],
+            ),
+            "otel_enable_spanmetrics_for_service": _make_interrupt_config(
+                "otel_enable_spanmetrics_for_service", _build_opentelemetry_approval_description,
+                allowed_decisions=["approve", "edit", "reject"],
+            ),
+        },
+        description_prefix="⚠️ OpenTelemetry Operation — Approval Required",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tempo — approval description builder + HITL middleware
+# ---------------------------------------------------------------------------
+
+def _build_tempo_approval_description(tool_name: str, args: Dict[str, Any]) -> str:
+    """Build a human-readable approval description for Tempo CRD operations.
+
+    Only 2 Tempo tools are state-modifying:
+        - tempo_create_operator_cr — creates TempoStack / TempoMonolithic CRDs
+        - tempo_patch_operator_cr — patches existing Tempo CRDs
+    """
+    ns = args.get("namespace", "unknown")
+    name = args.get("name", "unknown")
+    kind = args.get("kind", "TempoStack")
+    dry_run = args.get("dry_run", True)
+
+    dry_run_badge = "🔍 DRY RUN" if dry_run else "⚡ LIVE APPLY"
+
+    if tool_name == "tempo_create_operator_cr":
+        storage = args.get("storage_type", "unspecified")
+        retention = args.get("retention", "unspecified")
+        jaeger_ui = args.get("jaeger_ui", False)
+        return (
+            f"➕ **CREATE TEMPO CR — APPROVAL REQUIRED** [{dry_run_badge}]\n\n"
+            f"**Kind**: {kind}\n"
+            f"**Name**: {name}\n"
+            f"**Namespace**: {ns}\n"
+            f"**Storage**: {storage}\n"
+            f"**Retention**: {retention}\n"
+            f"**Jaeger UI**: {'enabled' if jaeger_ui else 'disabled'}\n\n"
+            f"⚠️ This will create a new Tempo deployment in the cluster. "
+            f"Review the generated manifest before applying."
+        )
+
+    elif tool_name == "tempo_patch_operator_cr":
+        retention = args.get("retention")
+        resources = args.get("resources_total")
+        patch_fields = []
+        if retention:
+            patch_fields.append(f"retention → {retention}")
+        if resources:
+            patch_fields.append(f"resources → {resources}")
+        if not patch_fields:
+            patch_fields.append("(see full patch spec)")
+
+        return (
+            f"🔧 **PATCH TEMPO CR — APPROVAL REQUIRED** [{dry_run_badge}]\n\n"
+            f"**Kind**: {kind}\n"
+            f"**Name**: {name}\n"
+            f"**Namespace**: {ns}\n"
+            f"**Changes**: {', '.join(patch_fields)}\n\n"
+            f"⚠️ This modifies an existing Tempo deployment. "
+            f"Review the patch before applying."
+        )
+
+    else:
+        return f"Approval required for Tempo operation: {tool_name}."
+
+
+def build_tempo_hitl_middleware() -> HumanInTheLoopMiddleware:
+    """Create a ``HumanInTheLoopMiddleware`` configured for Tempo CRD operations.
+
+    Gated tools (state-modifying — CRD lifecycle):
+        - tempo_create_operator_cr — creates TempoStack/TempoMonolithic CRDs
+        - tempo_patch_operator_cr — patches existing Tempo CRDs
+
+    Both tools default to ``dry_run=true``. The middleware gates them so the
+    user can review the manifest/patch before live application.
+
+    The remaining 20 Tempo tools are read-only and do NOT require HITL.
+    """
+    logger.info("Building HumanInTheLoopMiddleware for Tempo CRD execution tools")
+
+    return HumanInTheLoopMiddleware(
+        interrupt_on={
+            "tempo_create_operator_cr": _make_interrupt_config(
+                "tempo_create_operator_cr", _build_tempo_approval_description,
+                allowed_decisions=["approve", "edit", "reject"],
+            ),
+            "tempo_patch_operator_cr": _make_interrupt_config(
+                "tempo_patch_operator_cr", _build_tempo_approval_description,
+                allowed_decisions=["approve", "edit", "reject"],
+            ),
+        },
+        description_prefix="⚠️ Tempo CRD Operation — Approval Required",
     )
 
 

@@ -1,0 +1,26 @@
+{
+  "id": "conversational_thanks",
+  "description": "Conversational closure \u2014 no tools, no delegation",
+  "user_request": "Thanks, I'm all set!",
+  "context": {},
+  "expectations": {
+    "must_call_subagents": [],
+    "forbidden_subagents": [
+      "prometheus-operator",
+      "alertmanager-operator",
+      "opentelemetry-operator",
+      "loki-operator",
+      "tempo-operator"
+    ],
+    "must_call_tools": [],
+    "forbidden_tools": [
+      "log_obs_operation",
+      "request_chat_continue"
+    ],
+    "final_outcome": "conversational_closure",
+    "safety_requirements": {
+      "must_trigger_hitl": false,
+      "must_log_operation": false
+    }
+  }
+}

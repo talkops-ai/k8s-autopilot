@@ -170,10 +170,11 @@ class PlanLockMiddleware(AgentMiddleware):
 # Default limits (overridable via env vars or Config)
 # ---------------------------------------------------------------------------
 
-_WRITE_FILE_RUN_LIMIT = int(os.getenv("APP_OP_WRITE_FILE_RUN_LIMIT", "20"))
-_GLOBAL_TOOL_RUN_LIMIT = int(os.getenv("APP_OP_GLOBAL_TOOL_RUN_LIMIT", "60"))
-_MODEL_CALL_RUN_LIMIT = int(os.getenv("APP_OP_MODEL_CALL_RUN_LIMIT", "40"))
-_ENABLE_TOOL_RETRY = os.getenv("APP_OP_ENABLE_TOOL_RETRY", "false").lower() == "true"
+# Defaults (will be overridden via env vars or Config inside the factory)
+_WRITE_FILE_RUN_LIMIT = 20
+_GLOBAL_TOOL_RUN_LIMIT = 60
+_MODEL_CALL_RUN_LIMIT = 40
+_ENABLE_TOOL_RETRY = False
 
 
 # ---------------------------------------------------------------------------
@@ -998,7 +999,8 @@ def build_app_operator_middleware(
     logger.info("Middleware: PlanLockMiddleware (before_model)")
 
     # 1. Per-tool write_file guard
-    wf_limit = write_file_limit or _WRITE_FILE_RUN_LIMIT
+    env_wf_limit = os.getenv("APP_OP_WRITE_FILE_RUN_LIMIT")
+    wf_limit = write_file_limit or (int(env_wf_limit) if env_wf_limit else _WRITE_FILE_RUN_LIMIT)
     middleware.append(
         ToolCallLimitMiddleware(
             tool_name="write_file",
@@ -1008,7 +1010,8 @@ def build_app_operator_middleware(
     )
 
     # 2. Global tool call guard
-    gt_limit = global_tool_limit or _GLOBAL_TOOL_RUN_LIMIT
+    env_gt_limit = os.getenv("APP_OP_GLOBAL_TOOL_RUN_LIMIT")
+    gt_limit = global_tool_limit or (int(env_gt_limit) if env_gt_limit else _GLOBAL_TOOL_RUN_LIMIT)
     middleware.append(
         ToolCallLimitMiddleware(
             run_limit=gt_limit,
@@ -1017,7 +1020,8 @@ def build_app_operator_middleware(
     )
 
     # 3. Model call guard
-    mc_limit = model_call_limit or _MODEL_CALL_RUN_LIMIT
+    env_mc_limit = os.getenv("APP_OP_MODEL_CALL_RUN_LIMIT")
+    mc_limit = model_call_limit or (int(env_mc_limit) if env_mc_limit else _MODEL_CALL_RUN_LIMIT)
     middleware.append(
         ModelCallLimitMiddleware(
             run_limit=mc_limit,
@@ -1026,7 +1030,10 @@ def build_app_operator_middleware(
     )
 
     # 4. Tool retry (transient failures)
-    should_retry = enable_tool_retry if enable_tool_retry is not None else _ENABLE_TOOL_RETRY
+    env_retry = os.getenv("APP_OP_ENABLE_TOOL_RETRY")
+    should_retry = enable_tool_retry if enable_tool_retry is not None else (
+        env_retry.lower() == "true" if env_retry else _ENABLE_TOOL_RETRY
+    )
     if should_retry:
         middleware.append(
             ToolRetryMiddleware(

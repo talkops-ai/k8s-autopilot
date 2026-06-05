@@ -104,6 +104,18 @@ patterns, read [references/workflows.md](references/workflows.md).
 
 7. **Missing Inputs Protection.** Never hallucinate metric names or backend IDs.
 
+## Synthetic Probe Workflow
+
+When a user requests endpoint monitoring, uptime monitoring, or synthetic probes:
+
+1. **Deploy the Prober**: Install blackbox_exporter in namespace 'monitoring' using
+   `prom_install_exporter`.
+2. **Apply the Probe**: Apply a Probe targeting the URL using `prom_apply_probe`,
+   with `prober_url='blackbox-exporter:9115'` and `module='http_2xx'`.
+3. **Verify**: Query `probe_success` metric to confirm the endpoint is healthy.
+
+Do NOT use kubectl fallbacks for any step in this workflow.
+
 ## Gotchas
 
 For common failure patterns, edge cases, and diagnostic fixes, read
@@ -123,3 +135,4 @@ Always state derived defaults in the plan preview so the user can override.
 - Lead with query results or operation status.
 - Use tables for multi-metric or multi-target results.
 - For errors: provide root cause + immediate fixes + preventive measures.
+

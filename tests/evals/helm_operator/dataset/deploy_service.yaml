@@ -1,0 +1,19 @@
+id: deploy_service
+description: "Deploy payment-service to prod — multi-agent scenario (argocd+helm supervisor)"
+user_request: Deploy payment-service to prod using Helm and ArgoCD.
+context:
+  environment: prod
+  service: payment-service
+# NOTE: skip_agent_run=true — this scenario targets the multi-agent supervisor
+# (helm + argocd), not the helm-operator-coordinator in isolation.
+# The runner will skip invoking the agent and only validate evaluator schema.
+skip_agent_run: true
+expectations:
+  final_outcome: deployed
+  must_call_subagents:
+    - helm_agent
+    - argocd_agent
+  must_call_tools:
+    - helm_template
+    - argocd_sync
+  must_require_safety_checks: true

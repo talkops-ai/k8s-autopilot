@@ -49,7 +49,7 @@ logger = AgentLogger("A2UICatalogManager")
 # ── Well-known constants ──────────────────────────────────────────────
 STANDARD_CATALOG_ID = (
     "https://github.com/google/A2UI/blob/main/specification/"
-    "v0_8/json/standard_catalog_definition.json"
+    "v0_9/json/standard_catalog_definition.json"
 )
 
 
@@ -394,7 +394,7 @@ class CatalogManager:
 
     # ── SDK integration ───────────────────────────────────────────────
 
-    def get_agent_extension(self, version: str = "0.8"):
+    def get_agent_extension(self, version: str = "0.9"):
         """
         Build an ``AgentExtension`` for the agent card using the SDK.
 

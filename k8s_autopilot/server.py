@@ -3,21 +3,24 @@ import sys
 import asyncio
 from pathlib import Path
 import click
-import httpx
 import uvicorn
-from a2a.server.apps import A2AStarletteApplication
+from google.protobuf.json_format import ParseDict
+from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
+from starlette.routing import Route
+from starlette.responses import JSONResponse
 from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.routes import create_jsonrpc_routes, create_agent_card_routes, create_rest_routes
 from a2a.server.tasks import (
-    BasePushNotificationSender,
-    InMemoryPushNotificationConfigStore,
     InMemoryTaskStore,
 )
 from a2a.types import (
     AgentCard,
+    AgentInterface,
 )
-from starlette.middleware.cors import CORSMiddleware
 from k8s_autopilot.config.config import Config
 from k8s_autopilot.core import A2AAutoPilotExecutor
+from k8s_autopilot.core.context_probe import ContextProbe
 from k8s_autopilot.core.agents import (
     k8sAutopilotSupervisorAgent,
     create_k8sAutopilotSupervisorAgent,
@@ -63,15 +66,19 @@ def main(host: str, port: int, agent_card: str, config_file: str):
             )
         )
         
-        # Load agent card
+        # Load agent card (v1.0 Protobuf-based)
         with Path(agent_card_path).open() as file:
             data = json.load(file)
         
-        # Inject dynamic URL from host/port resolution mirroring aws_orchestrator
+        # Inject dynamic URL into supported_interfaces
         if host and port:
-            data["url"] = f"http://{host}:{port}"
+            dynamic_url = f"http://{host}:{port}"
+            data["supported_interfaces"] = [
+                {**iface, "url": dynamic_url}
+                for iface in data.get("supported_interfaces", [{"protocol_binding": "JSONRPC"}])
+            ]
             
-        agent_card_obj: AgentCard = AgentCard(**data)
+        agent_card_obj: AgentCard = ParseDict(data, AgentCard())
 
         server_logger.info("Agent card loaded successfully",)
 
@@ -108,27 +115,21 @@ def main(host: str, port: int, agent_card: str, config_file: str):
         # Create A2AAutoPilotExecutor
         executor = A2AAutoPilotExecutor(agent=supervisor_agent)
         
-        # Create HTTP client
-        client: httpx.AsyncClient = httpx.AsyncClient()
-
-        # Create RequestHandler
-        push_config_store = InMemoryPushNotificationConfigStore()
-        push_sender = BasePushNotificationSender(
-            httpx_client=client,
-            config_store=push_config_store
-        )
-
+        # Create RequestHandler (v1.0 — agent_card is now required)
         request_handler = DefaultRequestHandler(
             agent_executor=executor, 
             task_store=InMemoryTaskStore(),
-            push_config_store=push_config_store,
-            push_sender=push_sender,
+            agent_card=agent_card_obj,
         )
 
-        # Create A2AStarletteApplication
-        server: A2AStarletteApplication = A2AStarletteApplication(
+        # Create Starlette app with A2A v1.0 route factories
+        jsonrpc_routes = create_jsonrpc_routes(
+            request_handler=request_handler,
+            rpc_url="/",
+            enable_v0_3_compat=True,  # Support v0.3 clients
+        )
+        agent_card_routes = create_agent_card_routes(
             agent_card=agent_card_obj,
-            http_handler=request_handler,
         )
         
         server_logger.info(f"Starting k8sAutopilot Server on {host}:{port}", extra={
@@ -139,8 +140,27 @@ def main(host: str, port: int, agent_card: str, config_file: str):
             }
         )
         
-        # Build app and add CORS middleware for A2UI client access
-        app = server.build()
+        # ── Context Probe endpoint ────────────────────────────────
+        context_probe = ContextProbe(config=config)
+
+        async def suggest_prompts_handler(request):
+            """GET /suggest-prompts — dynamic, cluster-aware prompt suggestions."""
+            result = await context_probe.run()
+            return JSONResponse(result)
+
+        # ── A2A REST routes (protocol binding alongside JSONRPC) ──
+        rest_routes = create_rest_routes(
+            request_handler=request_handler,
+            enable_v0_3_compat=True,
+        )
+
+        # Build Starlette app with CORS middleware for A2UI client access
+        app = Starlette(routes=[
+            *jsonrpc_routes,
+            *agent_card_routes,
+            *rest_routes,
+            Route("/suggest-prompts", suggest_prompts_handler, methods=["GET"]),
+        ])
         app.add_middleware(
             CORSMiddleware,
             allow_origins=["*"],

@@ -112,7 +112,16 @@ class K8sBackendMixin:
     """
 
     @staticmethod
-    def make_backend(runtime: Any) -> Any:  # CompositeBackend
+    def make_backend() -> Any:  # CompositeBackend
+        """Build a ``CompositeBackend`` for the deep agent's virtual filesystem.
+
+        Since ``deepagents>=0.5.0``, backends resolve runtime context
+        internally via LangGraph's ``get_config()`` / ``get_store()`` /
+        ``get_runtime()`` — no need to pass ``runtime`` explicitly.
+
+        The namespace factory uses ``os.getenv`` because TalkOps derives
+        the org from environment config, not from per-request user identity.
+        """
         from deepagents.backends import (
             CompositeBackend,
             LocalShellBackend,
@@ -135,22 +144,18 @@ class K8sBackendMixin:
             inherit_env=True,
         )
 
+        _org = os.getenv("ORG_NAME", "default_org")
+
         return CompositeBackend(
             default=default,
             routes={
                 "/memories/": StoreBackend(
-                    runtime,
-                    namespace=lambda ctx: (
-                        ctx.context.get("org_name", "default_org")
-                        if isinstance(ctx.context, dict)
-                        else getattr(ctx.context, "org_name", "default_org"),
-                    ),
+                    namespace=lambda _rt: (_org,),
                 ),
                 "/shared/": StoreBackend(
-                    runtime,
-                    namespace=lambda _ctx: ("shared",),
+                    namespace=lambda _rt: ("shared",),
                 ),
-                "/skills/": StateBackend(runtime),
+                "/skills/": StateBackend(),
             },
         )
 

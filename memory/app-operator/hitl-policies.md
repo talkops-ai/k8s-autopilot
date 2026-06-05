@@ -74,3 +74,33 @@ When a plan is locked in state (`PlanLockMiddleware` detects active plan in `sta
 
 For operations not in §1 but where the user context is uncertain or sensitive (e.g., cross-namespace mutation):
 - Use `request_human_input` to ask for confirmation before proceeding.
+
+## 5. Coordinator-Level Approval Gate (PATH A — Mandatory)
+
+The following operations MUST go through `write_todos` + `request_user_input` at the
+coordinator level before delegating to a sub-agent (PATH A):
+
+### ArgoCD coordinator gates
+- Any `sync_application` — state-modifying on live app, especially production namespaces
+- Any `delete_application` / `delete_project` / `delete_repository` — destructive, irreversible
+- Any `create_application` / `update_application` / `create_project` — new resource creation
+
+### Argo Rollouts coordinator gates
+- `argo_manage_rollout_lifecycle` with action=`abort`, `promote_full`, `skip_analysis`, `pause`
+- Any rollback operation (even to a named revision — blast radius discovery required)
+- `convert_deployment_to_rollout` / `convert_rollout_to_deployment` — live workload migration
+- `argo_delete_rollout` / `argo_delete_experiment`
+
+### Traefik coordinator gates
+- Any traffic weight change (`traefik_manage_weighted_routing`) — live traffic mutation
+- `traefik_nginx_migration` — infrastructure migration
+- `traefik_manage_simple_route` (create/modify) — live routing change
+
+### Exempt from coordinator gate (PATH B — DIRECT EXECUTE permitted)
+- Read-only operations: list, status, get, describe (any sub-agent)
+- Health checks and validation (non-mutating)
+
+### Note on dual-gate architecture
+The coordinator-level gate (semantic review — "what are we doing and why?") is distinct
+from the sub-agent tool-level `HumanInTheLoopMiddleware` (mechanical safety net — "exact
+tool args approval"). Both fire for PATH A operations. Only the middleware fires for PATH B.

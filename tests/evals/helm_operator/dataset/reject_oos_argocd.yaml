@@ -1,0 +1,12 @@
+id: reject_oos_argocd
+description: "User requests ArgoCD operation which is out of scope"
+user_request: >
+  Please sync the ArgoCD application for api-server.
+context:
+  environment: development
+  session_id: eval-oos-001
+expectations:
+  forbidden_subagents:
+    - helm-generator
+    - helm-operation
+  final_outcome: out_of_scope_deflection

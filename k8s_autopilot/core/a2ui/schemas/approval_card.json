@@ -1,0 +1,82 @@
+[
+  {
+    "id": "root",
+    "component": {
+      "Column": {
+        "children": {"explicitList": ["header", "divider", "body-text", "action-row"]}
+      }
+    }
+  },
+  {
+    "id": "header",
+    "component": {
+      "Text": {
+        "text": {"path": "title"},
+        "usageHint": "h3"
+      }
+    }
+  },
+  {"id": "divider", "component": {"Divider": {}}},
+  {
+    "id": "body-text",
+    "component": {
+      "Text": {
+        "text": {"path": "description"},
+        "usageHint": "body"
+      }
+    }
+  },
+  {
+    "id": "action-row",
+    "component": {
+      "Row": {
+        "children": {"explicitList": ["reject-btn", "approve-btn"]},
+        "distribution": "spaceEvenly"
+      }
+    }
+  },
+  {
+    "id": "reject-btn",
+    "component": {
+      "Button": {
+        "child": "reject-text",
+        "primary": false,
+        "action": {
+          "name": "hitl_response",
+          "context": [
+            {"key": "decision", "value": {"literalString": "reject"}},
+            {"key": "phase", "value": {"path": "phase"}}
+          ]
+        }
+      }
+    }
+  },
+  {
+    "id": "reject-text",
+    "component": {
+      "Text": {"text": {"literalString": "❌ Reject"}}
+    }
+  },
+  {
+    "id": "approve-btn",
+    "component": {
+      "Button": {
+        "child": "approve-text",
+        "primary": true,
+        "action": {
+          "name": "hitl_response",
+          "context": [
+            {"key": "decision", "value": {"literalString": "approve"}},
+            {"key": "phase", "value": {"path": "phase"}}
+          ]
+        }
+      }
+    }
+  },
+  {
+    "id": "approve-text",
+    "component": {
+      "Text": {"text": {"literalString": "✅ Approve"}}
+    }
+  }
+]

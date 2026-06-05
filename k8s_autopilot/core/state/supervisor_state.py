@@ -4,7 +4,7 @@ from enum import Enum
 from pydantic import BaseModel, Field
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
-from langchain.agents import AgentState
+from typing import TypedDict
 
 class SupervisorWorkflowState(BaseModel):
     """Workflow state tracking for the supervisor.
@@ -86,7 +86,7 @@ class WorkflowStatus(str, Enum):
     INPUT_REQUIRED = "input_required"
     INTERRUPTED = "interrupted"
 
-class MainSupervisorState(AgentState):
+class MainSupervisorState(TypedDict, total=False):
     """Minimal supervisor state — coordinators manage their own internal state.
     
     The supervisor is now a router (create_agent + tool wrappers). Each coordinator
@@ -106,23 +106,23 @@ class MainSupervisorState(AgentState):
     messages: Annotated[List[AnyMessage], add_messages]
     
     # ── Core identifiers ──────────────────────────────────────────────
-    user_query: NotRequired[str]
-    session_id: NotRequired[str]
-    task_id: NotRequired[str]
+    user_query: str
+    session_id: str
+    task_id: str
     
     # ── Runtime context (injected into deep-agent config) ─────────────
-    context: NotRequired[Dict[str, Any]]
+    context: Dict[str, Any]
     
     # ── Workflow tracking ─────────────────────────────────────────────
-    status: NotRequired[str]  # "pending" | "working" | "completed" | "error"
-    current_phase: NotRequired[str]
-    workflow_state: NotRequired[SupervisorWorkflowState]
-    workflow_complete: NotRequired[bool]
+    status: str  # "pending" | "working" | "completed" | "error"
+    current_phase: str
+    workflow_state: SupervisorWorkflowState
+    workflow_complete: bool
     
     # ── Deep agent coordinator outputs (one per coordinator) ──────────
-    helm_operator_output: NotRequired[Dict[str, Any]]
-    app_operator_output: NotRequired[Dict[str, Any]]
-    k8s_operator_output: NotRequired[Dict[str, Any]]
+    helm_operator_output: Dict[str, Any]
+    app_operator_output: Dict[str, Any]
+    k8s_operator_output: Dict[str, Any]
     
     # ── HITL ──────────────────────────────────────────────────────────
-    pending_feedback_requests: NotRequired[Dict[str, Any]]
+    pending_feedback_requests: Dict[str, Any]

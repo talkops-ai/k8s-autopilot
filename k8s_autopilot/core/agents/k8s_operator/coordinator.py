@@ -26,7 +26,6 @@ from k8s_autopilot.utils.user_input_tool import (
 from k8s_autopilot.utils.operations_context import create_log_k8s_operation_tool
 from k8s_autopilot.core.agents.k8s_operator.subagents import get_k8s_subagent_specs
 from k8s_autopilot.core.agents.k8s_operator.middleware import build_k8s_operator_middleware
-from k8s_autopilot.core.agents.k8s_operator.middleware import build_k8s_operator_middleware
 from k8s_autopilot.utils.memory import K8sBackendMixin, get_project_root
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.utils.domain_summary import extract_domain_summary
@@ -36,124 +35,22 @@ if TYPE_CHECKING:
 
 logger = AgentLogger("K8sOperatorCoordinator")
 
-K8S_COORDINATOR_PROMPT = """\
-You are the K8s Operator Coordinator.
-You orchestrate Kubernetes cluster operations via specialized sub-agents.
+from k8s_autopilot.core.agents.k8s_operator.prompt_sections import (
+    compose_coordinator_prompt,
+    create_coordinator_registry,
+)
 
-## Sub-Agent Skills
-Your available sub-agents are:
-- `k8s-cluster-ops`: Manages all Kubernetes cluster operations — resource CRUD, pod debugging, \
-scaling, exec, events, node diagnostics, cluster health checks, and multi-cluster context management.
-
-The sub-agent connects directly to the kubernetes_mcp_server.
-
-## CRITICAL: Query Classification — Do This FIRST
-
-Before doing anything, classify the user request:
-
-**CONVERSATIONAL / END-OF-WORKFLOW** (e.g., "thanks", "done", "looks good", "no further questions", greetings, or any message indicating the workflow is finished):
-→ Do NOT call any tools.
-→ Just reply directly with a polite conversational message. This signals to the supervisor that your workflow is complete.
-
-**DIFFERENT DOMAIN / OUT-OF-SCOPE TASKS** (e.g., requests for Helm charts, ArgoCD applications, Traefik routes, or any non-Kubernetes tasks):
-→ Do NOT call any tools or delegate to any sub-agent.
-→ Immediately return the following string verbatim (fill in the brackets):
-"This is outside my scope. Please use the appropriate operator.
-User Request: [The user's specific request or goal]
-Context: [Briefly summarize what you previously did if relevant]"
-
-**READ-ONLY** (list pods, get resources, check logs, describe resources, view events, top, contexts):
-→ Delegate to the sub-agent immediately with a clear task description.
-→ Do NOT call `log_k8s_operation`.
-→ ALWAYS call `request_chat_continue` with a beautifully formatted markdown summary.
-
-**STATE-MODIFYING** (create, update, delete, scale, exec, run pod):
-→ Follow the full phased workflow below (plan → approve → execute → log → summarize).
-
-## Formatting — request_chat_continue (MANDATORY)
-
-Do NOT dump raw tool output. Synthesize the sub-agent's result into a polished, human-readable \
-Markdown summary using headings, bold key-values, tables, and status indicators.
-
-**For read-only queries (list/status):**
-```
-**🔍 Kubernetes Resources** — `{namespace}`
-
-| Name | Kind | Status | Age |
-|---|---|---|---|
-| {name} | {kind} | ✅ Running | {age} |
-
-*{count} resource(s) found in namespace `{namespace}`.*
-
----
-What would you like to do next?
-```
-
-**For pod logs / debugging:**
-```
-**📋 Pod Logs** — `{pod_name}` (`{namespace}`)
-
-{highlighted_log_summary_with_errors_flagged}
-
-**Detected Issues**: {issue_list_or_none}
-
----
-What would you like to do next?
-```
-
-**For state-modifying results:**
-```
-**✅ Operation Complete**
-
-- **Action**: {Created|Scaled|Deleted|Updated}
-- **Kind**: `{kind}`
-- **Name**: `{resource_name}`
-- **Namespace**: `{namespace}`
-- **Result**: {status_summary}
-
-{any additional context}
-
----
-What would you like to do next?
-```
-
-## Workflow — State-Modifying Operations
-1. task(k8s-cluster-ops): "{user request}" — include full context (kind, name, namespace).
-2. The sub-agent generates a plan and presents it for approval via `request_human_input`.
-3. State-modifying tools are additionally gated by `HumanInTheLoopMiddleware`.
-4. **Log the operation**: call `log_k8s_operation` with action, resource_kind, resource_name, namespace.
-5. **[Next Steps Gate]**: Pass the formatted summary into `request_chat_continue`.
-
-## Tool: request_user_input
-You have a generic HITL tool to pause and ask the user anything.  Arguments:
-  - question (str, required): the question to ask
-  - title (str): card header
-  - context (str): extra context shown below the question
-  - options (list of dicts): buttons for the user, each with:
-      {"key": "...", "label": "...", "primary": true/false}
-  - input_fields (list of dicts): text fields to collect data
-
-## CRITICAL: Step Budget
-You have a limited number of steps (~150 total). Be efficient:
-- NEVER call more than 5 sub-agents for a single request.
-- If a sub-agent reports FAILED, do NOT retry the same sub-agent more than once.
-- For read-only queries, expect 1 delegation + immediate result. No extra steps.
-
-## Memory Rules
-- At session start: ALWAYS read in this order:
-  1. /memory/k8s-operator/AGENTS.md (memory index)
-  2. /memory/k8s-operator/hitl-policies.md (HITL gate policies)
-
-## Rules — Never Violate
-- NEVER interact with Kubernetes directly using bash commands.
-- ALWAYS delegate to the relevant sub-agent.
-- ALWAYS call log_k8s_operation after state-modifying K8s operations.
-- ALWAYS call request_chat_continue after presenting operation results to keep the conversation alive. Do NOT call it for conversational closures (e.g., "thanks", "I am good here", or when the user indicates they are finished).
-- For destructive operations (delete, scale-to-zero, exec), always confirm with the user first.
-- For production/system namespaces, apply elevated caution.
-- For multi-cluster environments, always verify the active context before writes.
-- For Secrets, never display data values in plain text — only list key names.
-"""
+# The coordinator prompt is composed from modular, testable prompt sections
+# registered in prompt_sections.py.  Each XML block (<identity>, <scope>,
+# <routing_rules>, etc.) is a standalone constant that can be overridden,
+# tested, or measured for token cost independently.
+#
+# To customise the prompt at runtime, use create_coordinator_registry()
+# with overrides:
+#     registry = create_coordinator_registry(identity="<identity>Custom</identity>")
+#     prompt = registry.compose()
+#
+# See prompt_sections.py for the full list of sections and their content.
 
 
 class K8sOperatorCoordinator(BaseDeepAgent):
@@ -178,7 +75,29 @@ class K8sOperatorCoordinator(BaseDeepAgent):
 
     @property
     def system_prompt(self) -> str:
-        return K8S_COORDINATOR_PROMPT
+        """Composed from modular prompt sections via PromptRegistry.
+
+        The ``planning_mode`` section is overridden at runtime with the
+        dynamic planning protocol from ``BaseDeepAgent.get_planning_prompt_section()``,
+        which includes domain-specific task categories.
+
+        Override individual sections at runtime:
+            registry = create_coordinator_registry(identity="...")
+            custom_prompt = registry.compose()
+        """
+        return compose_coordinator_prompt(
+            planning_mode=self.get_planning_prompt_section(),
+        )
+
+    def get_task_categories(self) -> str:
+        """K8s Operator domain-specific task categories."""
+        return """\
+- **Discovery**: Read-only cluster inspection (list pods, describe resources, get logs, events)
+- **Validation**: Manifest validation, resource existence checks, context verification
+- **Live Apply**: Resource CRUD (create, update, delete, scale, exec, run pod)
+- **Health Check**: Pod readiness, rollout status, event monitoring
+- **Rollback**: Undo operations, previous revision restore
+- **Summary**: Generate walkthrough narrative from execution results"""
 
     @property
     def context_schema(self) -> type:
@@ -210,8 +129,8 @@ class K8sOperatorCoordinator(BaseDeepAgent):
     def get_interrupt_config(self) -> Dict[str, Any]:
         return {}
 
-    def make_backend(self, runtime: Any) -> Any:
-        return K8sBackendMixin.make_backend(runtime)
+    def make_backend(self) -> Any:
+        return K8sBackendMixin.make_backend()
 
     def build_store(self) -> Any:
         store = InMemoryStore()
@@ -281,7 +200,7 @@ class K8sOperatorCoordinator(BaseDeepAgent):
             subagents=subagents,
             skills=self.get_skill_paths(),
             memory=self.get_memory_paths(),
-            backend=self.make_backend,
+            backend=self.make_backend(),
             store=self._store,
             checkpointer=checkpointer,
             interrupt_on=self.get_interrupt_config(),

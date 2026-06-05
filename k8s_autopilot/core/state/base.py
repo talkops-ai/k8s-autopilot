@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 from langchain_core.messages import BaseMessage, AnyMessage
 from langgraph.graph.message import add_messages
-from langchain.agents import AgentState
 
 # ============================================================================
 # Shared Data Models
@@ -136,7 +135,7 @@ class ApprovalRecord(TypedDict, total=False):
     feedback: Optional[str]
 
 
-class ArgoCDOnboardingState(AgentState):
+class ArgoCDOnboardingState(TypedDict, total=False):
     """
     State schema for ArgoCD Application Onboarding Deep Agent.
     
@@ -363,7 +362,7 @@ class WorkflowStatus(str, Enum):
     ROLLED_BACK = "rolled_back"
     INTERRUPTED = "interrupted"
 
-class MainSupervisorState(AgentState):
+class MainSupervisorState(TypedDict, total=False):
     """Minimal supervisor state — coordinators manage their own internal state.
     
     The supervisor is now a router (create_agent + tool wrappers). Each coordinator
@@ -408,6 +407,14 @@ class MainSupervisorState(AgentState):
     # ── Domain summaries (blackboard for cross-domain awareness) ──────
     domain_summaries: Annotated[List[Dict[str, Any]], operator.add]
     
+    # ── Plan-and-Execute state (enhanced planning mode) ─────────────
+    # Serialized PlanEnvelope for cross-coordinator plan awareness
+    plan_envelope: NotRequired[Dict[str, Any]]
+    # Final walkthrough narrative generated after plan execution
+    execution_walkthrough: NotRequired[str]
+    # Plan version counter for replan cycles (generic, incremented on rejection)
+    plan_version: NotRequired[int]
+
     # ── HITL ──────────────────────────────────────────────────────────
     pending_feedback_requests: NotRequired[Dict[str, Any]]
 
@@ -436,7 +443,7 @@ class K8sOperatorContext(BaseModel):
     workspace_dir: str = Field(default="/tmp/helm-charts", description="Physical workspace for generated charts")
 
 
-class PlanningSwarmState(AgentState):
+class PlanningSwarmState(TypedDict, total=False):
     """State for Planning Swarm (Deep Agent-based)"""
     messages: Annotated[List[AnyMessage], add_messages]
     
@@ -486,7 +493,7 @@ class PlanningSwarmState(AgentState):
 # Generation Swarm State
 # ============================================================================
 
-class GenerationSwarmState(AgentState):
+class GenerationSwarmState(TypedDict, total=False):
     """State for Generation Swarm (Deep Agent-based)"""
     messages: Annotated[List[AnyMessage], add_messages]
     
@@ -547,7 +554,7 @@ class GenerationSwarmState(AgentState):
 # Validation & Deployment Swarm State
 # ============================================================================
 
-class ValidationSwarmState(AgentState):
+class ValidationSwarmState(TypedDict, total=False):
     """State for Validation & Deployment Swarm"""
     messages: Annotated[List[AnyMessage], add_messages]
     
@@ -682,7 +689,7 @@ class RequestClassification(BaseModel):
         description="Brief explanation of classification"
     )
 
-class HelmAgentState(AgentState):
+class HelmAgentState(TypedDict, total=False):
     """Master state schema for the agent"""
     # Message history (auto-managed by LangGraph)
     messages: Annotated[List[AnyMessage], add_messages]

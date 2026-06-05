@@ -42,6 +42,51 @@ logger = AgentLogger("HelmPlannerSupervisorAgent")
 
 
 # ============================================================================
+# Routing Functions (Module-Level for pure unit testing)
+# ============================================================================
+
+def route_initial(state: HelmPlannerState) -> str:
+    existing = state.get("workflow_state")
+    wf: Optional[HelmPlannerWorkflowState] = None
+    if isinstance(existing, dict):
+        wf = HelmPlannerWorkflowState(**existing)
+    elif isinstance(existing, HelmPlannerWorkflowState):
+        wf = existing
+
+    if wf and wf.next_agent:
+        return wf.next_agent
+
+    return state.get("active_agent", "requirements_analyser")
+
+
+def route_after_agent(state: HelmPlannerState) -> str:
+    existing = state.get("workflow_state")
+    wf: Optional[HelmPlannerWorkflowState] = None
+    if isinstance(existing, dict):
+        wf = HelmPlannerWorkflowState(**existing)
+    elif isinstance(existing, HelmPlannerWorkflowState):
+        wf = existing
+
+    # End when workflow is complete
+    if wf and wf.is_complete:
+        return "__end__"
+
+    # Safety net: if last message is AIMessage without tool_calls,
+    # end the graph to prevent infinite loops.
+    messages = state.get("messages", [])
+    if messages:
+        last_msg = messages[-1]
+        if isinstance(last_msg, AIMessage) and not last_msg.tool_calls:
+            return "__end__"
+
+    # Route to next agent
+    if wf and wf.next_agent:
+        return wf.next_agent
+
+    return state.get("active_agent", "requirements_analyser")
+
+
+# ============================================================================
 # HelmPlannerSupervisorAgent
 # ============================================================================
 
@@ -153,7 +198,7 @@ class HelmPlannerSupervisorAgent(BaseSubgraphAgent):
             )
 
             last_ai = next(
-                msg for msg in reversed(runtime.state["messages"])
+                msg for msg in reversed(runtime.state.get("messages", []))
                 if isinstance(msg, AIMessage)
             )
             transfer_msg = ToolMessage(
@@ -165,7 +210,7 @@ class HelmPlannerSupervisorAgent(BaseSubgraphAgent):
                 update={
                     "active_agent": "architecture_planner",
                     "current_step": "architecture_planner",
-                    "workflow_state": wf.model_dump(),
+                    "workflow_state": wf,
                     "status": "in_progress",
                     "messages": [last_ai, transfer_msg],
                     "handoff_data": runtime.state.get("handoff_data", {}),
@@ -209,7 +254,7 @@ class HelmPlannerSupervisorAgent(BaseSubgraphAgent):
             )
 
             last_ai = next(
-                msg for msg in reversed(runtime.state["messages"])
+                msg for msg in reversed(runtime.state.get("messages", []))
                 if isinstance(msg, AIMessage)
             )
 
@@ -245,7 +290,7 @@ class HelmPlannerSupervisorAgent(BaseSubgraphAgent):
                     update={
                         "active_agent": next_agent,
                         "current_step": next_phase,
-                        "workflow_state": wf.model_dump(),
+                        "workflow_state": wf,
                         "status": "in_progress",
                         "messages": [last_ai, reroute_msg],
                         "handoff_data": runtime.state.get("handoff_data", {}),
@@ -267,7 +312,7 @@ class HelmPlannerSupervisorAgent(BaseSubgraphAgent):
             return Command(
                 goto=END,
                 update={
-                    "workflow_state": wf.model_dump(),
+                    "workflow_state": wf,
                     "status": "completed",
                     "messages": [last_ai, completion_msg],
                     "handoff_data": runtime.state.get("handoff_data", {}),
@@ -331,9 +376,7 @@ class HelmPlannerSupervisorAgent(BaseSubgraphAgent):
             "user_query": user_query or "",
             "session_id": send_payload.get("session_id"),
             "task_id": send_payload.get("task_id"),
-            # Serialize to plain dict — LangGraph's msgpack checkpointer
-            # cannot handle custom Pydantic models directly.
-            "workflow_state": workflow_state.model_dump(),
+            "workflow_state": workflow_state,
             "status": "in_progress",
             "active_agent": "requirements_analyser",
             "current_step": "req_analyser",
@@ -464,47 +507,8 @@ class HelmPlannerSupervisorAgent(BaseSubgraphAgent):
         """
         logger.info("Building HelmPlannerSupervisorAgent graph")
 
-        def route_initial(state: HelmPlannerState) -> str:
-            existing = state.get("workflow_state")
-            wf: Optional[HelmPlannerWorkflowState] = None
-            if isinstance(existing, dict):
-                wf = HelmPlannerWorkflowState(**existing)
-            elif isinstance(existing, HelmPlannerWorkflowState):
-                wf = existing
-
-            if wf and wf.next_agent:
-                return wf.next_agent
-
-            return cast(str, state.get("active_agent", "requirements_analyser"))
-
-        def route_after_agent(state: HelmPlannerState) -> str:
-            existing = state.get("workflow_state")
-            wf: Optional[HelmPlannerWorkflowState] = None
-            if isinstance(existing, dict):
-                wf = HelmPlannerWorkflowState(**existing)
-            elif isinstance(existing, HelmPlannerWorkflowState):
-                wf = existing
-
-            # End when workflow is complete
-            if wf and wf.is_complete:
-                return "__end__"
-
-            # Safety net: if last message is AIMessage without tool_calls,
-            # end the graph to prevent infinite loops.
-            messages = state.get("messages", [])
-            if messages:
-                last_msg = messages[-1]
-                if isinstance(last_msg, AIMessage) and not last_msg.tool_calls:
-                    return "__end__"
-
-            # Route to next agent
-            if wf and wf.next_agent:
-                return wf.next_agent
-
-            return cast(str, state.get("active_agent", "requirements_analyser"))
-
-        # Build the graph
-        builder = StateGraph(HelmPlannerState)
+        # Build the state graph with the updated TypedDict state
+        builder = StateGraph(HelmPlannerState)  # type: ignore[arg-type]
 
         builder.add_node("requirements_analyser", self._req_analyser_agent)
         builder.add_node("architecture_planner", self._arch_planner_agent)

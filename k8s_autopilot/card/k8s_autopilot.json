@@ -1,18 +1,27 @@
 {
     "name": "k8s_autopilot",
-    "description": "Production-grade multi-agent system for Kubernetes automation. Handles end-to-end Helm chart generation (Planning -> Template -> Validation) and active Cluster Management (Install -> Upgrade -> Rollback) with strict Human-in-the-Loop safety gates.",
-    "url": "http://localhost:10102",
+    "description": "Production-grade multi-agent system for Kubernetes automation. Orchestrates four specialized deep-agent coordinators — Helm Operator (chart generation, install/upgrade/rollback), K8s Operator (cluster ops, pod debugging, scaling), App Operator (ArgoCD GitOps, Argo Rollouts progressive delivery, Traefik edge routing), and Observability (Prometheus monitoring, AlertManager alerting) — with strict Human-in-the-Loop safety gates for all state-modifying operations.",
+    "supported_interfaces": [
+        {
+            "url": "http://localhost:10102",
+            "protocol_binding": "JSONRPC",
+            "protocol_version": "1.0"
+        },
+        {
+            "url": "http://localhost:10102",
+            "protocol_binding": "JSONRPC",
+            "protocol_version": "0.3"
+        }
+    ],
     "provider": {
-        "name": "TalkOps AI",
         "organization": "TalkOps AI",
         "url": "https://github.com/talkops-ai"
     },
-    "version": "0.3.0",
-    "documentationUrl": "https://github.com/talkops-ai/k8s-autopilot",
+    "version": "0.5.0",
+    "documentation_url": "https://github.com/talkops-ai/k8s-autopilot",
     "capabilities": {
         "streaming": true,
-        "pushNotifications": true,
-        "stateTransitionHistory": true,
+        "push_notifications": true,
         "extensions": [
             {
                 "uri": "https://a2ui.org/a2a-extension/a2ui/v0.8",
@@ -31,72 +40,99 @@
                     "metadata": {
                         "githubRepo": "https://github.com/talkops-ai/k8s-autopilot",
                         "discordUrl": "https://discord.gg/RzqRy6uKAm",
-                        "placeholder": "Manage Kubernetes clusters, deploy Helm charts, and configure ArgoCD..."
+                        "placeholder": "Manage Kubernetes clusters, deploy Helm charts, monitor with Prometheus, and configure ArgoCD..."
                     },
                     "capabilityDescription": {
                         "title": "What K8s Autopilot Does",
-                        "description": "The K8s Autopilot intelligently manages your Kubernetes clusters. It can generate Helm charts, configure ArgoCD applications, orchestrate Argo Rollouts for progressive delivery, and handle Traefik edge routing.",
+                        "description": "The K8s Autopilot intelligently manages your Kubernetes clusters through four specialized deep-agent coordinators. It generates Helm charts, manages cluster operations, orchestrates GitOps workflows with ArgoCD/Argo Rollouts/Traefik, and provides full observability through Prometheus and AlertManager.",
                         "features": [
-                            "🎯 Generates production-ready Helm charts from requirements",
-                            "⚙️ Intelligent cluster management, debugging, and scaling",
-                            "🔍 Progressive delivery with Argo Rollouts (Canary, Blue/Green)",
-                            "🧩 GitOps automation using ArgoCD applications and projects",
-                            "📦 Edge routing configuration with Traefik"
+                            "🎯 Generates production-ready Helm charts from natural language requirements",
+                            "⚙️ Intelligent cluster management — pod debugging, scaling, events, and health checks",
+                            "🔄 GitOps automation with ArgoCD — app lifecycle, sync, and rollback",
+                            "🚀 Progressive delivery with Argo Rollouts — canary and blue/green deployments",
+                            "🌐 Edge routing with Traefik — weighted routing, traffic mirroring, and middleware",
+                            "📊 Prometheus monitoring — PromQL queries, exporter lifecycle, TSDB cardinality, and rule authoring",
+                            "🔔 AlertManager alerting — on-call triage, silence management, routing audit, and integration testing",
+                            "🔒 Human-in-the-Loop safety gates for all state-modifying operations"
                         ]
                     },
                     "mcpServers": [
                         {
                             "name": "Kubernetes MCP Server",
-                            "description": "Provides direct interaction with Kubernetes clusters, allowing the agent to read resources, check logs, and apply manifests.",
+                            "description": "Provides direct interaction with Kubernetes clusters — resource CRUD, pod logs and exec, scaling, events, node diagnostics, and cluster health checks.",
                             "status": "active",
                             "githubUrl": "https://github.com/talkops-ai/kubernetes-mcp-server"
                         },
                         {
                             "name": "Helm MCP Server",
-                            "description": "Provides interaction with Helm for managing releases, validating charts, and retrieving chart values.",
+                            "description": "Manages Helm release lifecycle — install, upgrade, rollback, uninstall, status checks, and chart validation.",
                             "status": "active",
                             "githubUrl": "https://github.com/talkops-ai/helm-mcp-server"
                         },
                         {
                             "name": "ArgoCD MCP Server",
-                            "description": "Provides integration with ArgoCD for creating applications, managing projects, and syncing GitOps state.",
+                            "description": "Integrates with ArgoCD for GitOps — application lifecycle, project management, repository onboarding, sync, and rollback.",
                             "status": "active",
                             "githubUrl": "https://github.com/talkops-ai/argocd-mcp-server"
                         },
                         {
                             "name": "Argo Rollouts MCP Server",
-                            "description": "Provides integration with Argo Rollouts for managing progressive delivery workflows, canary deployments, and analysis runs.",
+                            "description": "Manages progressive delivery workflows — canary deployments, blue/green strategy, rollout promotion, abort, and analysis runs.",
                             "status": "active",
                             "githubUrl": "https://github.com/talkops-ai/argo-rollouts-mcp-server"
                         },
                         {
                             "name": "Traefik MCP Server",
-                            "description": "Provides interaction with Traefik edge routing configurations, weighted load balancing, and middlewares.",
+                            "description": "Configures Traefik edge routing — weighted canary routing, traffic mirroring, middleware chains, and IngressRoute management.",
                             "status": "active",
                             "githubUrl": "https://github.com/talkops-ai/traefik-mcp-server"
+                        },
+                        {
+                            "name": "Prometheus MCP Server",
+                            "description": "Provides Prometheus monitoring capabilities — PromQL instant and range queries, metric exploration, label discovery, exporter lifecycle, ServiceMonitor creation, TSDB cardinality analysis, and alerting/recording rule authoring.",
+                            "status": "active",
+                            "githubUrl": "https://github.com/talkops-ai/prometheus-mcp-server"
+                        },
+                        {
+                            "name": "AlertManager MCP Server",
+                            "description": "Manages AlertManager alerting operations — on-call alert triage and summarization, silence lifecycle, routing introspection and audit, integration testing, and governance/compliance review.",
+                            "status": "active",
+                            "githubUrl": "https://github.com/talkops-ai/alertmanager-mcp-server"
                         },
                         {
                             "name": "GitHub MCP Server",
                             "description": "Provides GitHub integration for accessing repositories, committing generated Helm charts, and managing code workflows.",
                             "status": "active",
                             "githubUrl": "https://github.com/github/github-mcp-server"
+                        },
+                        {
+                            "name": "Tempo MCP Server",
+                            "description": "Distributed tracing with Grafana Tempo — trace search, span analysis, trace-to-logs correlation, and latency debugging.",
+                            "status": "coming_soon",
+                            "githubUrl": "https://github.com/talkops-ai/tempo-mcp-server"
+                        },
+                        {
+                            "name": "Loki MCP Server",
+                            "description": "Log aggregation with Grafana Loki — LogQL queries, log stream exploration, log-based alerting, and structured log search.",
+                            "status": "coming_soon",
+                            "githubUrl": "https://github.com/talkops-ai/loki-mcp-server"
+                        },
+                        {
+                            "name": "OpenTelemetry MCP Server",
+                            "description": "OpenTelemetry Collector management — pipeline health monitoring, instrumentation status, sampling configuration, and drop rate analysis.",
+                            "status": "coming_soon",
+                            "githubUrl": "https://github.com/talkops-ai/otel-mcp-server"
                         }
                     ]
                 }
             }
         ]
     },
-    "authentication": {
-        "credentials": null,
-        "schemes": [
-            "public"
-        ]
-    },
-    "defaultInputModes": [
+    "default_input_modes": [
         "text",
         "text/plain"
     ],
-    "defaultOutputModes": [
+    "default_output_modes": [
         "text",
         "text/plain",
         "application/json",
@@ -105,48 +141,83 @@
     "skills": [
         {
             "id": "helm_operator",
-            "name": "Helm Chart Generator",
-            "description": "Designs and generates production-ready Helm charts from natural language requirements.",
+            "name": "Package Management via Helm",
+            "description": "End-to-end Helm chart lifecycle — generates production-ready charts from natural language, validates with linting and template rendering, installs/upgrades/rollbacks releases, and commits to GitHub.",
             "tags": [
-                "automation",
                 "helm",
+                "charts",
+                "generation",
+                "install",
+                "upgrade",
+                "rollback",
                 "devops"
             ],
             "examples": [
                 "Create a high-availability Helm chart for a Node.js app with Redis",
-                "Generate a chart for a python worker with cronjobs and secrets"
-            ]
-        },
-        {
-            "id": "app_operator",
-            "name": "GitOps & Progressive Delivery",
-            "description": "Manages ArgoCD applications, orchestrates Argo Rollouts for canary deployments, and configures Traefik edge routing.",
-            "tags": [
-                "argocd",
-                "rollouts",
-                "traefik",
-                "gitops"
-            ],
-            "examples": [
-                "Onboard a new ArgoCD application for my python-worker repo",
-                "Promote the canary rollout to 50% traffic weight",
-                "Create a Traefik weighted service for blue-green deployment"
+                "Generate a chart for a python worker with cronjobs and secrets",
+                "Upgrade the payment-service release to the latest chart version",
+                "Rollback the frontend release to the previous revision"
             ]
         },
         {
             "id": "k8s_operator",
-            "name": "Cluster Operations Manager",
-            "description": "Manages Kubernetes cluster resources, performs pod debugging, scaling, and general cluster administration.",
+            "name": "Kubernetes Cluster Operations",
+            "description": "Manages Kubernetes cluster operations — resource CRUD, pod debugging and logs, scaling deployments, exec into containers, events triage, node diagnostics, cluster health checks, and kubeconfig context management.",
             "tags": [
                 "kubernetes",
-                "operations",
-                "management",
-                "debugging"
+                "pods",
+                "debugging",
+                "scaling",
+                "events",
+                "health",
+                "operations"
             ],
             "examples": [
                 "Find out why the payment-service pod is crashing",
-                "List all failed releases in the prod namespace",
-                "Scale the frontend deployment to 5 replicas"
+                "Scale the frontend deployment to 5 replicas",
+                "Run a cluster health check across all nodes",
+                "Show pod logs for the api-gateway in production"
+            ]
+        },
+        {
+            "id": "app_operator",
+            "name": "Application Delivery via GitOps",
+            "description": "Full application lifecycle via GitOps — manages ArgoCD applications and projects, orchestrates Argo Rollouts for canary and blue/green deployments, and configures Traefik edge routing with weighted traffic splitting and middleware.",
+            "tags": [
+                "argocd",
+                "gitops",
+                "rollouts",
+                "canary",
+                "blue-green",
+                "traefik",
+                "routing",
+                "progressive-delivery"
+            ],
+            "examples": [
+                "Onboard a new ArgoCD application for my python-worker repo",
+                "Set up a canary rollout strategy for the checkout service",
+                "Promote the canary rollout to 50% traffic weight",
+                "Create weighted Traefik routing for blue-green deployment"
+            ]
+        },
+        {
+            "id": "observability",
+            "name": "Cluster Observability & Alerting",
+            "description": "Full-stack observability — Prometheus monitoring with PromQL queries, metric exploration, exporter lifecycle, ServiceMonitor creation, TSDB cardinality analysis, and alerting rule authoring. AlertManager operations including on-call triage, silence management, routing audit, and integration testing.",
+            "tags": [
+                "prometheus",
+                "alertmanager",
+                "monitoring",
+                "metrics",
+                "alerting",
+                "promql",
+                "observability"
+            ],
+            "examples": [
+                "Query the current CPU and memory usage across all namespaces",
+                "What alerts are currently firing in the cluster?",
+                "Deploy a PostgreSQL exporter and create a ServiceMonitor",
+                "Show on-call alert summary and manage silences"
             ]
         }
     ]

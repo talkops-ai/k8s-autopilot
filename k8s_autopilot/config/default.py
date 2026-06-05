@@ -22,18 +22,24 @@ class DefaultConfig:
     LLM_MODEL: str = "gpt-4o-mini"
     LLM_TEMPERATURE: float = 0.0
     LLM_MAX_TOKENS: int = 15000
+    LLM_THINKING_ENABLED: bool = False
+    LLM_THINKING_BUDGET: Optional[int] = None
 
     # ── LLM: Higher-tier (complex reasoning) ─────────────────────────────
     LLM_HIGHER_PROVIDER: str = "openai"
     LLM_HIGHER_MODEL: str = "gpt-5-mini"
     LLM_HIGHER_TEMPERATURE: float = 0.0
     LLM_HIGHER_MAX_TOKENS: int = 15000
+    LLM_HIGHER_THINKING_ENABLED: bool = False
+    LLM_HIGHER_THINKING_BUDGET: Optional[int] = None
 
     # ── LLM: DeepAgent (multi-step agentic workflows) ────────────────────
     LLM_DEEPAGENT_PROVIDER: str = "openai"
     LLM_DEEPAGENT_MODEL: str = "o4-mini"
     LLM_DEEPAGENT_TEMPERATURE: float = 1.0
     LLM_DEEPAGENT_MAX_TOKENS: int = 25000
+    LLM_DEEPAGENT_THINKING_ENABLED: bool = False
+    LLM_DEEPAGENT_THINKING_BUDGET: Optional[int] = None
 
     # ── Logging ───────────────────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
@@ -121,6 +127,27 @@ class DefaultConfig:
         {
             "name": "alertmanager-mcp-server",
             "command": "alertmanager-mcp-server",
+            "transport": "stdio",
+            "args": [],
+            "env": {},
+        },
+        {
+            "name": "opentelemetry-mcp-server",
+            "command": "opentelemetry-mcp-server",
+            "transport": "stdio",
+            "args": [],
+            "env": {},
+        },
+        {
+            "name": "loki-mcp-server",
+            "command": "loki-mcp-server",
+            "transport": "stdio",
+            "args": [],
+            "env": {},
+        },
+        {
+            "name": "tempo-mcp-server",
+            "command": "tempo-mcp-server",
             "transport": "stdio",
             "args": [],
             "env": {},

@@ -4,7 +4,7 @@
 .taskmaster/
 .claude/
 k8s-autopilot/examples/
-tests/
+#tests/
 # Logs
 logs
 *.log

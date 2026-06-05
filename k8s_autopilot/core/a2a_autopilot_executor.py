@@ -20,27 +20,32 @@ Reference: aws-orchestrator-agent/core/a2a_executor.py
 import asyncio
 import inspect
 import json
+import time
 import uuid
-from typing import Any, Dict, List, Optional, Union, cast
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import (
-    DataPart,
-    InvalidParamsError,
     Part,
     Message,
     Role,
-    SendStreamingMessageSuccessResponse,
+    StreamResponse,
     Task,
     TaskArtifactUpdateEvent,
     TaskState,
     TaskStatusUpdateEvent,
-    TextPart,
 )
-from a2a.utils import new_agent_text_message, new_task, new_agent_parts_message
-from a2a.utils.errors import ServerError
+from a2a.helpers import (
+    new_text_message,
+    new_message,
+    new_task_from_user_message,
+    new_text_part,
+    new_data_part,
+)
+from a2a.utils.errors import A2AError
 from langgraph.types import Command
 
 # A2UI imports
@@ -49,9 +54,18 @@ from a2ui.a2a import (
     create_a2ui_part,
 )
 
-A2UI_EXTENSION_URI = f"{A2UI_EXTENSION_BASE_URI}/v0.8"
+A2UI_EXTENSION_URI = f"{A2UI_EXTENSION_BASE_URI}/v0.9"
 
 from k8s_autopilot.core.agents.types import AgentResponse, BaseAgent
+from k8s_autopilot.core.a2ui.surface_builder import (
+    TALKOPS_CATALOG_ID,
+    build_thought_block_surface,
+    build_tool_execution_surface,
+    build_plan_todo_surface,
+    update_plan_todo_data,
+    update_thought_block_data,
+    update_tool_execution_data,
+)
 from k8s_autopilot.utils.logger import AgentLogger
 
 logger = AgentLogger("A2AExecutor")
@@ -61,9 +75,9 @@ logger = AgentLogger("A2AExecutor")
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _new_agent_message(parts: List[Part]) -> Message:
+def _new_agent_message(parts: Sequence[Part]) -> Message:
     """Create an agent message with a unique ``messageId``."""
-    return Message(role=Role.agent, parts=parts, message_id=str(uuid.uuid4()))
+    return Message(role=Role.ROLE_AGENT, parts=parts, message_id=str(uuid.uuid4()))
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +129,7 @@ class _StreamRenderer:
         agent = self._resolve_agent(meta)
         if agent and agent != self._current_agent:
             self._current_agent = agent
-            await self.emit(f"\n🤖 **{agent}**\n\n")
+            await self.emit(f"\n\n**{agent}**\n\n")
 
         content = str(text) if text else ""
         # Suppress raw JSON blobs leaking into the AI text stream.
@@ -133,13 +147,13 @@ class _StreamRenderer:
         if not content:
             return
         msg = Message(
-            role=Role.agent,
-            parts=[Part(root=TextPart(text=content))],
+            role=Role.ROLE_AGENT,
+            parts=[Part(text=content)],
             message_id=self.message_id,
             context_id=self._ctx,
             task_id=self._task,
         )
-        await self._updater.update_status(TaskState.working, msg, final=False)
+        await self._updater.update_status(TaskState.TASK_STATE_WORKING, msg)
         await asyncio.sleep(0)  # yield to EventConsumer
 
     async def open_thinking(self) -> None:
@@ -261,7 +275,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
         return query
 
-    def _extract_user_action(self, parts: List[Part]) -> Optional[str]:
+    def _extract_user_action(self, parts: Sequence[Part]) -> Optional[str]:
         """Parse A2UI ``userAction`` from message DataParts.
 
         Handles both standard A2UI parts and raw DataParts.
@@ -281,9 +295,11 @@ class A2AAutoPilotExecutor(AgentExecutor):
     @staticmethod
     def _get_user_action_from_part(part: Part) -> Optional[dict]:
         """Extract ``userAction`` dict from a Part, or None."""
-        root = getattr(part, "root", part)
-        if isinstance(root, DataPart) and isinstance(root.data, dict):
-            return root.data.get("userAction")
+        if part.HasField("data"):
+            from google.protobuf.json_format import MessageToDict
+            data = MessageToDict(part.data)
+            if isinstance(data, dict):
+                return data.get("userAction")
         return None
 
     @staticmethod
@@ -361,9 +377,9 @@ class A2AAutoPilotExecutor(AgentExecutor):
             return task
 
         if context.message is None:
-            raise ServerError(error=InvalidParamsError())
+            raise A2AError(message="No message provided in request context.")
 
-        task = new_task(context.message)
+        task = new_task_from_user_message(context.message)
         await event_queue.enqueue_event(task)
         return task
 
@@ -375,7 +391,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         if not (task and hasattr(task, "status") and hasattr(task.status, "state")):
             return query
 
-        if task.status.state == TaskState.input_required:
+        if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
             logger.info("Resuming from input_required — wrapping as Command(resume=...)",
                 extra={
                     "task_id": task.id,
@@ -412,6 +428,15 @@ class A2AAutoPilotExecutor(AgentExecutor):
         )
 
         renderer: Optional[_StreamRenderer] = None
+        # ── Trace metadata for reasoning panel ────────────────────────
+        _run_id = str(uuid.uuid4())
+        _step_index = 0
+        # ── Active surface trackers ───────────────────────────────────
+        _active_tool_surfaces: Dict[str, Dict[str, Any]] = {}
+        _reasoning_surface_id: Optional[str] = None
+        _reasoning_buffer: str = ""
+        _plan_todo_surface_id: Optional[str] = None
+
         try:
             stream_query: Union[str, Command] = (
                 query if isinstance(query, Command) else str(query or "")
@@ -429,35 +454,342 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
             async for item in agent_stream:  # type: ignore[union-attr]
                 # ── Forward A2A inter-agent events directly ───────────
-                root = getattr(item, "root", None)
-                if root is not None and isinstance(root, SendStreamingMessageSuccessResponse):
-                    event = root.result
-                    if isinstance(event, (TaskStatusUpdateEvent, TaskArtifactUpdateEvent)):
-                        await event_queue.enqueue_event(event)
+                if isinstance(item, StreamResponse):
+                    payload_field = item.WhichOneof("payload")
+                    if payload_field in ("status_update", "artifact_update"):
+                        await event_queue.enqueue_event(getattr(item, payload_field))
                     continue
 
                 # ── Classify the item ─────────────────────────────────
                 is_complete = getattr(item, "is_task_complete", False)
                 needs_input = getattr(item, "require_user_input", False)
                 meta = getattr(item, "metadata", None) or {}
+                message_type = meta.get("message_type", "")
                 is_tool = (
                     getattr(item, "response_type", "") == "token"
-                    and meta.get("message_type") in ("tool_call", "tool_result")
+                    and message_type in (
+                        "tool_call", "tool_result",
+                        "tool_started",
+                    )
+                )
+                is_delegation = (
+                    getattr(item, "response_type", "") == "token"
+                    and message_type == "delegation"
                 )
 
                 # ── Terminal events ───────────────────────────────────
+                # Before leaving the loop, close any tool surfaces that
+                # never received a tool_result (stuck on "Running").
+                async def _flush_active_tool_surfaces() -> None:
+                    nonlocal _step_index
+                    for tname, tracked in list(_active_tool_surfaces.items()):
+                        duration = int(
+                            (time.monotonic() - tracked["start_time"]) * 1000,
+                        )
+                        update_op = update_tool_execution_data(
+                            tracked["surface_id"],
+                            toolName=tracked["tool_name"],
+                            parameters=tracked["parameters"],
+                            environment=tracked["environment"],
+                            status="error",
+                            terminalOutput="Tool did not return a result.",
+                            durationMs=duration,
+                        )
+                        parts = [create_a2ui_part(update_op)]
+                        msg = self._make_stream_message_parts(
+                            parts, renderer.message_id, context_id, task.id,
+                        )
+                        self._attach_trace_metadata(
+                            msg, _run_id, _step_index, "tool_result",
+                        )
+                        await updater.update_status(
+                            TaskState.TASK_STATE_WORKING, msg,
+                        )
+                        _step_index += 1
+                    _active_tool_surfaces.clear()
+
                 if is_complete:
                     await renderer.close_thinking()
+                    _reasoning_surface_id = None
+                    _reasoning_buffer = ""
+                    await _flush_active_tool_surfaces()
                     await self._handle_completed(item, updater, task, context_id, use_ui, renderer.message_id)
                     return
 
                 if needs_input:
                     await renderer.close_thinking()
+                    _reasoning_surface_id = None
+                    _reasoning_buffer = ""
+                    await _flush_active_tool_surfaces()
                     await self._handle_input_required(item, updater, task, context_id, use_ui, renderer.message_id)
                     break
 
-                # ── Tool progress → inside thinking block ─────────────
+                # ── Tool progress → emit toolExecutionCard surfaces ───
+                # Skip interrupt tools (request_human_feedback) — they
+                # are handled by the HITL surface path instead.
+                _INTERRUPT_TOOLS = {
+                    "request_human_feedback",
+                    "request_user_input",
+                    "request_chat_continue",
+                }
+
+                # ── Delegation event → inline text label ──────────────
+                if is_delegation:
+                    # Close any open thinking block before delegation
+                    await renderer.close_thinking()
+                    if _reasoning_surface_id:
+                        _reasoning_surface_id = None
+                        _reasoning_buffer = ""
+
+                    # Emit delegation label as inline text
+                    await renderer.emit(str(item.content or ""))
+                    continue
+
+                if is_tool and use_ui:
+                    tool_name = meta.get("tool_name", "unknown")
+
+                    # ── Close reasoning surface at tool boundary ──────
+                    # Each reasoning phase gets its own thoughtBlock.
+                    # When a tool event arrives, the current reasoning
+                    # block is complete — reset so the next reasoning
+                    # tokens create a new block.
+                    if _reasoning_surface_id:
+                        _reasoning_surface_id = None
+                        _reasoning_buffer = ""
+                    await renderer.close_thinking()
+
+                    if tool_name not in _INTERRUPT_TOOLS:
+                        # ── write_todos → emit planTodoList surface ────
+                        if tool_name == "write_todos":
+                            todos_data = meta.get("tool_args") or {}
+                            todos_list: list = []
+                            # Extract todos from various formats
+                            if isinstance(todos_data, dict):
+                                todos_list = todos_data.get("todos", [])
+                            elif isinstance(todos_data, list):
+                                todos_list = todos_data
+
+                            if todos_list:
+                                if not _plan_todo_surface_id:
+                                    # First write_todos call → create surface
+                                    _plan_todo_surface_id = f"plan-todo-{uuid.uuid4().hex[:8]}"
+                                    ops = build_plan_todo_surface(
+                                        surface_id=_plan_todo_surface_id,
+                                        todos=todos_list,
+                                        plan_title="Execution Plan",
+                                        plan_version=1,
+                                    )
+                                    for op in ops:
+                                        parts = [create_a2ui_part(op)]
+                                        msg = self._make_stream_message_parts(
+                                            parts, renderer.message_id, context_id, task.id,
+                                        )
+                                        self._attach_trace_metadata(
+                                            msg, _run_id, _step_index, "plan_todo",
+                                        )
+                                        await updater.update_status(
+                                            TaskState.TASK_STATE_WORKING, msg,
+                                        )
+                                        _step_index += 1
+                                        await asyncio.sleep(0)
+                                else:
+                                    # Subsequent write_todos → update data
+                                    update_op = update_plan_todo_data(
+                                        _plan_todo_surface_id,
+                                        todos=todos_list,
+                                    )
+                                    parts = [create_a2ui_part(update_op)]
+                                    msg = self._make_stream_message_parts(
+                                        parts, renderer.message_id, context_id, task.id,
+                                    )
+                                    self._attach_trace_metadata(
+                                        msg, _run_id, _step_index, "plan_todo_update",
+                                    )
+                                    await updater.update_status(
+                                        TaskState.TASK_STATE_WORKING, msg,
+                                    )
+                                    _step_index += 1
+                                    await asyncio.sleep(0)
+
+                            # Skip the standard toolExecutionCard for write_todos
+                            continue
+                        if message_type == "tool_call":
+                            # Create a new toolExecutionCard surface.
+                            # Use humanized name from metadata if available.
+                            display_name = str(meta.get("tool_display_name") or tool_name)
+                            surface_id = f"tool-{tool_name}-{uuid.uuid4().hex[:8]}"
+                            ops = build_tool_execution_surface(
+                                surface_id=surface_id,
+                                tool_name=display_name,
+                                status="running",
+                                parameters=meta.get("tool_args"),
+                                environment=meta.get("environment", ""),
+                            )
+                            for op in ops:
+                                parts = [create_a2ui_part(op)]
+                                msg = self._make_stream_message_parts(
+                                    parts, renderer.message_id, context_id, task.id,
+                                )
+                                self._attach_trace_metadata(
+                                    msg, _run_id, _step_index, "tool_call",
+                                )
+                                await updater.update_status(
+                                    TaskState.TASK_STATE_WORKING, msg,
+                                )
+                                _step_index += 1
+                                await asyncio.sleep(0)
+
+                            _active_tool_surfaces[tool_name] = {
+                                "surface_id": surface_id,
+                                "start_time": time.monotonic(),
+                                "tool_name": tool_name,
+                                "parameters": meta.get("tool_args") or {},
+                                "environment": meta.get("environment", ""),
+                            }
+
+                        elif message_type == "tool_started":
+                            # tool_started events are for sub-tools inside
+                            # coordinators. Create a toolExecutionCard for them
+                            # so they appear as separate cards in the timeline.
+                            display_name = str(meta.get("tool_display_name") or tool_name)
+                            surface_id = f"tool-{tool_name}-{uuid.uuid4().hex[:8]}"
+                            ops = build_tool_execution_surface(
+                                surface_id=surface_id,
+                                tool_name=display_name,
+                                status="running",
+                                parameters=meta.get("tool_args"),
+                                environment=meta.get("environment", ""),
+                            )
+                            for op in ops:
+                                parts = [create_a2ui_part(op)]
+                                msg = self._make_stream_message_parts(
+                                    parts, renderer.message_id, context_id, task.id,
+                                )
+                                self._attach_trace_metadata(
+                                    msg, _run_id, _step_index, "tool_started",
+                                )
+                                await updater.update_status(
+                                    TaskState.TASK_STATE_WORKING, msg,
+                                )
+                                _step_index += 1
+                                await asyncio.sleep(0)
+
+                            _active_tool_surfaces[tool_name] = {
+                                "surface_id": surface_id,
+                                "start_time": time.monotonic(),
+                                "tool_name": display_name,
+                                "parameters": meta.get("tool_args") or {},
+                                "environment": meta.get("environment", ""),
+                            }
+
+                        elif message_type == "tool_result":
+                            # Update existing toolExecutionCard surface.
+                            # IMPORTANT: A2UI updateDataModel REPLACES the
+                            # root, so we must re-send ALL fields.
+                            tracked = _active_tool_surfaces.pop(tool_name, None)
+                            if tracked:
+                                duration = int(
+                                    (time.monotonic() - tracked["start_time"]) * 1000,
+                                )
+                                is_error = meta.get("is_error", False)
+                                output_text = str(item.content or "")[:2000]
+                                update_op = update_tool_execution_data(
+                                    tracked["surface_id"],
+                                    toolName=tracked["tool_name"],
+                                    parameters=tracked["parameters"],
+                                    environment=tracked["environment"],
+                                    status="error" if is_error else "success",
+                                    terminalOutput=output_text,
+                                    durationMs=duration,
+                                )
+                                parts = [create_a2ui_part(update_op)]
+                                msg = self._make_stream_message_parts(
+                                    parts, renderer.message_id, context_id, task.id,
+                                )
+                                self._attach_trace_metadata(
+                                    msg, _run_id, _step_index, "tool_result",
+                                )
+                                await updater.update_status(
+                                    TaskState.TASK_STATE_WORKING, msg,
+                                )
+                                _step_index += 1
+                                await asyncio.sleep(0)
+
+                        # Tool surfaces handle the visual rendering; skip
+                        # emitting the same content into the v2-stream text.
+                        continue
+
+                # Fallback: tool events without UI → existing behavior
                 if is_tool:
+                    await renderer.open_thinking()
+                    await renderer.emit_with_label(item.content, meta)
+                    continue
+
+                # ── Reasoning token → emit thoughtBlock surface ───────
+                is_reasoning = (
+                    getattr(item, "response_type", "") == "token"
+                    and message_type == "reasoning"
+                )
+                if is_reasoning:
+                    if use_ui:
+                        _reasoning_buffer += str(item.content or "")
+
+                        # Derive a context-appropriate title for the
+                        # thoughtBlock. Use the source agent name when
+                        # available (e.g. "transfer_to_helm_operator" →
+                        # "Helm Operator"), otherwise fall back to the
+                        # generic resolver.
+                        source = meta.get("source", "")
+                        if source and source.startswith("transfer_to_"):
+                            agent_label = (
+                                source.replace("transfer_to_", "")
+                                .replace("_", " ").title()
+                            )
+                        else:
+                            agent_label = renderer._resolve_agent(meta) or "Reasoning"
+
+                        if not _reasoning_surface_id:
+                            # Create a new thoughtBlock surface
+                            _reasoning_surface_id = f"thought-{uuid.uuid4().hex[:8]}"
+                            ops = build_thought_block_surface(
+                                surface_id=_reasoning_surface_id,
+                                title=agent_label,
+                                summary=_reasoning_buffer[-500:],
+                                severity="info",
+                            )
+                            for op in ops:
+                                parts = [create_a2ui_part(op)]
+                                msg = self._make_stream_message_parts(
+                                    parts, renderer.message_id, context_id, task.id,
+                                )
+                                self._attach_trace_metadata(
+                                    msg, _run_id, _step_index, "reasoning",
+                                )
+                                await updater.update_status(
+                                    TaskState.TASK_STATE_WORKING, msg,
+                                )
+                                _step_index += 1
+                                await asyncio.sleep(0)
+                        else:
+                            # Update existing thoughtBlock data
+                            update_op = update_thought_block_data(
+                                _reasoning_surface_id,
+                                summary=_reasoning_buffer[-500:],
+                            )
+                            parts = [create_a2ui_part(update_op)]
+                            msg = self._make_stream_message_parts(
+                                parts, renderer.message_id, context_id, task.id,
+                            )
+                            self._attach_trace_metadata(
+                                msg, _run_id, _step_index, "reasoning",
+                            )
+                            await updater.update_status(
+                                TaskState.TASK_STATE_WORKING, msg,
+                            )
+                            _step_index += 1
+                            await asyncio.sleep(0)
+
+                    # Also emit via renderer for text stream
                     await renderer.open_thinking()
                     await renderer.emit_with_label(item.content, meta)
                     continue
@@ -465,6 +797,10 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 # ── AI text token → outside thinking block ────────────
                 if getattr(item, "response_type", "") == "token":
                     await renderer.close_thinking()
+                    # Close reasoning surface when text tokens start
+                    if _reasoning_surface_id:
+                        _reasoning_surface_id = None
+                        _reasoning_buffer = ""
                     await renderer.emit_with_label(item.content, meta)
                     continue
 
@@ -479,14 +815,13 @@ class A2AAutoPilotExecutor(AgentExecutor):
             )
             msg_id = renderer.message_id if renderer else None
             await updater.update_status(
-                TaskState.canceled,
+                TaskState.TASK_STATE_CANCELED,
                 self._make_stream_message_text(
                     "Task canceled.",
                     msg_id,
                     context_id,
                     task.id,
                 ),
-                final=True,
             )
             await self._safe_complete(updater, task)
             raise
@@ -512,9 +847,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
             if item.response_type == "token":
                 # Close the stream directly with an empty final chunk
                 await updater.update_status(
-                    TaskState.completed,
+                    TaskState.TASK_STATE_COMPLETED,
                     self._make_stream_message_text("", stream_message_id, context_id, task.id),
-                    final=True,
                 )
             else:
                 content = item.content or "Task completed successfully."
@@ -535,21 +869,19 @@ class A2AAutoPilotExecutor(AgentExecutor):
                     parts, name=f"{self.agent.name}-result"
                 )
                 await updater.update_status(
-                    TaskState.completed,
+                    TaskState.TASK_STATE_COMPLETED,
                     self._make_stream_message_parts(parts, stream_message_id, context_id, task.id),
-                    final=True,
                 )
         else:
             # Plain text / data fallback
             if item.response_type == "data":
-                part: Part = cast(Part, DataPart(data=item.content))
+                part: Part = new_data_part(data=item.content)
             else:
-                part = cast(Part, TextPart(text=self._content_to_str(item.content)))
+                part = new_text_part(text=self._content_to_str(item.content))
             await updater.add_artifact([part], name=f"{self.agent.name}-result")
             await updater.update_status(
-                TaskState.completed,
+                TaskState.TASK_STATE_COMPLETED,
                 self._make_stream_message_text("Task completed successfully.", stream_message_id, context_id, task.id),
-                final=True,
             )
 
         await self._safe_complete(updater, task)
@@ -569,9 +901,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
         if use_ui:
             if item.response_type == "token":
                 await updater.update_status(
-                    TaskState.input_required,
+                    TaskState.TASK_STATE_INPUT_REQUIRED,
                     self._make_stream_message_text("", stream_message_id, context_id, task.id),
-                    final=True,
                 )
             else:
                 parts = self._build_a2ui_parts(
@@ -586,9 +917,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
                     task_id=task.id,
                 )
                 await updater.update_status(
-                    TaskState.input_required,
+                    TaskState.TASK_STATE_INPUT_REQUIRED,
                     self._make_stream_message_parts(parts, stream_message_id, context_id, task.id),
-                    final=True,
                 )
         else:
             text = (
@@ -597,9 +927,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 else self._content_to_str(item.content)
             )
             await updater.update_status(
-                TaskState.input_required,
+                TaskState.TASK_STATE_INPUT_REQUIRED,
                 self._make_stream_message_text(text, stream_message_id, context_id, task.id),
-                final=True,
             )
 
     async def _handle_working(
@@ -626,17 +955,15 @@ class A2AAutoPilotExecutor(AgentExecutor):
             )
             await updater.add_artifact(parts, name=f"{self.agent.name}-intermediate")
             await updater.update_status(
-                TaskState.working,
-                new_agent_parts_message(parts, context_id, task.id),
-                final=False,
+                TaskState.TASK_STATE_WORKING,
+                new_message(parts, context_id=context_id, task_id=task.id, role=Role.ROLE_AGENT),
             )
         else:
             text = self._content_to_str(item.content)
             msg = self._make_stream_message_text(text, stream_message_id, context_id, task.id)
             await updater.update_status(
-                TaskState.working,
+                TaskState.TASK_STATE_WORKING,
                 msg,
-                final=False,
             )
         await asyncio.sleep(0)  # yield control to EventConsumer
 
@@ -690,41 +1017,68 @@ class A2AAutoPilotExecutor(AgentExecutor):
             )
         return str(content) if content else "Processing..."
 
+    def _attach_trace_metadata(
+        self,
+        msg: Message,
+        run_id: str,
+        step_index: int,
+        event_type: str,
+    ) -> None:
+        """Attach trace metadata to a ``Message`` for the reasoning panel.
+
+        The metadata enables the UI-side reasoning panel to reconstruct
+        the full execution trace with proper ordering and attribution.
+
+        Args:
+            msg: The Message to enrich (modified in-place).
+            run_id: Stable UUID for this agent stream run.
+            step_index: Monotonically increasing step counter.
+            event_type: Event classification (``tool_call``, ``tool_result``,
+                ``reasoning``, etc.).
+        """
+        msg.metadata.update({
+            "traceRunId": run_id,
+            "traceStepIndex": step_index,
+            "agentName": self.agent.name,
+            "eventType": event_type,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
     @staticmethod
     def _map_status(custom_status: str) -> TaskState:
         """Map custom status strings to ``TaskState`` enum values."""
         return {
-            "working": TaskState.working,
-            "input_required": TaskState.input_required,
-            "completed": TaskState.completed,
-            "failed": TaskState.failed,
-            "error": TaskState.failed,
-            "submitted": TaskState.submitted,
-        }.get(custom_status, TaskState.working)
+            "working": TaskState.TASK_STATE_WORKING,
+            "input_required": TaskState.TASK_STATE_INPUT_REQUIRED,
+            "completed": TaskState.TASK_STATE_COMPLETED,
+            "failed": TaskState.TASK_STATE_FAILED,
+            "error": TaskState.TASK_STATE_FAILED,
+            "submitted": TaskState.TASK_STATE_SUBMITTED,
+        }.get(custom_status, TaskState.TASK_STATE_WORKING)
 
     def _make_stream_message_text(
         self, text: str, message_id: Optional[str], context_id: str, task_id: str
     ) -> Message:
         """Create a plain text streaming message with a stable ID."""
         if not message_id:
-            return new_agent_text_message(text, context_id, task_id)
+            return new_text_message(text, context_id=context_id, task_id=task_id, role=Role.ROLE_AGENT)
         return Message(
-            role=Role.agent,
-            parts=[Part(root=TextPart(text=text))],
+            role=Role.ROLE_AGENT,
+            parts=[Part(text=text)],
             message_id=message_id,
             context_id=context_id,
             task_id=task_id,
         )
 
     def _make_stream_message_parts(
-        self, parts: List[Part], message_id: Optional[str], context_id: str, task_id: str
+        self, parts: Sequence[Part], message_id: Optional[str], context_id: str, task_id: str
     ) -> Message:
         """Create a parts-based message with a stable ID."""
         if not message_id:
-            return new_agent_parts_message(parts, context_id, task_id)
+            return new_message(list(parts), context_id=context_id, task_id=task_id, role=Role.ROLE_AGENT)
         return Message(
-            role=Role.agent,
-            parts=parts,
+            role=Role.ROLE_AGENT,
+            parts=list(parts),
             message_id=message_id,
             context_id=context_id,
             task_id=task_id,
