@@ -124,5 +124,13 @@ class MainSupervisorState(TypedDict, total=False):
     app_operator_output: Dict[str, Any]
     k8s_operator_output: Dict[str, Any]
     
+    # ── Routing & Handoff tracking ────────────────────────────────────
+    active_agent: str
+    dialog_state: str
+    return_to: str
+    correlation_id: str
+    handoff_request: Dict[str, Any]
+    handoff_result: Any
+    
     # ── HITL ──────────────────────────────────────────────────────────
     pending_feedback_requests: Dict[str, Any]

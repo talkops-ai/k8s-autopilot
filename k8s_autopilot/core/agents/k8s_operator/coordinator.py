@@ -24,11 +24,16 @@ from k8s_autopilot.utils.user_input_tool import (
     create_chat_continue_tool,
 )
 from k8s_autopilot.utils.operations_context import create_log_k8s_operation_tool
+from k8s_autopilot.utils.escalate_tool import create_escalate_to_supervisor_tool
 from k8s_autopilot.core.agents.k8s_operator.subagents import get_k8s_subagent_specs
 from k8s_autopilot.core.agents.k8s_operator.middleware import build_k8s_operator_middleware
+import k8s_autopilot.core.agents.profiles  # noqa: F401 — side-effect registration
+from k8s_autopilot.core.agents.profiles import register_domain_profiles
+register_domain_profiles("k8s")
 from k8s_autopilot.utils.memory import K8sBackendMixin, get_project_root
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.utils.domain_summary import extract_domain_summary
+from k8s_autopilot.core.state.handoff_contracts import extract_handoff_from_text
 
 if TYPE_CHECKING:
     from k8s_autopilot.config.config import Config
@@ -113,7 +118,8 @@ class K8sOperatorCoordinator(BaseDeepAgent):
         user_input = create_user_input_tool()
         chat_continue = create_chat_continue_tool()
         log_operation = create_log_k8s_operation_tool()
-        return [user_input, chat_continue, log_operation]
+        escalate = create_escalate_to_supervisor_tool()
+        return [user_input, chat_continue, log_operation, escalate]
 
     def get_skill_paths(self) -> List[str]:
         return [
@@ -190,7 +196,11 @@ class K8sOperatorCoordinator(BaseDeepAgent):
         checkpointer = self.build_checkpointer()
         tools = await self.get_tools()
         subagents = await self.get_subagent_specs()
-        middleware = build_k8s_operator_middleware(config=self._config)
+        middleware = build_k8s_operator_middleware(
+            config=self._config,
+            model=self.get_model(),
+            backend=self.make_backend(),
+        )
 
         self._agent = create_deep_agent(
             model=self.get_model(),
@@ -302,7 +312,6 @@ class K8sOperatorCoordinator(BaseDeepAgent):
                 final_message=final_message,
             ),
         }
-
         return output
 
 

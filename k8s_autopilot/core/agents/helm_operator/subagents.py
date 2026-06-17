@@ -3,7 +3,7 @@ Sub-agent specifications for the Helm Operator Deep Agent coordinator.
 
 Each sub-agent is either a dict spec (simple, stateless) or a ``CompiledSubAgent``
 (JIT MCP connections, subgraph wrappers). GitHub MCP tools are injected at
-runtime via ``_build_mcp_subagent()`` — identical to the reference pattern.
+runtime via ``build_mcp_subagent()`` — the shared subagent builder.
 
 Sub-agents (chart-generation pipeline only):
     helm-skill-builder  — generates SKILL.md directories for new chart types
@@ -18,7 +18,7 @@ Extensibility:
     To add a new sub-agent:
     1. Define its prompt and dict spec below
     2. Add it to ``get_helm_subagent_specs()``
-    3. If it needs MCP tools, wrap it with ``_build_mcp_subagent()``
+    3. If it needs MCP tools, wrap it with ``build_mcp_subagent()``
 
 Reference: aws-orchestrator-agent tf_operator/subagents.py
 """
@@ -203,126 +203,15 @@ Return: "Updated {N} files for {chart}: [list of modified files]."
 </output_contract>
 """
 
-HELM_OPERATION_PROMPT = """\
-<identity>
-You are the Helm Operations Agent.
-You discover, validate, and execute Helm chart deployments on Kubernetes clusters.
-You rely entirely on Helm MCP tools — never use shell commands.
-</identity>
+from k8s_autopilot.core.agents.helm_operator.prompt_sections import (
+    compose_helm_operation_prompt,
+)
 
-<context_recovery>
-Before asking the user for any parameter, exhaust these sources in order:
-1. Check the task description — the coordinator SHOULD have included full context
-   (chart source, release name, namespace, previous values).
-2. For UPGRADES with simple value changes: use `helm_upgrade_release` with `reuse_values=true`.
-   The Helm server preserves the original chart reference internally — no URL needed.
-3. Check the operations journal: `read_file /memories/helm-operator/operations-log.md`
-   — records all previous operations with chart sources, values, and versions.
-4. ONLY ask the user as ABSOLUTE LAST RESORT after exhausting steps 1-3.
-</context_recovery>
+# The helm-operation subagent prompt is composed from modular, testable prompt
+# sections registered in prompt_sections.py.  See compose_helm_operation_prompt()
+# for the full list of sections and their content.
+HELM_OPERATION_PROMPT = compose_helm_operation_prompt()
 
-<scope>
-If asked to manage resources outside Helm charts and releases (e.g., ArgoCD applications,
-Traefik routes, Argo Rollouts, raw Kubernetes), return immediately without calling any tools:
-  "This is outside my scope. Please use the appropriate operator.
-   User Request: [the user's request]
-   Context: [what was previously done]"
-</scope>
-
-<read_only_fast_path>
-For read-only queries (list releases, get status, search charts, cluster info), skip the full
-phased workflow. Call the tool directly and return formatted results.
-
-Iron rules:
-- Error/not-found IS the answer. Do NOT retry. Do NOT try alternatives.
-- Do NOT search the filesystem for credentials or secrets.
-- Do NOT fabricate MCP resource URIs.
-
-| Query type     | Tool                          | Example                                                       |
-|----------------|-------------------------------|---------------------------------------------------------------|
-| List releases  | kubernetes_get_helm_releases  | kubernetes_get_helm_releases() or with namespace="prod"       |
-| Release status | helm_get_release_status       | helm_get_release_status(release_name="web", namespace="dev")  |
-| Release history| helm_get_release_history      | helm_get_release_history(release_name="web", namespace="dev") |
-| Search charts  | helm_search_charts            | helm_search_charts(query="mysql", repository="bitnami")       |
-| Chart info     | helm_get_chart_info           | helm_get_chart_info(chart_name="mysql", repository="bitnami") |
-</read_only_fast_path>
-
-<mcp_resource_rules>
-When using `read_mcp_resource`, use ONLY these exact URI formats:
-- helm://releases                              (List all releases)
-- helm://releases/{release_name}               (Details/history — NEVER include namespace)
-- helm://charts                                (List charts)
-- helm://charts/{repository}/{chart_name}      (Chart metadata)
-- helm://charts/{repository}/{chart_name}/readme (Chart README)
-- kubernetes://cluster-info                    (K8s info)
-- kubernetes://namespaces                      (List namespaces)
-- helm://best_practices                        (Helm best practices)
-Do NOT append query strings or path suffixes not listed above.
-</mcp_resource_rules>
-
-<workflow_state_modifying>
-Use this 5-phase workflow ONLY for install, upgrade, rollback, or uninstall operations.
-
-Phase 1: Discovery
-- Check existing releases via `helm_get_release_status` → determine INSTALL vs UPGRADE.
-- If INSTALL: search charts, fetch metadata, extract required configuration.
-- If UPGRADE with simple value changes: task description + --reuse-values is sufficient.
-- Reference: read_file /skills/helm-operator/helm-operation/references/discovery-phase.md (if needed).
-
-Phase 2: Planning
-- Validate values, render manifests, check prerequisites.
-- Generate installation plan via `helm_get_installation_plan`.
-- Reference: read_file /skills/helm-operator/helm-operation/references/planner-phase.md (if needed).
-
-Phase 3: Approval (HITL)
-- If the task description starts with [PLAN-APPROVED], the coordinator has ALREADY obtained
-  user approval. SKIP Phase 3 — jump directly to Phase 4.
-  The HumanInTheLoopMiddleware on the actual tool call still fires as a safety net.
-- If NOT [PLAN-APPROVED], format the plan as:
-    🚀 **[ACTION] PLAN REVIEW**
-    ### Summary
-    - **Action**: [Installation | Upgrade | Uninstallation]
-    - **Chart**: {chart_name} | **Repository**: {repository} | **Version**: {version}
-    - **Release Name**: {release_name} | **Namespace**: {namespace}
-    ### Configuration Values
-    {formatted_values}
-    ### Steps
-    {formatted_steps}
-    ### Resource Estimates
-    - **CPU/Memory/Storage**: {estimates}
-  Do NOT embed raw YAML manifests. Then call:
-  request_human_input(question="Here is the execution plan. Do you approve?",
-                      context="<Formatted Markdown Plan>",
-                      phase="[installation|upgrade|uninstallation]_plan_review")
-  WAIT for approval before proceeding.
-
-Phase 4: Execution
-- You MUST NOT call execute/install tools without calling `helm_get_installation_plan` first.
-- HumanInTheLoopMiddleware still fires as a background safety net on all state-modifying tools.
-- NEW installs: run `helm_dry_run_install` FIRST after planning and approval.
-- Upgrades: `helm_upgrade_release` (use reuse_values=true for simple value changes).
-- Rollbacks: `helm_rollback_release` with target revision.
-- Uninstalls: `helm_uninstall_release`.
-
-Phase 5: Verification
-- After any mutation, call `helm_get_release_status` to confirm health.
-- Do NOT declare success based solely on tool stdout.
-</workflow_state_modifying>
-
-<safety_rules>
-1. Planning is MANDATORY — call `helm_get_installation_plan` before any state-modifying tool.
-2. Dry-run before install — for NEW installations, MUST run `helm_dry_run_install` first.
-3. Never hallucinate parameters — use exact chart names (e.g., `bitnami/nginx`).
-4. No redundant executions — if a tool already succeeded, move to verification.
-5. Status checks after mutations — always verify with `helm_get_release_status`.
-6. Context recovery first — always check task description and operations journal before asking the user.
-</safety_rules>
-
-<output_contract>
-Return: "Completed Helm operation: {summary}".
-Do NOT use `request_human_input` to report final success or summaries. Return the final text directly.
-</output_contract>
-"""
 
 GITHUB_AGENT_PROMPT = """\
 <identity>
@@ -342,6 +231,12 @@ You never use git shell commands — always use the MCP tools.
 - For UPDATING existing files: call `get_file_contents` to get the current SHA, then pass it.
 - Never commit without prior HITL approval — the coordinator already obtained it.
 - Commit all files from the same chart in a single logical batch.
+- **Batching with `eval`**: When reading or committing 3+ files, you MUST use the `eval` tool to batch calls.
+   **CRITICAL JAVASCRIPT RULES for `eval`**:
+   - Do NOT use top-level `return` statements. Leave your final variable as the last line.
+   - You MUST `await` all tool calls (e.g., `let res = await tools.get_file_contents(...)`).
+   - Tool outputs are usually JSON strings. You MUST `JSON.parse(res)` before accessing properties.
+   - Use `let` instead of `const` or `var` in loops to avoid redeclaration errors.
 </rules>
 
 <output_contract>
@@ -414,7 +309,7 @@ HELM_VALIDATOR_SUBAGENT: dict[str, Any] = {
     "skills": ["/skills/"],
 }
 
-# tools=[] here — GitHub MCP tools are merged in _build_mcp_subagent() only.
+# tools=[] here — GitHub MCP tools are merged in build_mcp_subagent() only.
 GITHUB_AGENT_SUBAGENT: dict[str, Any] = {
     "name": "github-agent",
     "description": (
@@ -432,221 +327,27 @@ GITHUB_AGENT_SUBAGENT: dict[str, Any] = {
 # JIT MCP Subagent Wrapper
 # ---------------------------------------------------------------------------
 
-def _build_mcp_subagent(
-    spec: dict[str, Any],
-    coordinator_model_name: str,
-    *,
-    server_filter: list[str],
-    mcp_resource_server_name: str,
-    include_filesystem: bool = False,
-    hitl_builder: Optional[Callable[[], Any]] = None,
-) -> Any:  # CompiledSubAgent
-    """
-    Wraps a static dict spec into a dynamic CompiledSubAgent that opens its
-    MCP connection Just-In-Time (JIT) specifically when its node is executed.
+# ---------------------------------------------------------------------------
+# The shared builder is imported from the central module to avoid 4x duplication.
+# See shared_subagent.py for the full implementation (includes SkillsMiddleware).
+from k8s_autopilot.core.agents.shared_subagent import build_mcp_subagent
 
-    Args:
-        spec: Static subagent dict (name, description, system_prompt).
-        coordinator_model_name: Model name string.
-        server_filter: MCP server names to connect to (e.g. ["helm_mcp_server"]).
-        mcp_resource_server_name: Server name passed to ``read_mcp_resource``.
-        include_filesystem: If True, attach ``FilesystemMiddleware`` backed
-            by a ``FilesystemBackend`` pointed at the project root.
-        hitl_builder: Callable that returns a ``HumanInTheLoopMiddleware``
-            instance. If None, no HITL middleware is attached.
-
-    Reference: aws-orchestrator-agent tf_operator/subagents.py _build_mcp_subagent
-    """
-    from langchain_core.runnables import RunnableLambda
-    from langchain_core.runnables.config import RunnableConfig
-    from deepagents.middleware.subagents import CompiledSubAgent
-
-    name = spec["name"]
-    description = spec.get("description", "")
-    system_prompt = spec.get("system_prompt", "")
-
-    async def _mcp_runnable(
-        state: dict[str, Any],
-        config: RunnableConfig,
-    ) -> dict[str, Any]:
-        from k8s_autopilot.utils.mcp_client import create_mcp_client
-        from k8s_autopilot.config.config import Config
-        from k8s_autopilot.utils.llm import create_model
-        from langchain.agents import create_agent
-
-        try:
-            # Lazily connect to MCP right before execution
-            async with create_mcp_client(Config(), server_filter=server_filter) as mcp_client:
-                tools = mcp_client.get_tools()
-
-                from k8s_autopilot.core.hitl.tools import create_hitl_tools
-                from langchain_core.tools import StructuredTool
-
-                # Generic MCP resource reader — parameterized by server_name
-                _res_server = mcp_resource_server_name
-
-                async def read_mcp_resource(uri: str) -> str:
-                    """Read content of a specific MCP resource by URI.
-
-                    STRICT URI FORMAT RULES:
-                    You MUST use exactly one of these formats. DO NOT append `/values`, `?namespace=`, or guess URIs.
-                    - `helm://releases`
-                    - `helm://releases/[release_name]` (WARNING: namespace filtering is NOT supported. NEVER put namespace in URI)
-                    - `helm://charts`
-                    - `helm://charts/[repo]/[name]`
-                    - `helm://charts/[repo]/[name]/readme`
-                    - `kubernetes://cluster-info`
-                    - `kubernetes://namespaces`
-                    - `helm://best_practices`
-                    """
-                    try:
-                        res = await mcp_client.read_resource(uri, server_name=_res_server)
-                        if hasattr(res, 'contents') and res.contents:
-                            for item in res.contents:
-                                if hasattr(item, 'text'):
-                                    return item.text
-                        return str(res)
-                    except Exception as e:
-                        return f"Error reading resource {uri}: {str(e)}"
-
-                tools.extend(create_hitl_tools())
-                tools.append(
-                    StructuredTool.from_function(
-                        func=None,
-                        coroutine=read_mcp_resource,
-                        name="read_mcp_resource",
-                        description=(
-                            "Read content of a specific MCP resource by URI "
-                            f"(server: {_res_server}). Use this to read "
-                            "helm releases, chart metadata, and cluster state natively."
-                        ),
-                    )
-                )
-
-                # Build middleware list
-                middleware: list[Any] = []
-                if include_filesystem:
-                    from deepagents.middleware.filesystem import FilesystemMiddleware
-                    from deepagents.backends import FilesystemBackend
-                    from k8s_autopilot.utils.memory import get_project_root
-
-                    root = str(get_project_root())
-                    middleware.append(
-                        FilesystemMiddleware(
-                            backend=FilesystemBackend(
-                                root_dir=root,
-                                virtual_mode=True,
-                            ),
-                            custom_tool_descriptions={
-                                "read_file": (
-                                    "Read a file from the workspace filesystem. "
-                                    "Use this to read the EXACT content of generated "
-                                    "Helm chart files before committing them to GitHub. "
-                                    "ALWAYS use this tool — never guess file contents."
-                                ),
-                                "ls": (
-                                    "List files in a workspace directory. "
-                                    "Use this to discover all generated Helm chart files "
-                                    "under /workspace/helm-charts/{chart}/."
-                                ),
-                            },
-                        )
-                    )
-                    _subagent_logger.info(
-                        f"{name}: attached FilesystemMiddleware "
-                        f"with FilesystemBackend(root_dir={root!r})",
-                    )
-
-                if hitl_builder is not None:
-                    from langchain.agents.middleware import ToolRetryMiddleware
-
-                    class CustomToolRetryMiddleware(ToolRetryMiddleware):
-                        def _should_retry_tool(self, tool_name: str) -> bool:
-                            # Never wrap or intercept HITL tools so that their GraphInterrupt bubbles up naturally.
-                            if tool_name == "request_human_input":
-                                return False
-                            return super()._should_retry_tool(tool_name)
-
-                    middleware.append(hitl_builder())
-                    middleware.append(
-                        CustomToolRetryMiddleware(
-                            max_retries=2,
-                            backoff_factor=1.5,
-                            initial_delay=0.5,
-                            max_delay=10.0,
-                            on_failure="continue",
-                        )
-                    )
-                    _subagent_logger.info(
-                        f"{name}: attached HumanInTheLoopMiddleware + ToolRetryMiddleware"
-                    )
-
-                # Lazily instantiate model and graph
-                cfg = Config()
-                model = create_model(cfg.get_llm_deepagent_config())
-                agent_graph = create_agent(
-                    model=model,
-                    tools=tools,
-                    middleware=middleware,
-                    system_prompt=system_prompt,
-                    name=name,
-                )
-
-                # Execute the LangGraph subagent synchronously with the open connection
-                result = await agent_graph.ainvoke(cast(Any, state), config)
-                return dict(result)
-
-        except Exception as exc:
-            # ── Let HITL interrupts propagate normally ────────────────
-            # GraphInterrupt is NOT an error — it's the standard
-            # control flow for interrupt()/HITL gates.  Re-raise so
-            # the coordinator and supervisor can pause and wait for
-            # user input.
-            from langgraph.errors import GraphInterrupt
-            if isinstance(exc, GraphInterrupt):
-                raise
-
-            # ── Surface MCP connection failures gracefully ────────────
-            # Instead of letting TaskGroup / auth errors crash the
-            # coordinator, return a meaningful error message as the
-            # subagent's output so the coordinator LLM can report it.
-            from langchain_core.messages import AIMessage
-
-            err_str = str(exc)
-            _subagent_logger.error(
-                f"{name}: MCP subagent execution failed",
-                extra={"error": err_str, "servers": server_filter},
-            )
-
-            # Build a clear error message for the coordinator
-            if any(kw in err_str.lower() for kw in (
-                "authentication failed", "401", "403",
-                "unauthorized", "forbidden", "expired",
-            )):
-                error_msg = (
-                    f"FAILED: {name} could not connect to the MCP server "
-                    f"({', '.join(server_filter)}). The authentication token "
-                    f"appears to be expired or invalid. Please generate a new "
-                    f"GitHub Personal Access Token and update the "
-                    f"GITHUB_PERSONAL_ACCESS_TOKEN environment variable."
-                )
-            else:
-                error_msg = (
-                    f"FAILED: {name} encountered an error: {err_str}. "
-                    f"The MCP server(s) {server_filter} may be unreachable."
-                )
-
-            # Return state with error message so the coordinator
-            # receives it via the subagent's output messages.
-            messages = list(state.get("messages", []))
-            messages.append(AIMessage(content=error_msg))
-            return {**state, "messages": messages}
-
-    return CompiledSubAgent(
-        name=name,
-        description=description,
-        runnable=RunnableLambda(_mcp_runnable).with_config({"run_name": name}),
-    )
+# Helm-specific resource description override for the read_mcp_resource tool.
+_HELM_RESOURCE_DESCRIPTION = (
+    "Read content of a specific MCP resource by URI "
+    "(server: helm_mcp_server). Use this to read "
+    "helm releases, chart metadata, and cluster state natively.\n\n"
+    "STRICT URI FORMAT RULES:\n"
+    "You MUST use exactly one of these formats. DO NOT append `/values`, `?namespace=`, or guess URIs.\n"
+    "- `helm://releases`\n"
+    "- `helm://releases/[release_name]` (WARNING: namespace filtering is NOT supported. NEVER put namespace in URI)\n"
+    "- `helm://charts`\n"
+    "- `helm://charts/[repo]/[name]`\n"
+    "- `helm://charts/[repo]/[name]/readme`\n"
+    "- `kubernetes://cluster-info`\n"
+    "- `kubernetes://namespaces`\n"
+    "- `helm://best_practices`"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +378,12 @@ def get_helm_subagent_specs(
     from k8s_autopilot.core.agents.helm_operator.middleware import (
         build_helm_hitl_middleware,
     )
+    from k8s_autopilot.core.agents.shared_middleware import (
+        make_subagent_interpreter_builder,
+        HELM_PTC_ALLOWLIST,
+        GITHUB_PTC_ALLOWLIST,
+    )
+    from k8s_autopilot.core.tools.kubectl_tools import create_kubectl_readonly_tool
 
     val_model = validator_model or coordinator_model
     coord_model = coordinator_model or ""
@@ -689,20 +396,32 @@ def get_helm_subagent_specs(
         {**HELM_VALIDATOR_SUBAGENT, "model": val_model, "tools": []},
 
         # ── JIT MCP sub-agents (lazy connections) ─────────────────────────
-        _build_mcp_subagent(
+        build_mcp_subagent(
             GITHUB_AGENT_SUBAGENT,
-            str(coord_model),
             server_filter=["github_mcp"],
             mcp_resource_server_name="github_mcp",
             include_filesystem=True,
+            skill_paths=["/skills/helm-operator/"],
+            extra_middleware_builders=[
+                make_subagent_interpreter_builder(
+                    ptc_allowlist=GITHUB_PTC_ALLOWLIST,
+                ),
+            ],
         ),
-        _build_mcp_subagent(
+        build_mcp_subagent(
             HELM_OPERATION_SUBAGENT,
-            str(coord_model),
             server_filter=["helm_mcp_server"],
             mcp_resource_server_name="helm_mcp_server",
             include_filesystem=True,
+            skill_paths=["/skills/helm-operator/helm-operation/"],
             hitl_builder=build_helm_hitl_middleware,
+            resource_description_override=_HELM_RESOURCE_DESCRIPTION,
+            extra_middleware_builders=[
+                make_subagent_interpreter_builder(
+                    ptc_allowlist=HELM_PTC_ALLOWLIST,
+                ),
+            ],
+            extra_tools=[create_kubectl_readonly_tool()],
         ),
 
 

@@ -78,7 +78,7 @@ _SKIP_WHEN_SKILLS_EXIST = frozenset({"helm-planner", "helm-skill-builder"})
 
 
 def _apply_skill_shortcut(
-    state: Dict[str, Any],
+    state: Any,
     tools: List[Any],
     messages: List[Any],
 ) -> tuple:
@@ -296,9 +296,6 @@ _WRITE_FILE_RUN_LIMIT = int(os.getenv("K8S_WRITE_FILE_RUN_LIMIT", "20"))
 # Global tool call limit per single invocation
 _GLOBAL_TOOL_RUN_LIMIT = int(os.getenv("K8S_GLOBAL_TOOL_RUN_LIMIT", "60"))
 
-# Model call limit per invocation
-_MODEL_CALL_RUN_LIMIT = int(os.getenv("K8S_MODEL_CALL_RUN_LIMIT", "40"))
-
 # Whether to enable tool retry middleware (disabled by default as it swallows GraphInterrupt)
 _ENABLE_TOOL_RETRY = os.getenv("K8S_ENABLE_TOOL_RETRY", "false").lower() == "true"
 
@@ -401,7 +398,7 @@ def build_helm_hitl_middleware() -> HumanInTheLoopMiddleware:
 
     Returns:
         Configured ``HumanInTheLoopMiddleware`` instance ready for
-        ``create_agent(middleware=[...])`` or ``_build_mcp_subagent()``.
+        ``create_agent(middleware=[...])`` or ``build_mcp_subagent()``.
     """
     logger.info("Building HumanInTheLoopMiddleware for Helm execution tools")
 
@@ -440,9 +437,10 @@ def build_k8s_middleware(
     *,
     write_file_limit: Optional[int] = None,
     global_tool_limit: Optional[int] = None,
-    model_call_limit: Optional[int] = None,
     enable_tool_retry: Optional[bool] = None,
     extra_middleware: Optional[List[Any]] = None,
+    model: Optional[str] = None,
+    backend: Optional[Any] = None,
 ) -> List[Any]:
     """Assemble the middleware stack for the HelmOperatorCoordinator deep agent.
 
@@ -453,7 +451,6 @@ def build_k8s_middleware(
         config: Application config (reserved for future per-agent overrides).
         write_file_limit: Max ``write_file`` calls per run.
         global_tool_limit: Max total tool calls per run (all tools).
-        model_call_limit: Max LLM calls per run.
         enable_tool_retry: Whether to auto-retry transient tool failures.
         extra_middleware: Additional middleware instances to append.
 
@@ -463,7 +460,6 @@ def build_k8s_middleware(
     """
     from langchain.agents.middleware import (
         ToolCallLimitMiddleware,
-        ModelCallLimitMiddleware,
         ToolRetryMiddleware,
     )
 
@@ -474,6 +470,17 @@ def build_k8s_middleware(
     # even after the built-in summarization compresses conversation history.
     middleware.append(OperationContextMiddleware())
     logger.info("Middleware: OperationContextMiddleware (before_model)")
+
+    # ── 0a. Plan lock enforcement (survives summarization) ────────────────
+    # Re-injects the user-approved plan (from state["files"]["/plan/active-plan.md"])
+    # as a SystemMessage before every model call.  This is the LangChain-idiomatic
+    # approach to surviving summarization: data stored in state["files"] is persistent
+    # (filesystem-backed), and the before_model hook reconstructs it each turn.
+    # Pattern: Terraform plan→apply constraint, OPA admission control.
+    # Ref: https://docs.langchain.com/oss/python/langchain/middleware/custom#dynamic-prompt
+    from k8s_autopilot.core.agents.app_operator.middleware import PlanLockMiddleware
+    middleware.append(PlanLockMiddleware())
+    logger.info("Middleware: PlanLockMiddleware (before_model)")
 
     # ── 0b. Skill-exists shortcut (deterministic planner bypass) ──────────
     # Uses @wrap_model_call to remove helm-planner from the tool list when
@@ -509,18 +516,12 @@ def build_k8s_middleware(
         extra={"run_limit": gt_limit},
     )
 
-    # ── 3. Model call guard ───────────────────────────────────────────────
-    mc_limit = model_call_limit or _MODEL_CALL_RUN_LIMIT
-    middleware.append(
-        ModelCallLimitMiddleware(
-            run_limit=mc_limit,
-            exit_behavior="end",  # Graceful stop instead of exception
-        )
-    )
-    logger.info(
-        "Middleware: model call limit",
-        extra={"run_limit": mc_limit},
-    )
+    # ── 3. Model call guard — REMOVED ──────────────────────────────────────
+    # ModelCallLimitMiddleware was silently terminating the deep agent
+    # (exit_behavior="end") before it could produce a final summary,
+    # causing the agent to appear "stuck" after completing operations.
+    # LangGraph's recursion_limit (250) and the global ToolCallLimitMiddleware
+    # above provide sufficient safety nets against runaway loops.
 
     # ── 4. Tool retry (transient failures) ────────────────────────────────
     should_retry = enable_tool_retry if enable_tool_retry is not None else _ENABLE_TOOL_RETRY
@@ -536,7 +537,19 @@ def build_k8s_middleware(
         )
         logger.info("Middleware: tool retry enabled")
 
-    # ── 5. Extra (caller-provided) ────────────────────────────────────────
+    # 5. Shared coordinator middleware (CodeInterpreter + Summarization)
+    from k8s_autopilot.core.agents.shared_middleware import (
+        build_shared_coordinator_middleware,
+    )
+    middleware.extend(
+        build_shared_coordinator_middleware(
+            model=model,
+            backend=backend,
+            config=config,
+        )
+    )
+
+    # 6. Extra (caller-provided)
     if extra_middleware:
         middleware.extend(extra_middleware)
         logger.info(

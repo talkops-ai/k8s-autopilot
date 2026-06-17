@@ -41,3 +41,7 @@ class ObservabilityContext(TypedDict, total=False):
 
     # ── Safety ────────────────────────────────────────────────────────
     dry_run: NotRequired[bool]
+
+    # ── Cross-domain routing ──────────────────────────────────────────
+    escalation_request: NotRequired[dict]
+    handoff_request: NotRequired[dict]

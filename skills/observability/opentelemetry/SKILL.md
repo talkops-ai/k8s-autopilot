@@ -52,6 +52,15 @@ are handled directly by the sub-agent via the Query Fast-Path and do not require
 - After provisioning or patching a collector: Use `otel_get_collector` to verify it deployed successfully.
 - After patching instrumentation / annotating deployment: Use `otel_list_instrumented_services` to verify the auto-instrumentation status, annotation presence, and init container injection.
 
+#### Cross-MCP: Wire Prometheus Scraping After Collector Provisioning
+If the provisioned collector exposes a `prometheus` exporter (signals include `metrics`), the pipeline is NOT
+complete until a Prometheus ServiceMonitor is created. After `otel_provision_collector` succeeds:
+1. Determine the **exact K8s Service name** — the OTel Operator appends `-collector` to the CR name.
+   (e.g. CR name `otel-demo-collector` → Service name `otel-demo-collector-collector`)
+2. Escalate to the Prometheus operator with:
+   `prom_apply_servicemonitor(service_name="<cr-name>-collector", namespace="monitoring", target_namespace="<collector-ns>")`
+3. Verify with `prom_query_instant(query="up{job='<cr-name>-collector'}")`.
+
 #### Failure Diagnosis Protocol
 If verification fails, use diagnostic resources:
 - `otel://system/health`: to ensure basic connectivity and OTel CRD presence.
@@ -92,3 +101,6 @@ For common failure patterns, edge cases, and diagnostic fixes, read
 
 - **`namespace`**: Ensure you have a target namespace; do not assume "default" without confirming with the user if ambiguous.
 - **`dry_run`**: Always defaults to `True` for modifying tools.
+- **`exporter_overrides`**: Use when backends require authentication or custom config. Common case: multi-tenant Loki requires `exporter_overrides={"loki": {"headers": {"X-Scope-OrgID": "<tenant>"}}}`. If a collector fails to export with `HTTP 401` or `no org id`, this is the fix.
+- **Auto-appended API paths**: `otel_provision_collector` automatically appends required API paths for Loki (`/loki/api/v1/push`) and Prometheus (`/api/v1/otlp`). Do not manually add these paths to `exporter_targets`.
+- **OTel Operator service naming**: When the OTel Operator creates a K8s Service for a collector CR named `my-collector`, the Service is named `my-collector-collector` (adds `-collector` suffix). Always use this suffixed name in `prom_apply_servicemonitor`. Verify with `kubectl get svc -n <namespace>` if unsure.

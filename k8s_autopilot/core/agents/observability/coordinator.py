@@ -16,6 +16,13 @@ from langgraph.store.memory import InMemoryStore
 from deepagents import create_deep_agent
 from deepagents.backends.utils import create_file_data
 
+# Side-effect import: registers ProviderProfile + HarnessProfile for all
+# supported providers BEFORE create_deep_agent constructs the model.
+# Ref: https://docs.langchain.com/oss/python/deepagents/profiles
+import k8s_autopilot.core.agents.profiles  # noqa: F401
+from k8s_autopilot.core.agents.profiles import register_domain_profiles
+register_domain_profiles("observability")
+
 from k8s_autopilot.core.agents.types import BaseDeepAgent
 from k8s_autopilot.core.state.observability_state import ObservabilityContext
 from k8s_autopilot.utils.llm import create_model
@@ -24,11 +31,13 @@ from k8s_autopilot.utils.user_input_tool import (
     create_chat_continue_tool,
 )
 from k8s_autopilot.utils.operations_context import create_log_obs_operation_tool
+from k8s_autopilot.utils.escalate_tool import create_escalate_to_supervisor_tool
 from k8s_autopilot.core.agents.observability.subagents import get_obs_subagent_specs
 from k8s_autopilot.core.agents.observability.middleware import build_obs_operator_middleware
 from k8s_autopilot.utils.memory import K8sBackendMixin, get_project_root
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.utils.domain_summary import extract_domain_summary
+from k8s_autopilot.core.state.handoff_contracts import extract_handoff_from_text
 
 if TYPE_CHECKING:
     from k8s_autopilot.config.config import Config
@@ -112,7 +121,8 @@ class ObservabilityCoordinator(BaseDeepAgent):
         user_input = create_user_input_tool()
         chat_continue = create_chat_continue_tool()
         log_operation = create_log_obs_operation_tool()
-        return [user_input, chat_continue, log_operation]
+        escalate = create_escalate_to_supervisor_tool()
+        return [user_input, chat_continue, log_operation, escalate]
 
     def get_skill_paths(self) -> List[str]:
         return [
@@ -401,7 +411,6 @@ class ObservabilityCoordinator(BaseDeepAgent):
                 final_message=final_message,
             ),
         }
-
         return output
 
 # ---------------------------------------------------------------------------

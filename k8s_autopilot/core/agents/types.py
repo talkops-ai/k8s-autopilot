@@ -359,7 +359,7 @@ class BaseDeepAgent(ABC):
         """
         Transform deep agent final state → supervisor-mergeable payload.
 
-        Called by the supervisor's ``_make_coordinator_tool`` after the deep
+        Called by the supervisor's ``_make_coordinator_node`` after the deep
         agent completes. Returns a dict suitable for payload extraction.
 
         Args:
@@ -481,6 +481,8 @@ PATH A — Planned Execution (complex, multi-step, or destructive operations):
 1. Discover — resolve all required parameters.
 2. Plan — call `write_todos` with step checklist. Mark mutations with [MUTATION].
 3. Approve — present plan via `request_user_input` with approve/reject/modify options.
+   The PlanLockMiddleware will automatically track the todos and re-inject them as
+   a binding constraint before every model call, surviving context summarization.
 4. Execute — delegate each step with [PLAN-APPROVED] prefix; update TODO status via `write_todos`.
 5. Verify — run a read-only follow-up to confirm resulting state.
 6. Report — summarize via `request_chat_continue`; call domain log tool.

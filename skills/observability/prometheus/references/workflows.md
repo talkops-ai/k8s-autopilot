@@ -35,11 +35,36 @@ Read this when executing state-modifying operations that require multi-step coor
      endpoint returns non-Prometheus format
 
 5. **Apply ServiceMonitor**
-   - Call `prom_apply_servicemonitor(namespace="<ns>", service_name="<svc>")`
-   - Auto-detects Prometheus Operator selector labels
+
+   **Step 5a: Confirm the exact K8s Service name** (critical — avoid wrong selectors):
+   - Read `prom://topology/services` and look for the service, OR
+   - Ask the user to run `kubectl get svc -n <namespace>` and share output.
+   - ⚠️ Operator-managed services often have a different name than the app (e.g. OTel Operator
+     generates `otel-demo-collector-collector`, not `otel-demo-collector`).
+
+   **Step 5b: Same-namespace case** (Service and Prometheus in the same namespace):
+   ```
+   prom_apply_servicemonitor(namespace="<ns>", service_name="<exact-k8s-svc-name>")
+   ```
+
+   **Step 5c: Cross-namespace case** (Service in `<ns>`, Prometheus Operator in `monitoring`):
+   ```
+   prom_apply_servicemonitor(
+       service_name="<exact-k8s-svc-name>",
+       namespace="monitoring",   # where the ServiceMonitor CRD goes
+       target_namespace="<ns>", # where the K8s Service lives
+   )
+   ```
+   This injects `spec.namespaceSelector.matchNames: [<ns>]` so Prometheus can discover the
+   service across namespaces. Without this, the scrape never starts.
+
+   **Step 5d: Cleaning up before retry** — if a previous attempt created a broken SM:
+   ```
+   prom_delete_servicemonitor(monitor_name="<name>-monitor", namespace="monitoring")
+   # then re-apply with corrected parameters
+   ```
    - Optional params: `port_name`, `path`, `interval` (default 30s), `labels`
-   - With custom labels: `labels={"release": "kube-prometheus"}`
-   - Expected: returns ServiceMonitor YAML with auto-detected operator labels
+   - Expected: returns `{applied: "ServiceMonitor/<name>", manifest_yaml: "...", notes: "..."}`
 
 6. **Discover new metrics**
    - Call `prom_explore_labels(backend_id="default", metric_name="<metric>")`

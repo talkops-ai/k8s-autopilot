@@ -1,6 +1,6 @@
-from typing import Annotated, TypedDict, Optional, Literal, Dict, List, Any
+from typing import Annotated, Optional, Literal, Dict, List, Any
 import operator 
-from typing_extensions import NotRequired
+from typing_extensions import NotRequired, TypedDict
 from operator import add
 from enum import Enum
 
@@ -8,6 +8,34 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 from langchain_core.messages import BaseMessage, AnyMessage
 from langgraph.graph.message import add_messages
+
+
+# ============================================================================
+# Stack-based routing reducer (bidirectional handoff)
+# ============================================================================
+
+def update_dialog_stack(left: list[str], right: list[str] | str | None) -> list[str]:
+    """Stack reducer for ``dialog_state``.
+
+    - ``None``  → no-op (return current stack unchanged)
+    - ``list``  → overwrite the stack entirely (useful for resets)
+    - ``"pop"`` → remove the top element
+    - any other string → push it onto the stack
+
+    This is the core of the deterministic call-and-return router.
+    Pushing an agent name adds a new callee; popping reveals the caller
+    beneath it.
+
+    Reference: k8s_autopilot_architecture_spec.md §Dialog stack reducer
+    """
+    if right is None:
+        return left
+    if isinstance(right, list):
+        return right
+    if right == "pop":
+        return left[:-1]
+    return left + [right]
+
 
 # ============================================================================
 # Shared Data Models
@@ -414,6 +442,24 @@ class MainSupervisorState(TypedDict, total=False):
     execution_walkthrough: NotRequired[str]
     # Plan version counter for replan cycles (generic, incremented on rejection)
     plan_version: NotRequired[int]
+
+    # ── Stack-based routing (bidirectional handoff) ────────────────────
+    dialog_state: Annotated[list[str], update_dialog_stack]
+
+    active_agent: NotRequired[str]           # Currently executing coordinator
+    return_to: NotRequired[str]              # Agent to return to after callee completes
+    resume_cursor: NotRequired[str]          # Step/phase to resume at in caller
+    correlation_id: NotRequired[str]         # Links handoff request ↔ result
+
+    # ── Typed handoff envelopes ───────────────────────────────────────
+    handoff_request: NotRequired[Dict[str, Any]]   # HandoffRequest envelope
+    handoff_result: NotRequired[Dict[str, Any]]     # HandoffResult envelope
+
+    # ── Loop guard ────────────────────────────────────────────────────
+    loop_guard: NotRequired[Dict[str, Any]]        # per-correlation counters
+
+    # ── Error state (structured) ──────────────────────────────────────
+    error_state: NotRequired[Dict[str, Any]]
 
     # ── HITL ──────────────────────────────────────────────────────────
     pending_feedback_requests: NotRequired[Dict[str, Any]]

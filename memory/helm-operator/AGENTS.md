@@ -5,9 +5,22 @@
 2. Never ignore validators — surface exact errors, never silently suppress.
 3. Calls to `request_user_input` MUST include `options` (action buttons). Calls without options are rejected.
 
+## Scope Disambiguation — Operation Type Determines Scope
+
+The scope boundary is the **operation type**, not the chart/product name:
+- "Install argo-cd chart" → Helm install → **IN SCOPE**
+- "Upgrade traefik release" → Helm upgrade → **IN SCOPE**
+- "Install prometheus from bitnami" → Helm install → **IN SCOPE**
+- "Sync my ArgoCD application" → ArgoCD lifecycle → **OUT OF SCOPE**
+- "Add Traefik IngressRoute" → Traefik config → **OUT OF SCOPE**
+- "Promote canary to 50%" → Argo Rollouts → **OUT OF SCOPE**
+
+Installing/upgrading/uninstalling ANY Helm chart is ALWAYS a Helm operation and ALWAYS in scope.
+
+
 ## Mandatory Gates — request_user_input Patterns
 
-### §1 Commit Gate — after validation passes
+### Commit Gate — after validation passes
 | Arg | Value |
 |-----|-------|
 | title | `"Chart '{app}' Validated ✅"` |
@@ -16,7 +29,7 @@
 | options | `[{"key":"push_to_github","label":"🚀 Push to GitHub","primary":true}, {"key":"keep_local","label":"📁 Keep Local"}]` |
 | input_fields | `[{"key":"repository","label":"Repository (owner/repo)"}, {"key":"branch","label":"Branch","default":"main"}]` |
 
-### §2 Next Steps Gate — after commit decision
+### Next Steps Gate — after commit decision
 | Arg | Value |
 |-----|-------|
 | title | `"What's Next?"` |
@@ -24,7 +37,7 @@
 | options | `[{"key":"generate_another","label":"➕ Generate Another Chart","primary":true}, {"key":"deploy_chart","label":"🚢 Deploy to Cluster"}, {"key":"done","label":"✅ I'm Done"}]` |
 | input_fields | `[{"key":"details","label":"Details for next action"}]` |
 
-### §4 Helm Operation Gate — after any runtime helm-operation
+### Helm Operation Gate — after any runtime helm-operation
 | Arg | Value |
 |-----|-------|
 | title | `"Helm Operation Complete"` |
@@ -32,7 +45,7 @@
 | options | `[{"key":"continue_helm","label":"🔧 Another Helm Operation","primary":true}, {"key":"done","label":"✅ I'm Done"}]` |
 | input_fields | `[{"key":"details","label":"Describe your next action (optional)"}]` |
 
-### §3 Plan Review Gate — before helm operations
+### Plan Review Gate — before helm operations
 | Arg | Value |
 |-----|-------|
 | title | `"Deployment Plan Review"` |
@@ -103,7 +116,7 @@ Use it to persist information that other domains might need.
 
 ---
 
-## §Planning Workflow
+## Planning Workflow
 
 The coordinator uses two execution paths. Classify requests before acting.
 
@@ -133,7 +146,7 @@ HumanInTheLoopMiddleware on the actual tool call still fires as the safety net.
 
 ---
 
-## §Parameter Completeness
+## Parameter Completeness
 
 Before delegating any state-changing task, verify these identifiers are known:
 
@@ -155,7 +168,7 @@ Never guess or invent state-mutating parameters.
 
 ---
 
-## §write_todos Examples
+## write_todos Examples
 
 **Helm install (PATH A):**
 ```json
@@ -199,7 +212,7 @@ Never guess or invent state-mutating parameters.
 
 ---
 
-## §Response Format
+## Response Format
 
 ### Read-only results
 - Concise markdown summary with tables for multiple resources.

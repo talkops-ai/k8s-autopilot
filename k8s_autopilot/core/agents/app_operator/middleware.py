@@ -20,7 +20,7 @@ Usage::
 import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from deepagents.middleware.summarization import create_summarization_tool_middleware
+from deepagents.middleware.summarization import create_summarization_tool_middleware  # noqa: F401 — re-exported
 from langchain.agents.middleware import HumanInTheLoopMiddleware, AgentMiddleware, AgentState
 from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
 
@@ -89,24 +89,34 @@ class AppOperationContextMiddleware(AgentMiddleware):
 # ---------------------------------------------------------------------------
 
 class PlanLockMiddleware(AgentMiddleware):
-    """Re-injects approved plan parameters before every model call.
+    """Re-injects the approved plan as a binding constraint before every model call.
 
     Industry pattern: Terraform plan/apply — the plan file constrains what
     ``apply`` can do.  OPA/Gatekeeper — admission controller rejects
     mutations that violate policy.
 
-    When the coordinator writes an approved plan to
-    ``state["files"]["/plan/active-plan.md"]``, this middleware re-injects
-    it as a SystemMessage before every subsequent model call, ensuring the
-    LLM cannot forget or deviate from approved parameters — even after
-    context summarization.
+    This middleware reads from **two sources** (checked in order):
+
+    1. **``state["todos"]``** — the native Deep Agent ``TodoListMiddleware``
+       channel.  When there are non-completed todos, the middleware serialises 
+       them as a SystemMessage constraint.  This is the Deep Agent-idiomatic approach.
+
+    2. **``state["files"]["/plan/active-plan.md"]``** — legacy fallback.  If
+       a coordinator writes a plan to this path via ``write_file``, the
+       middleware picks it up.
 
     Lifecycle:
-        1. Coordinator presents plan → user approves → coordinator writes plan
-           to ``state["files"]`` via ``write_file``.
-        2. ``before_model``: re-injects approved plan as a SystemMessage
-           constraint.
-        3. After execution completes, coordinator clears the plan file.
+        1. Coordinator classifies request → PATH A (complex) or PATH B (simple).
+        2. PATH A: Coordinator calls ``write_todos`` → presents plan →
+           calls ``request_user_input`` for approval.
+        3. User approves → execution continues.
+        4. ``before_model``: when non-completed todos exist, re-injects 
+           them as a binding SystemMessage.
+        5. When all todos are ``completed``, injects a walkthrough-generation
+           instruction instead.
+
+    Reference:
+        - https://docs.langchain.com/oss/python/langchain/middleware/built-in#to-do-list
     """
 
     _PLAN_PATH = "/plan/active-plan.md"
@@ -114,42 +124,128 @@ class PlanLockMiddleware(AgentMiddleware):
     def before_model(
         self, state: AgentState, runtime: Any,
     ) -> Dict[str, Any] | None:
-        """Re-inject approved plan as a binding constraint."""
-        plan_content = self._get_active_plan(state)
-        if not plan_content:
-            return None
+        """Re-inject approved plan as a binding constraint.
 
-        logger.debug(
-            "PlanLockMiddleware: injecting active plan constraint",
-            extra={"plan_length": len(plan_content)},
-        )
+        Checks ``state["todos"]`` first (Deep Agent native), then falls
+        back to ``state["files"]`` (legacy).
+        """
+        # ── Source 1: Deep Agent TodoListMiddleware state ──────────────
+        todos = state.get("todos") or []
 
-        return {
-            "messages": [
-                SystemMessage(
-                    content=(
-                        "## ACTIVE PLAN (LOCKED — DO NOT DEVIATE)\n"
-                        "The user approved the following plan. Execute "
-                        "EXACTLY these parameters.\n"
-                        "Any deviation is a protocol violation.\n\n"
-                        f"{plan_content}\n\n"
-                        "If you cannot execute as planned, STOP and report "
-                        "the error. Do NOT attempt alternatives."
+        if isinstance(todos, list) and todos:
+            return self._build_todos_constraint(todos, state)
+
+        # ── Source 2: Legacy files-based plan (backward compat) ────────
+        plan_content = self._get_active_plan_from_files(state)
+        if plan_content:
+            logger.debug(
+                "PlanLockMiddleware: injecting legacy file-based plan",
+                extra={"plan_length": len(plan_content)},
+            )
+            return {
+                "messages": [
+                    SystemMessage(
+                        content=(
+                            "## ACTIVE PLAN (LOCKED — DO NOT DEVIATE)\n"
+                            "The user approved the following plan. Execute "
+                            "EXACTLY these parameters.\n"
+                            "Any deviation is a protocol violation.\n\n"
+                            f"{plan_content}\n\n"
+                            "If you cannot execute as planned, STOP and report "
+                            "the error. Do NOT attempt alternatives."
+                        )
                     )
-                )
-            ],
-        }
+                ],
+            }
+
+        return None
 
     async def abefore_model(
         self, state: AgentState, runtime: Any,
     ) -> Dict[str, Any] | None:
         return self.before_model(state, runtime)
 
+    # ── TodoList constraint builder ───────────────────────────────────
+
     @staticmethod
-    def _get_active_plan(state: AgentState) -> Optional[str]:
-        """Extract active plan content from agent state files."""
+    def _build_todos_constraint(
+        todos: list, state: AgentState,
+    ) -> Optional[Dict[str, Any]]:
+        """Serialise ``state["todos"]`` as a binding SystemMessage.
+
+        Returns ``None`` when all todos are completed — the deep agent's
+        built-in ``TodoListMiddleware`` handles natural completion.
+        """
+        # Classify todo statuses
+        non_completed = []
+        completed = []
+        for todo in todos:
+            status = (
+                todo.get("status", "pending")
+                if isinstance(todo, dict)
+                else getattr(todo, "status", "pending")
+            )
+            title = (
+                todo.get("title", "Untitled")
+                if isinstance(todo, dict)
+                else getattr(todo, "title", "Untitled")
+            )
+            if status in ("completed", "failed", "skipped"):
+                completed.append(f"  ✅ {title} ({status})")
+            else:
+                non_completed.append(f"  ⏳ {title} ({status})")
+
+        # ── All done → no constraint needed ─────────────────────────────
+        # The deep agent's built-in TodoListMiddleware handles completion
+        # naturally: the agent produces a final summary AIMessage when all
+        # tasks are done.  No forced walkthrough or request_chat_continue
+        # needed — the agent loop ends when the LLM stops calling tools.
+        if not non_completed:
+            logger.debug(
+                "PlanLockMiddleware: all todos completed, no constraint needed",
+                extra={"completed_count": len(completed)},
+            )
+            return None
+
+        # ── Active plan → lock mode ───────────────────────────────────
+        checklist_lines = non_completed + completed
+        logger.debug(
+            "PlanLockMiddleware: injecting active plan constraint from todos",
+            extra={
+                "remaining": len(non_completed),
+                "completed": len(completed),
+            },
+        )
+        return {
+            "messages": [
+                SystemMessage(
+                    content=(
+                        "## ACTIVE PLAN (LOCKED — DO NOT DEVIATE)\n"
+                        "The user approved the following plan. Execute "
+                        "EXACTLY these steps in order.\n"
+                        "Any deviation is a protocol violation.\n\n"
+                        + "### Execution Checklist\n"
+                        + "\n".join(checklist_lines) + "\n\n"
+                        + "### Rules\n"
+                        "- Execute the next ⏳ pending/in_progress step.\n"
+                        "- Update TODO status via `write_todos` as you proceed "
+                        "(pending → in_progress → completed).\n"
+                        "- Delegate with [PLAN-APPROVED] prefix so sub-agents "
+                        "skip their own plan gate.\n"
+                        "- If you cannot execute as planned, STOP and report "
+                        "the error. Do NOT attempt alternatives."
+                    )
+                )
+            ],
+        }
+
+    # ── Legacy files-based plan reader ────────────────────────────────
+
+    @staticmethod
+    def _get_active_plan_from_files(state: AgentState) -> Optional[str]:
+        """Extract active plan content from state files (backward compat)."""
         files = state.get("files", {})
-        if not files:
+        if not isinstance(files, dict) or not files:
             return None
 
         plan_file = files.get(PlanLockMiddleware._PLAN_PATH)
@@ -166,6 +262,8 @@ class PlanLockMiddleware(AgentMiddleware):
         return None
 
 
+
+
 # ---------------------------------------------------------------------------
 # Default limits (overridable via env vars or Config)
 # ---------------------------------------------------------------------------
@@ -173,7 +271,6 @@ class PlanLockMiddleware(AgentMiddleware):
 # Defaults (will be overridden via env vars or Config inside the factory)
 _WRITE_FILE_RUN_LIMIT = 20
 _GLOBAL_TOOL_RUN_LIMIT = 60
-_MODEL_CALL_RUN_LIMIT = 40
 _ENABLE_TOOL_RETRY = False
 
 
@@ -975,7 +1072,6 @@ def build_app_operator_middleware(
     *,
     write_file_limit: Optional[int] = None,
     global_tool_limit: Optional[int] = None,
-    model_call_limit: Optional[int] = None,
     enable_tool_retry: Optional[bool] = None,
     extra_middleware: Optional[List[Any]] = None,
     model: Optional[str] = None,
@@ -984,7 +1080,6 @@ def build_app_operator_middleware(
     """Assemble the middleware stack for the AppOperatorCoordinator deep agent."""
     from langchain.agents.middleware import (
         ToolCallLimitMiddleware,
-        ModelCallLimitMiddleware,
         ToolRetryMiddleware,
     )
 
@@ -1019,15 +1114,12 @@ def build_app_operator_middleware(
         )
     )
 
-    # 3. Model call guard
-    env_mc_limit = os.getenv("APP_OP_MODEL_CALL_RUN_LIMIT")
-    mc_limit = model_call_limit or (int(env_mc_limit) if env_mc_limit else _MODEL_CALL_RUN_LIMIT)
-    middleware.append(
-        ModelCallLimitMiddleware(
-            run_limit=mc_limit,
-            exit_behavior="end",
-        )
-    )
+    # 3. Model call guard — REMOVED
+    # ModelCallLimitMiddleware was silently terminating the deep agent
+    # (exit_behavior="end") before it could produce a final summary,
+    # causing the agent to appear "stuck" after completing operations.
+    # LangGraph's recursion_limit and the global ToolCallLimitMiddleware
+    # above provide sufficient safety nets against runaway loops.
 
     # 4. Tool retry (transient failures)
     env_retry = os.getenv("APP_OP_ENABLE_TOOL_RETRY")
@@ -1045,24 +1137,17 @@ def build_app_operator_middleware(
             )
         )
 
-    # 5. Summarization tool — lets the coordinator proactively compress its
-    #    message history between task delegations (after request_chat_continue)
-    #    rather than waiting until the automatic 85%-threshold reactive
-    #    summarization, which can cause mid-generation token overflow crashes.
-    #    Requires deepagents>=1.6.0 (available as of 0.5.x in this fork).
-    _model = model or (config.get_llm_config().get("model") if config else None)
-    _backend = backend
-    if _model and _backend:
-        try:
-            middleware.append(
-                create_summarization_tool_middleware(_model, _backend)
-            )
-            logger.info("Middleware: SummarizationToolMiddleware added")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "SummarizationToolMiddleware unavailable — skipping",
-                extra={"error": str(exc)},
-            )
+    # 5. Shared coordinator middleware (CodeInterpreter + Summarization)
+    from k8s_autopilot.core.agents.shared_middleware import (
+        build_shared_coordinator_middleware,
+    )
+    middleware.extend(
+        build_shared_coordinator_middleware(
+            model=model,
+            backend=backend,
+            config=config,
+        )
+    )
 
     # 6. Extra middleware
     if extra_middleware:

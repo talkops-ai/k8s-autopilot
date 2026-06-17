@@ -25,7 +25,7 @@ compatibility: >-
 ## When to Use
 
 Load this skill ONLY for **state-modifying** Prometheus operations: installing exporters,
-applying ServiceMonitors, applying Probes, upserting rule groups, managing file_sd targets, or configuring
+applying ServiceMonitors, deleting stale ServiceMonitors, applying Probes, upserting rule groups, managing file_sd targets, or configuring
 remote-write.
 
 Read-only queries (PromQL queries, metric exploration, backend health, cardinality checks)
@@ -76,6 +76,9 @@ patterns, read [references/workflows.md](references/workflows.md).
 | User Intent | Workflow | Key Entry Point |
 |---|---|---|
 | Onboard K8s app | K8s App Onboarding | `prom_recommend_instrumentation` |
+| Wire K8s service (same namespace) | K8s App Onboarding step 5b | `prom_apply_servicemonitor(namespace=..., service_name=...)` |
+| Wire K8s service (cross-namespace) | K8s App Onboarding step 5c | `prom_apply_servicemonitor(namespace="monitoring", service_name=..., target_namespace=...)` |
+| Clean up broken ServiceMonitor | Retry / idempotency | `prom_delete_servicemonitor(monitor_name=..., namespace=...)` |
 | Deploy exporter | Exporter Onboarding | `prom_recommend_exporter` → `prom_install_exporter` |
 | Onboard VM target | VM/Legacy Onboarding | `prom_test_endpoint` → `prom_manage_file_sd` |
 | Query metrics | PromQL Querying | `prom_validate_promql` → `prom_query_instant` |

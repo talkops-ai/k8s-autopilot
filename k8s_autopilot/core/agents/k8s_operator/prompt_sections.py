@@ -88,8 +88,11 @@ Out of scope:
 - Any request outside raw Kubernetes cluster operations.
 
 When a request is out of scope:
-- Do not call tools or sub-agents.
-- Return a brief scope refusal with the user request and relevant context.
+- MUST call the `escalate_to_supervisor` tool with:
+  - user_request: the user's exact out-of-scope request
+  - reason: brief explanation of why this is outside your scope
+- This ensures the supervisor re-routes the request to the correct operator.
+- DO NOT reply with a free-text refusal. Always use the escalation tool.
 </scope>"""
 
 COORDINATOR_ROUTING_RULES = """\
@@ -122,9 +125,9 @@ For conversational_closure:
 - Reply briefly and politely.
 
 For out_of_scope:
-- Do not call any sub-agent or tools.
-- Return a short scope refusal.
-
+- Call the `escalate_to_supervisor` tool.
+- Do not call any other sub-agent or tool.
+- Do not return a text refusal.
 For read_only:
 - Delegate once to the sub-agent with a clear task description.
 - Prefix the task with [READ-ONLY].
@@ -181,19 +184,21 @@ For any state-changing request, follow this flow:
    - Determine the potential blast radius.
 
 2. Plan
-   - Describe the intended change in plain language.
-   - Highlight the blast radius and what may be affected.
-   - Prepare a short ordered checklist.
+   - Call `write_todos` with a short ordered checklist.
    - Mark the mutation step clearly (e.g., "[MUTATION] Create deployment").
+   - Highlight the blast radius and what may be affected.
 
 3. Approve
    - Present the plan to the user and request explicit approval.
    - Include options to approve, modify, or cancel.
+   The PlanLockMiddleware will automatically track the todos and re-inject them as
+   a binding constraint before every model call, surviving context summarization.
 
 4. Execute
-   - After approval, delegate a single [STATE-MODIFYING] task to the sub-agent.
+   - Delegate a single [STATE-MODIFYING] task to the sub-agent.
    - Include all resolved parameters in the task message.
    - Use [PLAN-APPROVED] when the user has already approved the plan.
+   - Update TODO status via `write_todos` as you proceed (pending → in_progress → completed).
 
 5. Validate
    - Ensure the sub-agent verifies the change took effect.
@@ -210,7 +215,7 @@ For any state-changing request, follow this flow:
 COORDINATOR_PLANNING_MODE = """\
 <planning_mode>
 Planning rules, PATH A / PATH B classification criteria, write_todos examples,
-step budget, and walkthrough format are in AGENTS.md.
+step budget, and todo list format are in AGENTS.md.
 AGENTS.md is auto-loaded at session start — do NOT read_file it.
 
 PATH A (PLAN — write_todos + approval gate):
@@ -241,8 +246,8 @@ COORDINATOR_RESPONSE_STYLE = """\
 - For read-only resource lists: use a table (Name, Kind, Status, Namespace, Age).
 - For pod logs: highlight ERROR/WARN/FATAL lines and provide root cause analysis.
 - For state-modifying results: state action, target, namespace, and result status.
-- Always call request_chat_continue to keep the conversation open (except for
-  conversational closures like "thanks" or "done").
+- Present results using polished markdown with headings, tables, and status markers.
+- For conversational closures like "thanks" or "done", reply briefly and politely.
 </response_style>"""
 
 COORDINATOR_SAFETY_GUARDRAILS = """\
@@ -311,6 +316,21 @@ Iron Rules (never violate):
 1. Error/not-found IS the answer. Do NOT retry. Do NOT try alternative tools.
 2. Do NOT search the filesystem (ls, glob, grep, read_file) for query tasks.
 3. Never call the same read-only tool more than once per request.
+4. **Batching Requirement**: If a task requires 3 or more lookups or iterations, you MUST use the `eval` tool.
+   **CRITICAL JAVASCRIPT RULES for `eval`**:
+   - Do NOT use top-level `return` statements (it causes a SyntaxError). Just leave your final variable as the last line.
+   - You MUST `await` all tool calls (e.g., `let res = await tools.pods_list({namespace: "default"})`).
+   - Tool outputs are usually JSON strings. You MUST `JSON.parse(res)` before calling `.map()` or `.filter()`.
+   - Use `let` instead of `const` or `var` in loops to avoid redeclaration errors.
+   - Example pattern:
+     ```javascript
+     let results = [];
+     let pods = await tools.pods_list_in_namespace({namespace: "kube-system"});
+     let data = JSON.parse(pods);
+     // ... process data ...
+     results.push(data);
+     results; // <--- The last expression is automatically returned! No "return" keyword!
+     ```
 
 Tool Routing Table:
 | Query Type | Tool |

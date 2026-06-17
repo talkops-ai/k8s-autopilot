@@ -16,15 +16,21 @@ from deepagents import create_deep_agent
 from deepagents.backends.utils import create_file_data
 
 from k8s_autopilot.core.agents.types import BaseDeepAgent
+from k8s_autopilot.core.agents.types import BaseDeepAgent, AgentResponse
 from k8s_autopilot.core.state.app_operator_state import AppOperatorContext
+from k8s_autopilot.core.state.handoff_contracts import extract_handoff_from_text
 from k8s_autopilot.utils.llm import create_model
 from k8s_autopilot.utils.user_input_tool import (
     create_user_input_tool,
     create_chat_continue_tool,
 )
 from k8s_autopilot.utils.operations_context import create_log_app_operation_tool
+from k8s_autopilot.utils.escalate_tool import create_escalate_to_supervisor_tool
 from k8s_autopilot.core.agents.app_operator.subagents import get_app_subagent_specs
 from k8s_autopilot.core.agents.app_operator.middleware import build_app_operator_middleware
+import k8s_autopilot.core.agents.profiles  # noqa: F401 — side-effect registration
+from k8s_autopilot.core.agents.profiles import register_domain_profiles
+register_domain_profiles("app")
 from k8s_autopilot.utils.memory import K8sBackendMixin, get_project_root
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.utils.domain_summary import extract_domain_summary
@@ -56,7 +62,7 @@ right sub-agent to execute the task.
 </mission>
 
 <capabilities>
-- argocd-onboarder: ArgoCD projects, repositories, applications, sync, rollback, and GitOps onboarding.
+- argocd-onboarder: ArgoCD projects, repositories, applications, sync, rollback, and GitOps onboarding (including namespace creation).
 - argo-rollouts-onboarder: rollout lifecycle, canary, blue-green, promotion, abort, and rollback operations.
 - traefik-edge-router: traffic splitting, weighted routing, mirroring, middleware, and edge traffic policy changes.
 
@@ -79,11 +85,12 @@ Out of scope:
 - Non-GitOps infrastructure operations.
 - Any request that requires direct kubectl-style intervention.
 
-When a request is out of scope, return a brief scope refusal in this structure:
-  "This is outside my scope. Please use the appropriate operator.
-   User Request: [the user's request]
-   Context: [what was done previously, if relevant]"
-Do not call any tools or sub-agents for out-of-scope requests.
+When a request is out of scope:
+- MUST call the `escalate_to_supervisor` tool with:
+  - user_request: the user's exact out-of-scope request
+  - reason: brief explanation of why this is outside your scope
+- This ensures the supervisor re-routes the request to the correct operator.
+- DO NOT reply with a free-text refusal. Always use the escalation tool.
 </scope>
 
 <routing_rules>
@@ -111,8 +118,9 @@ For conversational_closure:
 - Reply briefly and politely. This signals end-of-workflow to the supervisor.
 
 For out_of_scope:
-- Do not call any sub-agent or tool.
-- Return the scope refusal structure defined in <scope>.
+- Call the `escalate_to_supervisor` tool.
+- Do not call any other sub-agent or tool.
+- Do not return a text refusal.
 
 For read_only:
 - Delegate once to the most relevant sub-agent with a clear [READ-ONLY] prefixed task.
@@ -146,8 +154,11 @@ For any state_mutation request, follow this flow. See AGENTS.md §Planning Workf
 
 1. Interpret — Identify the operational goal, target sub-agent, and whether live traffic is affected.
 2. Plan — Call `write_todos` with the step checklist. Mark mutation steps with [MUTATION].
+   Store the user's original intent for walkthrough generation.
 3. Approve — Call `request_user_input` with the plan summary, blast radius, and options:
    approve (✅) / reject (❌) / modify (✏️). ALWAYS include `options` — calling without options is an error.
+3a. The PlanLockMiddleware will automatically track the todos and re-inject them as
+    a binding constraint before every model call, surviving context summarization.
 4. Execute — Delegate each TODO with [PLAN-APPROVED] prefix so the sub-agent skips its own plan gate.
    Update TODO status via `write_todos` as you proceed (pending → in_progress → completed).
 5. Verify — Run a read-only follow-up to confirm health, sync, or routing state.
@@ -219,7 +230,7 @@ For ambiguous requests:
 - One focused clarifying question with a small set of options.
 
 For out_of_scope:
-- Brief refusal. Direct user to the appropriate operator.
+- Brief refusal via the `escalate_to_supervisor` tool. Direct user to the appropriate operator.
 </output_contract>
 
 <planning_mode>
@@ -278,7 +289,8 @@ class AppOperatorCoordinator(BaseDeepAgent):
         user_input = create_user_input_tool()
         chat_continue = create_chat_continue_tool()
         log_operation = create_log_app_operation_tool()
-        return [user_input, chat_continue, log_operation]
+        escalate = create_escalate_to_supervisor_tool()
+        return [user_input, chat_continue, log_operation, escalate]
 
     def get_skill_paths(self) -> List[str]:
         return [
@@ -492,7 +504,6 @@ class AppOperatorCoordinator(BaseDeepAgent):
                 final_message=final_message,
             ),
         }
-
         return output
 
 

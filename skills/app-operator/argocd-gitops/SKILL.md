@@ -88,6 +88,7 @@ For detailed step-by-step workflow sequences, read `references/workflows.md`.
 - **`destination_namespace`**: Use project's allowed destination, or `"default"` if wildcard.
 - **`sync_policy`**: `"manual"` unless user explicitly requests auto-sync.
 - **`repo_url` normalization**: Match the exact form from the project's `sourceRepos`.
+- **`create_namespace`**: Set to `true` when creating or syncing applications if the target namespace does not already exist.
 
 Always state derived defaults in the plan preview so the user can override.
 

@@ -31,6 +31,27 @@ from k8s_autopilot.core.agents import (
 )
 from k8s_autopilot.utils.logger import AgentLogger, log_sync
 
+# ── Suppress LangChainTracer orphaned-run-ID noise ───────────────────────
+# When the supervisor streams with subgraphs=True, the auto-injected
+# LangChainTracer (from LANGCHAIN_TRACING_V2=true) receives on_*_end
+# events from nested deep-agent subgraphs whose on_*_start it never saw.
+# This produces harmless but noisy "No indexed run ID" TracerExceptions.
+# The errors come from langchain_core.callbacks.manager via logger.warning().
+import logging as _logging
+
+class _TracerExceptionFilter(_logging.Filter):
+    """Suppress 'No indexed run ID' messages from LangChain's callback manager."""
+    def filter(self, record: _logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "No indexed run ID" in msg:
+            return False
+        return True
+
+# Target the exact logger that emits these warnings
+_logging.getLogger("langchain_core.callbacks.manager").addFilter(
+    _TracerExceptionFilter()
+)
+
 # Create agent logger for server
 server_logger = AgentLogger("k8sAutopilotServer")
 
@@ -154,13 +175,28 @@ def main(host: str, port: int, agent_card: str, config_file: str):
             enable_v0_3_compat=True,
         )
 
+        import contextlib
+        import os
+
+        @contextlib.asynccontextmanager
+        async def lifespan(app):
+            yield
+            # On shutdown, uvicorn cancels all tasks. The a2a EventQueueSource catches
+            # CancelledError in __aexit__ and deadlocks waiting for task_done().
+            # We schedule a forceful exit after 500ms to bypass this hang.
+            server_logger.info("Initiating graceful force-exit to bypass dispatcher deadlocks")
+            asyncio.get_running_loop().call_later(0.5, lambda: os._exit(0))
+
         # Build Starlette app with CORS middleware for A2UI client access
-        app = Starlette(routes=[
-            *jsonrpc_routes,
-            *agent_card_routes,
-            *rest_routes,
-            Route("/suggest-prompts", suggest_prompts_handler, methods=["GET"]),
-        ])
+        app = Starlette(
+            routes=[
+                *jsonrpc_routes,
+                *agent_card_routes,
+                *rest_routes,
+                Route("/suggest-prompts", suggest_prompts_handler, methods=["GET"]),
+            ],
+            lifespan=lifespan,
+        )
         app.add_middleware(
             CORSMiddleware,
             allow_origins=["*"],

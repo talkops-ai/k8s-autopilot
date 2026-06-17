@@ -64,6 +64,21 @@ Do NOT fabricate URIs.
 4. If asked about a resource type not in the tool table above, return immediately:
    "This is outside my scope. Please use the appropriate operator.
     User Request: [request] | Context: [prior context]"
+5. **Batching Requirement**: If a task requires 3 or more lookups or iterations, you MUST use the `eval` tool.
+   **CRITICAL JAVASCRIPT RULES for `eval`**:
+   - Do NOT use top-level `return` statements (it causes a SyntaxError). Just leave your final variable as the last line.
+   - You MUST `await` all tool calls (e.g., `let res = await tools.list_applications(...)`).
+   - Tool outputs are usually JSON strings. You MUST `JSON.parse(res)` before calling `.map()` or `.filter()`.
+   - Use `let` instead of `const` or `var` in loops to avoid redeclaration errors.
+   - Example pattern:
+     ```javascript
+     let results = [];
+     let apps = await tools.list_applications({});
+     let data = JSON.parse(apps);
+     // ... process data ...
+     results.push(data);
+     results; // <--- The last expression is automatically returned! No "return" keyword!
+     ```
 </iron_rules>
 
 <skill_discovery>
@@ -142,6 +157,21 @@ If `argo_update_rollout` mentions "Deployment" — that is normal for workloadRe
 4. Autonomous promotion ceiling: ≤50% → promote autonomously. ≥50% → PAUSE + human approval.
    `promote_full` always requires explicit approval.
 5. If asked about an unsupported resource type, return scope refusal immediately.
+6. **Batching Requirement**: If a task requires 3 or more lookups or iterations, you MUST use the `eval` tool.
+   **CRITICAL JAVASCRIPT RULES for `eval`**:
+   - Do NOT use top-level `return` statements (it causes a SyntaxError). Just leave your final variable as the last line.
+   - You MUST `await` all tool calls (e.g., `let res = await tools.read_mcp_resource({uri: "argorollout://rollouts/list"})`).
+   - Tool outputs are usually JSON strings. You MUST `JSON.parse(res)` before calling `.map()` or `.filter()`.
+   - Use `let` instead of `const` or `var` in loops to avoid redeclaration errors.
+   - Example pattern:
+     ```javascript
+     let results = [];
+     let rollouts = await tools.read_mcp_resource({uri: "argorollout://rollouts/list"});
+     let data = JSON.parse(rollouts);
+     // ... process data ...
+     results.push(data);
+     results; // <--- The last expression is automatically returned! No "return" keyword!
+     ```
 </iron_rules>
 
 <skill_discovery>
@@ -166,6 +196,27 @@ If the user rejects a plan:
 - Do NOT retry with a modified plan.
 - Return: "Plan rejected by user. Returning to coordinator for re-engagement."
 </rejection_protocol>
+
+<kubectl_diagnostics>
+You have access to the `kubectl_readonly` tool for direct Kubernetes cluster inspection.
+It executes read-only kubectl commands (get, describe, logs, top, events, etc.) and returns
+structured JSON with stdout, stderr, and exit_code.  Mutating operations are blocked
+automatically — you cannot accidentally modify cluster state through this tool.
+
+Use it whenever cluster-level visibility would help you make better decisions — for example:
+- Checking Rollout pod status, ReplicaSet progression, or container readiness.
+- Inspecting events on a Rollout or its pods to diagnose promotion failures.
+- Viewing pod logs to understand why a canary step is failing health checks.
+- Verifying AnalysisRun results or experiment pod state.
+
+Example commands:
+  kubectl_readonly("kubectl get rollout {name} -n {namespace} -o wide")
+  kubectl_readonly("kubectl describe rollout {name} -n {namespace}")
+  kubectl_readonly("kubectl get pods -n {namespace} -l app={name}")
+  kubectl_readonly("kubectl logs {pod_name} -n {namespace} --tail=200")
+  kubectl_readonly("kubectl get events -n {namespace} --sort-by='.lastTimestamp'")
+  kubectl_readonly("kubectl get analysisrun -n {namespace}")
+</kubectl_diagnostics>
 
 Return: "Completed Argo Rollouts operation: {summary}".
 Do NOT use `request_human_input` for final results. Return raw text.
@@ -236,6 +287,21 @@ Do NOT fabricate URIs not listed above.
 3. Do NOT fabricate URIs or resource types.
 4. Generate-before-apply: always use `action=generate` → show YAML → confirm → `action=apply`.
 5. If asked about an unsupported resource type, return scope refusal immediately.
+6. **Batching Requirement**: If a task requires 3 or more lookups or iterations, you MUST use the `eval` tool.
+   **CRITICAL JAVASCRIPT RULES for `eval`**:
+   - Do NOT use top-level `return` statements (it causes a SyntaxError). Just leave your final variable as the last line.
+   - You MUST `await` all tool calls (e.g., `let res = await tools.read_mcp_resource({uri: "traefik://traffic/routes/list"})`).
+   - Tool outputs are usually JSON strings. You MUST `JSON.parse(res)` before calling `.map()` or `.filter()`.
+   - Use `let` instead of `const` or `var` in loops to avoid redeclaration errors.
+   - Example pattern:
+     ```javascript
+     let results = [];
+     let routes = await tools.read_mcp_resource({uri: "traefik://traffic/routes/list"});
+     let data = JSON.parse(routes);
+     // ... process data ...
+     results.push(data);
+     results; // <--- The last expression is automatically returned! No "return" keyword!
+     ```
 </iron_rules>
 
 <skill_discovery>
@@ -262,6 +328,27 @@ If the user rejects a plan:
 - Return: "Plan rejected by user. Returning to coordinator for re-engagement."
 </rejection_protocol>
 
+<kubectl_diagnostics>
+You have access to the `kubectl_readonly` tool for direct Kubernetes cluster inspection.
+It executes read-only kubectl commands (get, describe, logs, top, events, etc.) and returns
+structured JSON with stdout, stderr, and exit_code.  Mutating operations are blocked
+automatically — you cannot accidentally modify cluster state through this tool.
+
+Use it whenever cluster-level visibility would help you make better decisions — for example:
+- Verifying IngressRoute, TraefikService, or Middleware CRDs are applied correctly.
+- Checking Traefik controller pod health or readiness.
+- Inspecting events on routing resources to diagnose traffic routing failures.
+- Validating that backend services and endpoints exist and are healthy.
+
+Example commands:
+  kubectl_readonly("kubectl get ingressroute -n {namespace}")
+  kubectl_readonly("kubectl describe ingressroute {name} -n {namespace}")
+  kubectl_readonly("kubectl get traefikservice -n {namespace}")
+  kubectl_readonly("kubectl get middleware -n {namespace}")
+  kubectl_readonly("kubectl get pods -n {namespace} -l app.kubernetes.io/name=traefik")
+  kubectl_readonly("kubectl get endpoints {service} -n {namespace}")
+</kubectl_diagnostics>
+
 Return: "Completed Traefik operation: {summary}".
 Do NOT use `request_human_input` for final results. Return raw text.
 """
@@ -283,187 +370,10 @@ TRAEFIK_EDGE_ROUTER_SUBAGENT: dict[str, Any] = {
 
 
 # ---------------------------------------------------------------------------
-# JIT MCP Subagent Wrapper
 # ---------------------------------------------------------------------------
-
-def _build_mcp_subagent(
-    spec: dict[str, Any],
-    coordinator_model_name: str,
-    *,
-    server_filter: list[str],
-    mcp_resource_server_name: str,
-    include_filesystem: bool = False,
-    skill_paths: Optional[list[str]] = None,
-    hitl_builder: Optional[Callable[[], Any]] = None,
-) -> Any:  # CompiledSubAgent
-    """Wraps a static dict spec into a dynamic CompiledSubAgent that opens its
-    MCP connection Just-In-Time (JIT) specifically when its node is executed.
-
-    Args:
-        spec: Static subagent dict (name, description, system_prompt).
-        coordinator_model_name: Model name string.
-        server_filter: MCP server names to connect to.
-        mcp_resource_server_name: Server name passed to ``read_mcp_resource``.
-        include_filesystem: If True, attach ``FilesystemMiddleware`` scoped to
-            ``skill_paths`` and ``/memories/`` only — prevents the subagent from
-            crawling the project root, log files, or ``.venv``.
-        skill_paths: List of specific skill directory paths this subagent may
-            read (e.g. ``["/skills/app-operator/traefik-edge-routing/"]``).  
-            When ``include_filesystem=True`` the backend root is restricted to
-            only these paths plus ``/memories/`` so the agent cannot wander
-            into arbitrary project files.  Defaults to ``["/skills/"]``.
-        hitl_builder: Callable that returns a ``HumanInTheLoopMiddleware``
-            instance. If None, no HITL middleware is attached.
-    """
-    from langchain_core.runnables import RunnableLambda
-    from langchain_core.runnables.config import RunnableConfig
-    from deepagents.middleware.subagents import CompiledSubAgent
-
-    name = spec["name"]
-    description = spec.get("description", "")
-    system_prompt = spec.get("system_prompt", "")
-
-    async def _mcp_runnable(
-        state: dict[str, Any],
-        config: RunnableConfig,
-    ) -> dict[str, Any]:
-        from k8s_autopilot.utils.mcp_client import create_mcp_client
-        from k8s_autopilot.config.config import Config
-        from k8s_autopilot.utils.llm import create_model
-        from langchain.agents import create_agent
-
-        # Lazily connect to MCP right before execution
-        async with create_mcp_client(Config(), server_filter=server_filter) as mcp_client:
-            tools = mcp_client.get_tools()
-
-            from k8s_autopilot.core.hitl.tools import create_hitl_tools
-            from langchain_core.tools import StructuredTool
-
-            # Generic MCP resource reader — parameterized by server_name
-            _res_server = mcp_resource_server_name
-
-            async def read_mcp_resource(uri: str) -> str:
-                """Read content of a specific MCP resource (e.g., argocd://projects, argorollout://rollouts/list)."""
-                try:
-                    res = await mcp_client.read_resource(uri, server_name=_res_server)
-                    if hasattr(res, 'contents') and res.contents:
-                        for item in res.contents:
-                            if hasattr(item, 'text'):
-                                return item.text
-                    return str(res)
-                except Exception as e:
-                    return f"Error reading resource {uri}: {str(e)}"
-            
-            tools.extend(create_hitl_tools())
-            tools.append(
-                StructuredTool.from_function(
-                    func=None,
-                    coroutine=read_mcp_resource,
-                    name="read_mcp_resource",
-                    description=(
-                        "Read content of a specific MCP resource by URI "
-                        f"(server: {_res_server}). Use this to read state natively."
-                    ),
-                )
-            )
-
-            # Build middleware list
-            middleware: list[Any] = []
-            if include_filesystem:
-                from deepagents.middleware.filesystem import FilesystemMiddleware
-                from deepagents.backends import FilesystemBackend
-                from k8s_autopilot.utils.memory import get_project_root
-
-                # Use the project root as the base — the virtual filesystem is
-                # a key-value store keyed by virtual path; restricting the root
-                # to a skills sub-dir would break path resolution for seeded
-                # files.  Instead we restrict WHICH paths are advertised to the
-                # model via the tool description.  The hard filesystem scope
-                # comes from permissions on create_deep_agent (coordinator level)
-                # and from the explicit prompt rules in each subagent prompt.
-                root = str(get_project_root())
-                _allowed_paths = skill_paths or ["/skills/"]
-                _paths_str = ", ".join(f"`{p}`" for p in _allowed_paths)
-                middleware.append(
-                    FilesystemMiddleware(
-                        backend=FilesystemBackend(
-                            root_dir=root,
-                            virtual_mode=True,
-                        ),
-                        custom_tool_descriptions={
-                            "read_file": (
-                                f"Read a file from the workspace filesystem. "
-                                f"ONLY use this to read skill files under {_paths_str} "
-                                f"and memory files under `/memories/`. "
-                                f"Do NOT use this tool for any other purpose."
-                            ),
-                            "ls": (
-                                f"List files in a skill or memory directory. "
-                                f"Allowed paths: {_paths_str} and `/memories/`. "
-                                f"Do NOT call `ls` on `/`, `/.venv/`, or any project directory."
-                            ),
-                            "glob": (
-                                f"Glob files within skill or memory directories ONLY: {_paths_str}, `/memories/`. "
-                                f"Do NOT glob across the entire workspace or log files."
-                            ),
-                            "grep": (
-                                f"Search within skill or memory files ONLY: {_paths_str}, `/memories/`. "
-                                f"Do NOT grep log files, `.venv`, or workspace source code."
-                            ),
-                        },
-                    )
-                )
-
-            if hitl_builder is not None:
-                from langchain.agents.middleware import ToolRetryMiddleware
-
-                class CustomToolRetryMiddleware(ToolRetryMiddleware):
-                    def _should_retry_tool(self, tool_name: str) -> bool:
-                        # Never retry HITL tools — GraphInterrupt must propagate.
-                        if tool_name == "request_human_input":
-                            return False
-                        return super()._should_retry_tool(tool_name)
-
-                middleware.append(hitl_builder())
-                middleware.append(
-                    CustomToolRetryMiddleware(
-                        max_retries=2,
-                        backoff_factor=1.5,
-                        initial_delay=0.5,
-                        max_delay=10.0,
-                        on_failure="continue",
-                    )
-                )
-                _subagent_logger.info(
-                    f"{name}: attached HumanInTheLoopMiddleware + ToolRetryMiddleware"
-                )
-
-            # Lazily instantiate model and graph — prefer coordinator's config
-            # over a fresh Config() to ensure sub-agents inherit model/backend
-            # settings from the coordinator (FINDING 8).
-            cfg = (
-                config.get("configurable", {}).get("app_config")
-                if isinstance(config, dict)
-                else None
-            ) or Config()
-            model = create_model(cfg.get_llm_deepagent_config())
-            agent_graph = create_agent(
-                model=model,
-                tools=tools,
-                middleware=middleware,
-                system_prompt=system_prompt,
-                name=name,
-            )
-
-            from typing import cast
-            result = await agent_graph.ainvoke(cast(Any, state), config)
-            return dict(result)
-
-    return CompiledSubAgent(
-        name=name,
-        description=description,
-        runnable=RunnableLambda(_mcp_runnable).with_config({"run_name": name}),
-    )
+# The shared builder is imported from the central module to avoid 4x duplication.
+# See shared_subagent.py for the full implementation (includes SkillsMiddleware).
+from k8s_autopilot.core.agents.shared_subagent import build_mcp_subagent
 
 
 # ---------------------------------------------------------------------------
@@ -483,38 +393,59 @@ def get_app_subagent_specs(
         build_argo_rollouts_hitl_middleware,
         build_traefik_hitl_middleware,
     )
+    from k8s_autopilot.core.agents.shared_middleware import (
+        make_subagent_interpreter_builder,
+        ARGOCD_PTC_ALLOWLIST,
+        ARGO_ROLLOUTS_PTC_ALLOWLIST,
+        TRAEFIK_PTC_ALLOWLIST,
+    )
+    from k8s_autopilot.core.tools.kubectl_tools import create_kubectl_readonly_tool
 
     coord_model = coordinator_model or ""
 
     return [
         # ArgoCD sub-agent — filesystem scoped to its own skill only
-        _build_mcp_subagent(
+        build_mcp_subagent(
             ARGOCD_ONBOARDER_SUBAGENT,
-            str(coord_model),
             server_filter=["argocd_mcp_server"],
             mcp_resource_server_name="argocd_mcp_server",
             include_filesystem=True,
             skill_paths=["/skills/app-operator/argocd-gitops/"],
             hitl_builder=build_app_operator_hitl_middleware,
+            extra_middleware_builders=[
+                make_subagent_interpreter_builder(
+                    ptc_allowlist=ARGOCD_PTC_ALLOWLIST,
+                ),
+            ],
         ),
         # Argo Rollouts sub-agent — filesystem scoped to its own skill only
-        _build_mcp_subagent(
+        build_mcp_subagent(
             ARGO_ROLLOUTS_ONBOARDER_SUBAGENT,
-            str(coord_model),
             server_filter=["argo_rollout_mcp_server"],
             mcp_resource_server_name="argo_rollout_mcp_server",
             include_filesystem=True,
             skill_paths=["/skills/app-operator/argo-rollouts-gitops/"],
             hitl_builder=build_argo_rollouts_hitl_middleware,
+            extra_middleware_builders=[
+                make_subagent_interpreter_builder(
+                    ptc_allowlist=ARGO_ROLLOUTS_PTC_ALLOWLIST,
+                ),
+            ],
+            extra_tools=[create_kubectl_readonly_tool()],
         ),
         # Traefik sub-agent — filesystem scoped to its own skill only
-        _build_mcp_subagent(
+        build_mcp_subagent(
             TRAEFIK_EDGE_ROUTER_SUBAGENT,
-            str(coord_model),
             server_filter=["traefik_mcp_server"],
             mcp_resource_server_name="traefik_mcp_server",
             include_filesystem=True,
             skill_paths=["/skills/app-operator/traefik-edge-routing/"],
             hitl_builder=build_traefik_hitl_middleware,
+            extra_middleware_builders=[
+                make_subagent_interpreter_builder(
+                    ptc_allowlist=TRAEFIK_PTC_ALLOWLIST,
+                ),
+            ],
+            extra_tools=[create_kubectl_readonly_tool()],
         ),
     ]

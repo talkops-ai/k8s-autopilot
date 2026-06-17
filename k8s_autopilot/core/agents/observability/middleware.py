@@ -20,7 +20,6 @@ Usage::
 import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from deepagents.middleware.summarization import create_summarization_tool_middleware
 from langchain.agents.middleware import HumanInTheLoopMiddleware, AgentMiddleware, AgentState
 from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
 
@@ -90,7 +89,7 @@ class ObsOperationContextMiddleware(AgentMiddleware):
 
 _WRITE_FILE_RUN_LIMIT = int(os.getenv("OBS_OP_WRITE_FILE_RUN_LIMIT", "20"))
 _GLOBAL_TOOL_RUN_LIMIT = int(os.getenv("OBS_OP_GLOBAL_TOOL_RUN_LIMIT", "60"))
-_MODEL_CALL_RUN_LIMIT = int(os.getenv("OBS_OP_MODEL_CALL_RUN_LIMIT", "40"))
+
 _ENABLE_TOOL_RETRY = os.getenv("OBS_OP_ENABLE_TOOL_RETRY", "false").lower() == "true"
 
 
@@ -621,7 +620,6 @@ def build_obs_operator_middleware(
     *,
     write_file_limit: Optional[int] = None,
     global_tool_limit: Optional[int] = None,
-    model_call_limit: Optional[int] = None,
     enable_tool_retry: Optional[bool] = None,
     extra_middleware: Optional[List[Any]] = None,
     model: Optional[str] = None,
@@ -634,14 +632,12 @@ def build_obs_operator_middleware(
         0b. PlanLockMiddleware — re-injects approved plan constraints
         1. ToolCallLimitMiddleware (write_file) — prevent runaway writes
         2. ToolCallLimitMiddleware (global) — hard cap on total tool calls
-        3. ModelCallLimitMiddleware — hard cap on LLM calls
-        4. ToolRetryMiddleware (optional) — transient failure recovery
-        5. SummarizationToolMiddleware — proactive context compression
-        6. Extra middleware (caller-supplied)
+        3. ToolRetryMiddleware (optional) — transient failure recovery
+        4. SummarizationToolMiddleware — proactive context compression
+        5. Extra middleware (caller-supplied)
     """
     from langchain.agents.middleware import (
         ToolCallLimitMiddleware,
-        ModelCallLimitMiddleware,
         ToolRetryMiddleware,
     )
     from k8s_autopilot.core.agents.app_operator.middleware import PlanLockMiddleware
@@ -675,14 +671,12 @@ def build_obs_operator_middleware(
         )
     )
 
-    # 3. Model call guard
-    mc_limit = model_call_limit or _MODEL_CALL_RUN_LIMIT
-    middleware.append(
-        ModelCallLimitMiddleware(
-            run_limit=mc_limit,
-            exit_behavior="end",
-        )
-    )
+    # 3. Model call guard — REMOVED
+    # ModelCallLimitMiddleware was silently terminating the deep agent
+    # (exit_behavior="end") before it could produce a final summary,
+    # causing the agent to appear "stuck" after completing operations.
+    # LangGraph's recursion_limit and the global ToolCallLimitMiddleware
+    # above provide sufficient safety nets against runaway loops.
 
     # 4. Tool retry (transient failures)
     should_retry = enable_tool_retry if enable_tool_retry is not None else _ENABLE_TOOL_RETRY
@@ -697,25 +691,19 @@ def build_obs_operator_middleware(
             )
         )
 
-    # 5. Summarization tool — lets the coordinator proactively compress its
-    #    message history between task delegations (after request_chat_continue)
-    #    rather than waiting until the automatic 85%-threshold reactive
-    #    summarization, which can cause mid-generation token overflow crashes.
-    _model = model or (config.get_llm_config().get("model") if config else None)
-    _backend = backend
-    if _model and _backend:
-        try:
-            middleware.append(
-                create_summarization_tool_middleware(_model, _backend)
-            )
-            logger.info("Middleware: SummarizationToolMiddleware added")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "SummarizationToolMiddleware unavailable — skipping",
-                extra={"error": str(exc)},
-            )
+    # 4b. Shared coordinator middleware (CodeInterpreter + Summarization)
+    from k8s_autopilot.core.agents.shared_middleware import (
+        build_shared_coordinator_middleware,
+    )
+    middleware.extend(
+        build_shared_coordinator_middleware(
+            model=model,
+            backend=backend,
+            config=config,
+        )
+    )
 
-    # 6. Extra middleware
+    # 5. Extra middleware
     if extra_middleware:
         middleware.extend(extra_middleware)
 

@@ -242,8 +242,11 @@ Out of scope:
 - Any request outside the observability stack.
 
 When a request is out of scope:
-- Do not call tools or sub-agents.
-- Return a brief scope refusal with the user request and relevant context.
+- MUST call the `escalate_to_supervisor` tool with:
+  - user_request: the user's exact out-of-scope request
+  - reason: brief explanation of why this is outside your scope
+- This ensures the supervisor re-routes the request to the correct operator.
+- DO NOT reply with a free-text refusal. Always use the escalation tool.
 </scope>"""
 
 COORDINATOR_ROUTING_RULES = """\
@@ -277,21 +280,22 @@ For conversational_closure:
 - Reply briefly and politely.
 
 For out_of_scope:
-- Do not call any sub-agent.
-- Return a short scope refusal.
+- Call the `escalate_to_supervisor` tool.
+- Do not call any other sub-agent or tool.
+- Do not return a text refusal.
 
 For read_only:
 - Delegate once to the most relevant sub-agent.
 - Prefix the task with [READ-ONLY].
 - Do not create a plan or approval gate.
 - Do not call log_obs_operation.
-- Summarize the result in markdown and keep the conversation open.
+- Call `request_chat_continue` with a polished markdown summary of the result.
 
 For state_mutation:
 - Follow the Plan → Approve → Execute → Validate → Report workflow.
 - Ensure required identifiers are complete before delegation.
 - After execution, call log_obs_operation.
-- Summarize the result in markdown and keep the conversation open.
+- Call `request_chat_continue` with a concise markdown summary of the result.
 </decision_policy>"""
 
 COORDINATOR_PARAMETER_COMPLETENESS = """\
@@ -301,7 +305,7 @@ Before any state-mutating delegation, ensure all required identifiers are known.
 Resolve missing identifiers in this order:
 1. Recent context or operations journal injected by middleware.
 2. Read-only discovery via the appropriate sub-agent.
-3. A concise direct question to the user.
+3. Ask the user for the missing information.
 
 Never fabricate or guess names, matchers, namespaces, or durations for state-changing calls.
 </parameter_completeness>"""
@@ -327,19 +331,21 @@ For any state-changing request, follow this flow:
    - Determine the potential blast radius.
 
 2. Plan
-   - Describe the intended change in plain language.
-   - Highlight the blast radius and what may be affected.
-   - Prepare a short ordered checklist.
-   - Mark the mutation step clearly.
+   - Call `write_todos` with a short ordered checklist.
+   - Mark the mutation step with [MUTATION].
+   - Describe the blast radius and what may be affected.
 
 3. Approve
    - Present the plan to the user and request explicit approval.
    - Include options to approve, modify, or cancel.
+   The PlanLockMiddleware will automatically track the todos and re-inject them as
+   a binding constraint before every model call, surviving context summarization.
 
 4. Execute
-   - After approval, delegate a single [STATE-MODIFYING] task to exactly one sub-agent.
+   - Delegate a single [STATE-MODIFYING] task to exactly one sub-agent.
    - Include all resolved parameters in the task message.
    - Use [PLAN-LOCKED] when the user has already approved the plan.
+   - Update TODO status via `write_todos` as you proceed (pending → in_progress → completed).
 
 5. Validate
    - Ensure the sub-agent validates the change.
@@ -389,7 +395,7 @@ When diagnosing issues:
 COORDINATOR_PLANNING_MODE = """\
 <planning_mode>
 Planning rules, PATH A / PATH B classification criteria, write_todos examples, step budget,
-and walkthrough format are in AGENTS.md.
+and todo list format are in AGENTS.md.
 AGENTS.md is auto-loaded at session start — do NOT read_file it.
 </planning_mode>"""
 
@@ -445,6 +451,9 @@ OpenTelemetry:
 Loki:
 - Read-only only.
 - Use for label discovery, log search, structure analysis, and trace-log correlation.
+- Hard caps apply: 100 log lines and 100 metric series by default. When the loki-operator
+  reports truncated results, instruct it to narrow the query (shorter range, more label filters)
+  rather than simply raising limits.
 
 Tempo:
 - Use for trace search, summarization, topology, RED metrics, and CRD lifecycle.
@@ -478,7 +487,22 @@ SUBAGENT_READ_ONLY_IRON_RULES = """\
 Iron Rules (never violate):
 1. Error/not-found IS the answer. Do NOT retry. Do NOT try alternatives.
 2. Do NOT search the filesystem (ls, glob, grep, read_file) for query tasks.
-3. Do NOT fabricate resource URIs{extra_fabrication}."""
+3. Do NOT fabricate resource URIs{extra_fabrication}.
+4. **Batching Requirement**: If a task requires 3 or more lookups or iterations, you MUST use the `eval` tool. 
+   **CRITICAL JAVASCRIPT RULES for `eval`**:
+   - Do NOT use top-level `return` statements (it causes a SyntaxError). Just leave your final variable as the last line.
+   - You MUST `await` all tool calls (e.g., `let res = await tools.prom_query_instant(...)`).
+   - Tool outputs are usually JSON strings. You MUST `JSON.parse(res)` before calling `.map()` or `.filter()`.
+   - Use `let` instead of `const` or `var` in loops to avoid redeclaration errors.
+   - Example pattern:
+     ```javascript
+     let results = [];
+     let query_res = await tools.prom_query_instant({{query: "up"}});
+     let data = JSON.parse(query_res);
+     // ... process data ...
+     results.push(data);
+     results; // <--- The last expression is automatically returned! No "return" keyword!
+     ```"""
 
 SUBAGENT_SKILL_DISCOVERY_TEMPLATE = """\
 <skill_discovery>
@@ -552,6 +576,7 @@ Tool Routing Table:
 | Query Type | Tool |
 |---|---|
 | Run instant query | prom_query_instant |
+|                   | → pass max_samples=N for high-cardinality queries (e.g. per-pod). Default: 500, max: 5000. |
 | Run range query | prom_query_range |
 | Validate PromQL | prom_validate_promql |
 | Explore metric labels | prom_explore_labels |
@@ -575,6 +600,7 @@ Idempotency — Check Before Creating:
 |---|---|---|
 | Exporter | prom://topology/services or prom_verify_exporter | Skip install or update |
 | ServiceMonitor | prom://topology/services | Skip — already wired |
+| Stale/broken SM | prom://topology/services (if target missing) | Delete with prom_delete_servicemonitor before retrying |
 | Rule Group | prom://rules/groups | Use prom_upsert_rule_group to update |
 | File SD target | prom_query_instant with up{{job=...}} | Skip — already scraping |
 
@@ -590,8 +616,17 @@ Phase 2: Planning — call request_human_input
 |---|---|---|
 | Exporter Install | "Install exporter. Approve?" | 📦 Type, Namespace, K8s Resources |
 | Rule Create/Update | "Rule group changes. Approve?" | 📋 Group, Backend, Rule count, Storage mode |
-| ServiceMonitor | "Wire service to Prometheus. Approve?" | 📡 Service, Namespace, Interval |
+| ServiceMonitor (same-ns) | "Wire service to Prometheus. Approve?" | 📡 Service, Namespace, Port, Interval |
+| ServiceMonitor (cross-ns) | "Wire service to Prometheus (cross-namespace). Approve?" | 📡 Service, service namespace, SM namespace, Port, Interval |
+| ServiceMonitor delete | "Delete ServiceMonitor. Approve?" | 🗑 SM name, Namespace, Reason |
 | File SD Add/Remove | "Modify targets. Approve?" | 📁 Targets, File path, Action |
+
+ServiceMonitor Pre-flight Checklist:
+- Confirm EXACT Kubernetes Service name (not app name, not Helm release name).
+  Use prom://topology/services or ask user: `kubectl get svc -n <namespace>`.
+- Confirm which namespace holds the Service. If different from monitoring namespace → use target_namespace.
+- Correct call for cross-namespace: prom_apply_servicemonitor(service_name=..., namespace="monitoring", target_namespace=<ns>)
+- If retrying: call prom_delete_servicemonitor first to remove the old broken SM.
 
 WAIT for approval before proceeding.
 
@@ -605,7 +640,8 @@ a structured health status (✅ Verified, ⚠️ Deployed but Unhealthy, or ❌ 
 | After... | Verify with... | If Failed |
 |---|---|---|
 | Exporter install | prom_verify_exporter → confirm up{{}} series | 1. Check prom://topology/failed_targets. 2. Run prom_test_endpoint. 3. Escalate. |
-| ServiceMonitor apply | prom_query_instant(query="up{{job='...'}}") | Same as exporter install. |
+| ServiceMonitor apply | prom_query_instant(query="up{{job='...'}}") | 1. Check prom://topology/failed_targets. 2. Run prom_test_endpoint. 3. If no up series at all: verify correct service name and namespace (cross-namespace = target_namespace). |
+| ServiceMonitor delete | prom://topology/services → confirm job gone | If job still present: confirm monitor_name and namespace were correct. |
 | Rule upsert | prom://rules/groups → confirm group appears | Check namespace and ruleSelector in prom://config/runtime. |
 | File SD add | prom_query_instant(query="up{{job='...'}}") | Same as exporter install. |
 
@@ -621,6 +657,9 @@ PROMETHEUS_SAFETY_RULES = """\
 PromQL Safety Guardrails:
 - Counter Enforcement: Counters MUST use rate() or increase() unless user passes allow_raw_counters=true.
 - Auto-Downsampling: Range queries capped at ~200 points/series.
+- Instant Query Capping: prom_query_instant caps results at max_samples (default 500, max 5000).
+  If the response contains "truncated": true, the result was capped. First try narrowing the query
+  with additional label filters. Only raise max_samples if filtering is not possible.
 - Validate first: For complex queries, call prom_validate_promql before executing.
 
 K8s CRD Rule Upsert — Required Context:
@@ -629,6 +668,28 @@ When using prom_upsert_rule_group with storage_mode: k8s_crd:
 2. MUST cross-reference prom://rules/groups with prom://kubernetes/prometheusrules.
 3. Incorrect namespace will silently create a DUPLICATE CRD instead of patching.
 </safety_rules>"""
+
+PROMETHEUS_KUBECTL_DIAGNOSTICS = """\
+<kubectl_diagnostics>
+You have access to the `kubectl_readonly` tool for direct Kubernetes cluster inspection.
+It executes read-only kubectl commands (get, describe, logs, top, events, etc.) and returns
+structured JSON with stdout, stderr, and exit_code.  Mutating operations are blocked
+automatically — you cannot accidentally modify cluster state through this tool.
+
+Use it whenever cluster-level visibility would help you make better decisions — for example:
+- Checking exporter pod status after installation to verify they are running.
+- Inspecting ServiceMonitor CRDs to verify selector labels and endpoints.
+- Viewing Prometheus server pod logs to diagnose scrape failures.
+- Checking events on exporter pods or ServiceMonitors.
+
+Example commands:
+  kubectl_readonly("kubectl get pods -n {namespace} -l app={exporter_name}")
+  kubectl_readonly("kubectl describe servicemonitor {name} -n {namespace}")
+  kubectl_readonly("kubectl get servicemonitor -n {namespace}")
+  kubectl_readonly("kubectl logs {prometheus_pod} -n {namespace} --tail=200")
+  kubectl_readonly("kubectl get events -n {namespace} --sort-by='.lastTimestamp'")
+  kubectl_readonly("kubectl get prometheusrule -n {namespace}")
+</kubectl_diagnostics>"""
 
 
 # ── Alertmanager ──────────────────────────────────────────────────────────
@@ -745,6 +806,28 @@ Silence Safety Guardrails:
 - Scope Control: am_silence_alert helper: instance (narrowest) → service (recommended) → env (broadest).
 </safety_rules>"""
 
+ALERTMANAGER_KUBECTL_DIAGNOSTICS = """\
+<kubectl_diagnostics>
+You have access to the `kubectl_readonly` tool for direct Kubernetes cluster inspection.
+It executes read-only kubectl commands (get, describe, logs, top, events, etc.) and returns
+structured JSON with stdout, stderr, and exit_code.  Mutating operations are blocked
+automatically — you cannot accidentally modify cluster state through this tool.
+
+Use it whenever cluster-level visibility would help you make better decisions — for example:
+- Checking Alertmanager pod health or cluster membership status.
+- Inspecting Alertmanager pod logs for routing or notification failures.
+- Verifying AlertmanagerConfig CRDs are applied correctly.
+- Checking events on Alertmanager StatefulSet or pods.
+
+Example commands:
+  kubectl_readonly("kubectl get pods -n {namespace} -l app.kubernetes.io/name=alertmanager")
+  kubectl_readonly("kubectl describe pod {alertmanager_pod} -n {namespace}")
+  kubectl_readonly("kubectl logs {alertmanager_pod} -n {namespace} --tail=200")
+  kubectl_readonly("kubectl get alertmanagerconfig -n {namespace}")
+  kubectl_readonly("kubectl get events -n {namespace} --sort-by='.lastTimestamp'")
+  kubectl_readonly("kubectl get secret alertmanager-{name} -n {namespace} -o jsonpath='{.data}'")
+</kubectl_diagnostics>"""
+
 
 # ── OpenTelemetry ─────────────────────────────────────────────────────────
 
@@ -808,7 +891,7 @@ Phase 1: Discovery
 Phase 2: Planning — call request_human_input
 | Operation | question | context fields |
 |---|---|---|
-| Provision Collector | "Provision OTel Collector. Approve?" | 📦 Signals, Namespace, Discovered Backends, Mode |
+| Provision Collector | "Provision OTel Collector. Approve?" | 📦 Signals, Namespace, Discovered Backends, Mode, Exporter Overrides (if any) |
 | Patch Collector | "Apply CRD changes. Approve?" | 🔧 Spec diff, Mode, Replicas |
 | Patch Instrumentation | "Apply Instrumentation CRD. Approve?" | 🔌 Exporter Endpoint, Propagators, Sampler |
 | Annotate Deployment | "Inject auto-instrumentation. Approve?" | 🚀 Service, Namespace, Language |
@@ -827,6 +910,28 @@ Phase 4: Verification & Failure Diagnosis (MANDATORY)
 Never declare success based on tool stdout. Always verify changes (e.g. otel_list_instrumented_services,
 otel_get_collector) and return a structured health status (✅ Verified or ❌ Failed).
 </workflow_state_modifying>"""
+
+OPENTELEMETRY_KUBECTL_DIAGNOSTICS = """\
+<kubectl_diagnostics>
+You have access to the `kubectl_readonly` tool for direct Kubernetes cluster inspection.
+It executes read-only kubectl commands (get, describe, logs, top, events, etc.) and returns
+structured JSON with stdout, stderr, and exit_code.  Mutating operations are blocked
+automatically — you cannot accidentally modify cluster state through this tool.
+
+Use it whenever cluster-level visibility would help you make better decisions — for example:
+- Verifying OTel Collector pods are running after provisioning.
+- Checking Instrumentation CRD injection status on target deployments.
+- Inspecting collector pod logs to diagnose pipeline failures.
+- Verifying Target Allocator pod health.
+
+Example commands:
+  kubectl_readonly("kubectl get opentelemetrycollectors -n {namespace}")
+  kubectl_readonly("kubectl get pods -n {namespace} -l app.kubernetes.io/managed-by=opentelemetry-operator")
+  kubectl_readonly("kubectl describe pod {collector_pod} -n {namespace}")
+  kubectl_readonly("kubectl logs {collector_pod} -n {namespace} --tail=200")
+  kubectl_readonly("kubectl get instrumentation -n {namespace}")
+  kubectl_readonly("kubectl get events -n {namespace} --sort-by='.lastTimestamp'")
+</kubectl_diagnostics>"""
 
 
 # ── Loki ──────────────────────────────────────────────────────────────────
@@ -872,6 +977,9 @@ Tool Routing Table:
 | Estimate query cost | get_query_stats |
 | Execute LogQL instant query (scalar) | execute_logql_instant |
 | Execute LogQL range query (logs/metrics) | execute_logql_query |
+|                                          | → use max_log_lines=N (default 100, max 1000) to control log volume |
+|                                          | → metric (matrix) results: auto-capped at 100 series × 200 pts each |
+|                                          | → DEPRECATED: `limit` param removed — use `max_log_lines` instead |
 </read_only_fast_path>"""
 
 LOKI_SKILL_DISCOVERY = """\
@@ -885,7 +993,9 @@ Recommended tool call order for multi-step investigations:
 3. get_active_series — confirm the selector matches real data
 4. get_detected_fields — know what fields can be filtered on
 5. get_query_stats — estimate query cost
-6. execute_logql_query — run the actual query"""
+6. execute_logql_query — run the actual query
+   • Start with max_log_lines=50 for a first pass; increase only if results are truncated.
+   • For metric queries (rate/count_over_time), series are auto-capped at 100."""
 
 LOKI_SAFETY_RULES = """\
 <safety_rules>
@@ -893,6 +1003,16 @@ Trace-Log Correlation:
 trace_id and span_id are structured metadata in Loki, NOT index labels.
 They CANNOT be used inside {...} stream selectors.
 Use them after | as label filters: {service_name="checkout"} | trace_id != ""
+
+Result Size Guardrails (enforced to stay within the 100 KB MCP response limit):
+- Stream queries: capped at max_log_lines (default 100).
+  Response field "truncated": true → narrow the time range or add | filter expressions first.
+  Only raise max_log_lines if filtering cannot help.
+- Matrix (metric) queries: auto-capped at 100 series × 200 data points per series.
+  Response field "truncated_series": true → add more label selectors to reduce cardinality.
+  Per-series field "truncated_points": true → shorten the time range or increase the step.
+
+Parameter rename: the old `limit` parameter no longer exists. Always use `max_log_lines`.
 </safety_rules>"""
 
 
@@ -1027,6 +1147,28 @@ Never declare success based on tool stdout. After CRD creation/patch, verify via
 tempo_get_operator_cr and return structured status (✅ Verified or ❌ Failed).
 </workflow_state_modifying>"""
 
+TEMPO_KUBECTL_DIAGNOSTICS = """\
+<kubectl_diagnostics>
+You have access to the `kubectl_readonly` tool for direct Kubernetes cluster inspection.
+It executes read-only kubectl commands (get, describe, logs, top, events, etc.) and returns
+structured JSON with stdout, stderr, and exit_code.  Mutating operations are blocked
+automatically — you cannot accidentally modify cluster state through this tool.
+
+Use it whenever cluster-level visibility would help you make better decisions — for example:
+- Verifying TempoStack or TempoMonolithic pods are running after CRD creation/patch.
+- Checking Tempo component pod logs (distributor, ingester, compactor) for errors.
+- Inspecting events on Tempo CRDs to diagnose operator reconciliation failures.
+- Verifying the Jaeger UI pod is healthy when Jaeger query is enabled.
+
+Example commands:
+  kubectl_readonly("kubectl get tempostack -n {namespace}")
+  kubectl_readonly("kubectl get tempomonolithic -n {namespace}")
+  kubectl_readonly("kubectl get pods -n {namespace} -l app.kubernetes.io/managed-by=tempo-operator")
+  kubectl_readonly("kubectl describe pod {tempo_pod} -n {namespace}")
+  kubectl_readonly("kubectl logs {tempo_pod} -n {namespace} --tail=200")
+  kubectl_readonly("kubectl get events -n {namespace} --sort-by='.lastTimestamp'")
+</kubectl_diagnostics>"""
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # REGISTRY FACTORY FUNCTIONS
@@ -1109,7 +1251,9 @@ def create_subagent_registry(domain: str, **overrides: str) -> PromptRegistry:
             "skill_discovery": PROMETHEUS_SKILL_DISCOVERY,
             "state_workflow": PROMETHEUS_STATE_WORKFLOW,
             "safety_rules": PROMETHEUS_SAFETY_RULES,
-            "extra_sections": {},
+            "extra_sections": {
+                "kubectl_diagnostics": PROMETHEUS_KUBECTL_DIAGNOSTICS,
+            },
         },
         "alertmanager": {
             "identity_params": ALERTMANAGER_IDENTITY_PARAMS,
@@ -1120,7 +1264,9 @@ def create_subagent_registry(domain: str, **overrides: str) -> PromptRegistry:
             "skill_discovery": ALERTMANAGER_SKILL_DISCOVERY,
             "state_workflow": ALERTMANAGER_STATE_WORKFLOW,
             "safety_rules": ALERTMANAGER_SAFETY_RULES,
-            "extra_sections": {},
+            "extra_sections": {
+                "kubectl_diagnostics": ALERTMANAGER_KUBECTL_DIAGNOSTICS,
+            },
         },
         "opentelemetry": {
             "identity_params": OPENTELEMETRY_IDENTITY_PARAMS,
@@ -1131,7 +1277,9 @@ def create_subagent_registry(domain: str, **overrides: str) -> PromptRegistry:
             "skill_discovery": OPENTELEMETRY_SKILL_DISCOVERY,
             "state_workflow": OPENTELEMETRY_STATE_WORKFLOW,
             "safety_rules": None,
-            "extra_sections": {},
+            "extra_sections": {
+                "kubectl_diagnostics": OPENTELEMETRY_KUBECTL_DIAGNOSTICS,
+            },
         },
         "loki": {
             "identity_params": LOKI_IDENTITY_PARAMS,
@@ -1155,6 +1303,7 @@ def create_subagent_registry(domain: str, **overrides: str) -> PromptRegistry:
             "safety_rules": None,
             "extra_sections": {
                 "cross_mcp_workflows": TEMPO_CROSS_MCP_WORKFLOWS,
+                "kubectl_diagnostics": TEMPO_KUBECTL_DIAGNOSTICS,
             },
         },
     }

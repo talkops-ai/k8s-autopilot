@@ -15,3 +15,7 @@ class HelmOperatorContext(TypedDict, total=False):
     session_id: NotRequired[str]
     task_id: NotRequired[str]
     dry_run: NotRequired[bool]
+    
+    # ── Cross-domain routing ──────────────────────────────────────────
+    escalation_request: NotRequired[dict]
+    handoff_request: NotRequired[dict]

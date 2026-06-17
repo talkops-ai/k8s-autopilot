@@ -165,11 +165,32 @@ Read this when executing state-modifying operations that require multi-step coor
 
 2. **Review auto-discovered targets**
    - Verify the discovered backends are correct in the dry_run output.
+   - **Check for multi-tenant Loki**: If logs are routed to Loki and it runs with `auth_enabled: true`, the collector needs an `X-Scope-OrgID` header. Look for `HTTP 401 "no org id"` errors.
+   - **Check for backend-specific auth**: Elasticsearch may need credentials, cloud OTLP endpoints may need bearer tokens.
 
-3. **Apply collector** (MUTATES CLUSTER)
+3. **Add exporter overrides if needed**
+   - If backends require authentication headers, TLS config, or custom settings, re-run with `exporter_overrides`:
+   ```python
+   otel_provision_collector(
+       namespace="<ns>",
+       signals=["logs"],
+       exporter_overrides={
+           "loki": {"headers": {"X-Scope-OrgID": "<tenant>"}}
+       },
+       dry_run=True,
+   )
+   ```
+   - Supported override keys: `loki`, `otlphttp`, `otlp`, `opensearch`, `elasticsearch`.
+   - Overrides are deep-merged (e.g. adding `tls.ca_file` won't remove existing `tls.insecure`).
+
+4. **Apply collector** (MUTATES CLUSTER)
    - Call `otel_provision_collector(..., dry_run=False)`
    - Automatically creates `OpenTelemetryCollector` CRD, plus `ClusterRole` and `ClusterRoleBinding` for the `k8sattributes` processor.
 
-4. **Verify deployment**
+5. **Verify deployment**
    - Call `otel_get_collector(namespace="<ns>", name="<name>")`
    - Confirm collector is running and config is correct.
+
+### Notes
+- **Auto-appended API paths**: The tool automatically appends required API paths (Loki: `/loki/api/v1/push`, Prometheus: `/api/v1/otlp`). Do not manually add these paths to `exporter_targets`.
+- **Gotchas #9 and #10**: See `references/gotchas.md` for Loki push path and multi-tenant auth failure patterns.
