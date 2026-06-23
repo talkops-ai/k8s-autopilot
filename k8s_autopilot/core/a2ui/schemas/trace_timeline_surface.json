@@ -1,0 +1,100 @@
+[
+  {
+    "id": "root",
+    "component": {
+      "Column": {
+        "children": {"explicitList": ["header-row", "divider", "timeline", "stats-row"]}
+      }
+    }
+  },
+  {
+    "id": "header-row",
+    "component": {
+      "Row": {
+        "children": {"explicitList": ["title-text", "root-status", "span-count-text"]},
+        "alignment": "center",
+        "distribution": "spaceBetween"
+      }
+    }
+  },
+  {
+    "id": "title-text",
+    "component": {
+      "Text": {
+        "text": {"path": "title"},
+        "usageHint": "h3"
+      }
+    }
+  },
+  {
+    "id": "root-status",
+    "component": {
+      "StatusIndicator": {
+        "severity": {"path": "rootSpanSeverity"},
+        "label": {"path": "rootSpanStatus"},
+        "value": {"path": "rootSpanDuration"}
+      }
+    }
+  },
+  {
+    "id": "span-count-text",
+    "component": {
+      "Text": {
+        "text": {"path": "totalSpansLabel"},
+        "usageHint": "caption"
+      }
+    }
+  },
+  {"id": "divider", "component": {"Divider": {}}},
+  {
+    "id": "timeline",
+    "component": {
+      "TraceTimeline": {
+        "spans": {"path": "spans"},
+        "focusSpanId": {"path": "focusSpanId"},
+        "showMiniMap": true,
+        "serviceName": {"path": "serviceName"},
+        "title": {"path": "title"}
+      }
+    }
+  },
+  {
+    "id": "stats-row",
+    "component": {
+      "Row": {
+        "children": {"explicitList": ["services-stat", "duration-stat", "error-stat"]},
+        "distribution": "spaceEvenly"
+      }
+    }
+  },
+  {
+    "id": "services-stat",
+    "component": {
+      "StatusIndicator": {
+        "severity": "info",
+        "label": "Services",
+        "value": {"path": "uniqueServicesCount"}
+      }
+    }
+  },
+  {
+    "id": "duration-stat",
+    "component": {
+      "StatusIndicator": {
+        "severity": "info",
+        "label": "Total Duration",
+        "value": {"path": "totalDuration"}
+      }
+    }
+  },
+  {
+    "id": "error-stat",
+    "component": {
+      "StatusIndicator": {
+        "severity": {"path": "errorSpanSeverity"},
+        "label": "Error Spans",
+        "value": {"path": "errorSpansCount"}
+      }
+    }
+  }
+]

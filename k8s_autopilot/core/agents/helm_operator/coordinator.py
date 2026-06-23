@@ -359,7 +359,7 @@ class HelmOperatorCoordinator(BaseDeepAgent):
         return [sync_workspace, user_input, chat_continue, log_operation, escalate]
 
     def get_skill_paths(self) -> List[str]:
-        return ["/skills/helm-operator"]
+        return ["/skills/helm-operator/helm-operation"]
 
     def get_memory_paths(self) -> List[str]:
         return [

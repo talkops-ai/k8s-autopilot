@@ -6,6 +6,23 @@ and their diagnostic fixes, extracted from real-world testing against the OTel D
 
 ---
 
+## 0. Missing { } Selector Braces (Most Common LLM Error)
+
+**The Issue**: TraceQL requires ALL predicate expressions to be wrapped in `{ }` selector braces. LLMs frequently omit these braces.
+**Gotcha**: Bare predicates like `resource.service.name = "api" && status = error` will **always** fail with: `TraceQL validation failed: TraceQL queries must contain {} selectors or be metrics expressions`.
+**The Fix**:
+- ❌ Wrong: `resource.service.name = "api" && status = error`
+- ❌ Wrong: `.http.method != ""`
+- ❌ Wrong: `duration > 500ms`
+- ❌ Wrong: `has(.http.method)`
+- ✅ Correct: `{ resource.service.name = "api" && status = error }`
+- ✅ Correct: `{ .http.method != "" }`
+- ✅ Correct: `{ duration > 500ms }`
+- ✅ Better: Use structured parameters instead of raw TraceQL:
+  `tempo_traceql_search(service="api", status="error")` — server wraps automatically.
+
+Before constructing any raw TraceQL query, read `tempo://reference/traceql` and `tempo://examples/common-queries` for correct syntax patterns.
+
 ## 1. TraceQL Scope Confusion (resource. vs span. vs intrinsic)
 
 **The Issue**: TraceQL attributes are scoped, and using the wrong scope returns zero results with no error.

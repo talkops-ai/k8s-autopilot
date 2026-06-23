@@ -159,8 +159,21 @@ def get_obs_subagent_specs(
         TEMPO_PTC_ALLOWLIST,
     )
     from k8s_autopilot.core.tools.kubectl_tools import create_kubectl_readonly_tool
+    from k8s_autopilot.core.a2ui.obs_a2ui_tools import create_obs_a2ui_tools
 
     coord_model = coordinator_model or ""
+
+    # A2UI visualization tool (shared by all subagents)
+    a2ui_tools = create_obs_a2ui_tools()
+
+    # Builder for A2UI Buffer Interceptor
+    def make_a2ui_buffer_builder():
+        def _builder():
+            from k8s_autopilot.core.agents.observability.middleware import A2UIBufferMiddleware
+            return A2UIBufferMiddleware()
+        return _builder
+
+    a2ui_builder = make_a2ui_buffer_builder()
 
     return [
         # Prometheus sub-agent — filesystem + skills + PTC interpreter
@@ -175,8 +188,9 @@ def get_obs_subagent_specs(
                 make_subagent_interpreter_builder(
                     ptc_allowlist=PROMETHEUS_PTC_ALLOWLIST,
                 ),
+                a2ui_builder,
             ],
-            extra_tools=[create_kubectl_readonly_tool()],
+            extra_tools=[create_kubectl_readonly_tool()] + a2ui_tools,
         ),
         # Alertmanager sub-agent — filesystem + skills + PTC interpreter
         build_mcp_subagent(
@@ -190,8 +204,9 @@ def get_obs_subagent_specs(
                 make_subagent_interpreter_builder(
                     ptc_allowlist=ALERTMANAGER_PTC_ALLOWLIST,
                 ),
+                a2ui_builder,
             ],
-            extra_tools=[create_kubectl_readonly_tool()],
+            extra_tools=[create_kubectl_readonly_tool()] + a2ui_tools,
         ),
         # OpenTelemetry sub-agent — filesystem + skills + PTC interpreter
         build_mcp_subagent(
@@ -205,8 +220,9 @@ def get_obs_subagent_specs(
                 make_subagent_interpreter_builder(
                     ptc_allowlist=OPENTELEMETRY_PTC_ALLOWLIST,
                 ),
+                a2ui_builder,
             ],
-            extra_tools=[create_kubectl_readonly_tool()],
+            extra_tools=[create_kubectl_readonly_tool()] + a2ui_tools,
         ),
         # Loki sub-agent — read-only, no HITL, + PTC interpreter
         build_mcp_subagent(
@@ -219,7 +235,9 @@ def get_obs_subagent_specs(
                 make_subagent_interpreter_builder(
                     ptc_allowlist=LOKI_PTC_ALLOWLIST,
                 ),
+                a2ui_builder,
             ],
+            extra_tools=a2ui_tools,
         ),
         # Tempo sub-agent — mostly read-only, 2 CRD tools need HITL + PTC interpreter
         build_mcp_subagent(
@@ -233,8 +251,9 @@ def get_obs_subagent_specs(
                 make_subagent_interpreter_builder(
                     ptc_allowlist=TEMPO_PTC_ALLOWLIST,
                 ),
+                a2ui_builder,
             ],
-            extra_tools=[create_kubectl_readonly_tool()],
+            extra_tools=[create_kubectl_readonly_tool()] + a2ui_tools,
         ),
     ]
 

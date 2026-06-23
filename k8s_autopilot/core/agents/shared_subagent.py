@@ -42,6 +42,38 @@ from k8s_autopilot.utils.logger import AgentLogger
 
 _logger = AgentLogger("SharedSubagentFactory")
 
+# ---------------------------------------------------------------------------
+# Subagent loop-prevention limits (configurable via environment variables)
+#
+# These follow the LangChain "Going to Production" recommendation:
+#   https://docs.langchain.com/oss/python/deepagents/going-to-production#rate-limiting
+#
+# The AGENTS.md step budget says a single read-only query should use 3-5
+# steps, and a simple mutation 8-12.  These limits are generous enough for
+# complex multi-step investigations while still stopping 150-call loops.
+# ---------------------------------------------------------------------------
+import os
+
+_SUBAGENT_TOOL_CALL_LIMIT = int(
+    os.getenv("SUBAGENT_TOOL_CALL_LIMIT", "25")
+)
+_SUBAGENT_MODEL_CALL_LIMIT = int(
+    os.getenv("SUBAGENT_MODEL_CALL_LIMIT", "15")
+)
+_SUBAGENT_DISCOVERY_TOOL_LIMIT = int(
+    os.getenv("SUBAGENT_DISCOVERY_TOOL_LIMIT", "3")
+)
+
+# High-frequency discovery tools that should never be called >3 times per
+# task.  Covers Loki label enumeration and Prometheus metric exploration.
+_DISCOVERY_TOOL_CAP_LIST = [
+    "get_label_values",
+    "get_cluster_labels",
+    "get_active_series",
+    "get_detected_fields",
+    "prom_explore_labels",
+]
+
 
 def build_mcp_subagent(
     spec: Dict[str, Any],
@@ -177,6 +209,72 @@ def build_mcp_subagent(
                         f"{[getattr(t, 'name', str(t)) for t in extra_tools]}"
                     )
 
+                # ── Tier 1: Hard middleware limits (LangChain built-in) ────
+                # Per LangChain docs ("Going to Production"):
+                #   "Without limits, a confused agent can burn through your
+                #    LLM API budget in minutes by looping on the same tool
+                #    call or making hundreds of model calls. Set caps on
+                #    BOTH model calls and tool executions per run."
+                #
+                # exit_behavior="continue" lets the subagent still produce
+                # a final summary after hitting the limit, instead of
+                # silently dying (which caused the "stuck agent" bug with
+                # exit_behavior="end" on the coordinator).
+                #
+                # NOTE: ToolCallLimitMiddleware supports "continue" | "end" | "error".
+                #       ModelCallLimitMiddleware only supports "end" | "error".
+                #       We use "end" for ModelCallLimit (graceful termination with
+                #       AI summary message) and "continue" for ToolCallLimit (agent
+                #       continues but blocked calls get error messages).
+                # Ref: https://docs.langchain.com/oss/python/langchain/middleware/built-in#tool-call-limit
+                from langchain.agents.middleware import (
+                    ToolCallLimitMiddleware,
+                    ModelCallLimitMiddleware,
+                )
+
+                middleware.append(
+                    ToolCallLimitMiddleware(
+                        run_limit=_SUBAGENT_TOOL_CALL_LIMIT,
+                        exit_behavior="continue",
+                    )
+                )
+                middleware.append(
+                    ModelCallLimitMiddleware(
+                        run_limit=_SUBAGENT_MODEL_CALL_LIMIT,
+                        exit_behavior="end",
+                    )
+                )
+
+
+                # Per-tool caps for high-frequency discovery tools.
+                # These tools are called for label/series enumeration and
+                # should never need >3 calls per task. Stops pathological
+                # loops like "call get_label_values 40 times".
+                for _disco_tool in _DISCOVERY_TOOL_CAP_LIST:
+                    middleware.append(
+                        ToolCallLimitMiddleware(
+                            tool_name=_disco_tool,
+                            run_limit=_SUBAGENT_DISCOVERY_TOOL_LIMIT,
+                            exit_behavior="continue",
+                        )
+                    )
+
+                # ── Tier 2: Duplicate call guard (Claude Code PreToolUse) ─
+                # Hashes (tool_name, args) and returns cached result for
+                # identical repeat calls.
+                from k8s_autopilot.core.agents.duplicate_guard import (
+                    DuplicateToolCallGuardMiddleware,
+                )
+                middleware.append(DuplicateToolCallGuardMiddleware())
+
+                _logger.info(
+                    f"{name}: Loop prevention middleware attached "
+                    f"(tool_limit={_SUBAGENT_TOOL_CALL_LIMIT}, "
+                    f"model_limit={_SUBAGENT_MODEL_CALL_LIMIT}, "
+                    f"discovery_cap={_SUBAGENT_DISCOVERY_TOOL_LIMIT}, "
+                    f"dedup=on)"
+                )
+
                 # Lazily instantiate model and graph — prefer coordinator's config
                 # over a fresh Config() to ensure sub-agents inherit model/backend
                 # settings from the coordinator.
@@ -193,6 +291,7 @@ def build_mcp_subagent(
                     system_prompt=system_prompt,
                     name=name,
                 )
+
 
                 from typing import cast
                 result = await agent_graph.ainvoke(cast(Any, state), config)

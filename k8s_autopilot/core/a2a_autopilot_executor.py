@@ -715,6 +715,27 @@ class A2AAutoPilotExecutor(AgentExecutor):
                                 _step_index += 1
                                 await asyncio.sleep(0)
 
+                            if tool_name in ("build_obs_a2ui", "build_obs_dashboard", "generate_a2ui", "generate_obs_a2ui"):
+                                try:
+                                    raw_res = meta.get("raw_tool_result", str(item.content or ""))
+                                    parsed = json.loads(raw_res)
+                                    if "a2ui_operations" in parsed:
+                                        a2ui_parts = [create_a2ui_part(op) for op in parsed["a2ui_operations"]]
+                                        if a2ui_parts:
+                                            msg = self._make_stream_message_parts(
+                                                a2ui_parts, renderer.message_id, context_id, task.id,
+                                            )
+                                            self._attach_trace_metadata(
+                                                msg, _run_id, _step_index, "tool_result_a2ui",
+                                            )
+                                            await updater.update_status(
+                                                TaskState.TASK_STATE_WORKING, msg,
+                                            )
+                                            _step_index += 1
+                                            await asyncio.sleep(0)
+                                except Exception as e:
+                                    logger.warning(f"Failed to extract A2UI ops from {tool_name}: {e}")
+
                         # Tool surfaces handle the visual rendering; skip
                         # emitting the same content into the v2-stream text.
                         continue

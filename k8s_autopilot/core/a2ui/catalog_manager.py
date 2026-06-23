@@ -52,6 +52,9 @@ STANDARD_CATALOG_ID = (
     "v0_9/json/standard_catalog_definition.json"
 )
 
+OBSERVABILITY_CATALOG_ID = "https://talkops.ai/a2ui/observability_catalog.json"
+"""Observability domain catalog (MetricChart, DataTable, TraceTimeline, StatusIndicator)."""
+
 
 # ── Data class for registered catalogs ────────────────────────────────
 @dataclass
@@ -103,6 +106,20 @@ class CatalogManager:
                 aliases=["standard_catalog_definition.json"],
                 priority=-1,
                 description="A2UI standard catalog (built-in widgets)",
+            )
+        )
+
+        # Register the observability catalog at higher priority
+        self.register_catalog(
+            CatalogEntry(
+                catalog_id=OBSERVABILITY_CATALOG_ID,
+                local_path=self._catalogs_dir / "schemas" / "observability_catalog.json",
+                aliases=["observability", "obs-catalog"],
+                priority=10,
+                description=(
+                    "Observability domain components "
+                    "(MetricChart, DataTable, TraceTimeline, StatusIndicator)"
+                ),
             )
         )
 

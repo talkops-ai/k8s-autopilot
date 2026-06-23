@@ -170,3 +170,87 @@ def create_generate_a2ui_tool(config: dict[str, Any] | None = None):
         return json.dumps(result)
 
     return generate_a2ui
+
+
+# ── Observability-specific dynamic schema tool ────────────────────────
+
+OBS_DYNAMIC_SCHEMA_CONTEXT = """You are generating A2UI v0.9 component trees for Kubernetes observability dashboards.
+
+Available custom components (in addition to built-in Card, Column, Row, Text, List, Tabs, Button, Icon, Divider):
+- MetricChart: Time-series chart. Props: chartType (line|bar|area), title, xAxisLabel, yAxisLabel, series (path→data), timeRange (path→data)
+- DataTable: Searchable paginated table. Props: columns (path→data), rows (path→data), searchable (bool), pageSize (int), title
+- TraceTimeline: Gantt waterfall for traces. Props: spans (path→data), focusSpanId, showMiniMap (bool), serviceName, title
+- StatusIndicator: Severity badge. Props: severity (critical|warning|info|success|none), label, value
+
+Use path bindings ({"path": "/field"}) for dynamic data. Use literal strings for static labels.
+Always include a root component with id="root". Use Tabs for multi-section layouts.
+"""
+
+
+def create_generate_obs_a2ui_tool(config: dict[str, Any] | None = None):
+    """Factory that creates the ``generate_obs_a2ui`` LangChain tool.
+
+    A variant of ``create_generate_a2ui_tool`` that injects observability-
+    specific component documentation (MetricChart, DataTable, TraceTimeline,
+    StatusIndicator) into the secondary LLM's system prompt.
+
+    Used by the coordinator for novel/complex layouts that don't fit the
+    fixed-schema templates.
+
+    Parameters
+    ----------
+    config : dict
+        LLM configuration dict (from ``Config.get_llm_config()``).
+        If None, falls back to a default model.
+    """
+    from k8s_autopilot.core.a2ui.catalog_manager import OBSERVABILITY_CATALOG_ID
+
+    @langchain_tool
+    def generate_obs_a2ui(context: str = "") -> str:
+        """Generate a dynamic A2UI observability dashboard.
+
+        A secondary LLM designs the UI layout using both built-in
+        components (Card, Column, Tabs, etc.) and custom observability
+        components (MetricChart, DataTable, TraceTimeline, StatusIndicator).
+
+        Use this for novel layouts not covered by the fixed templates
+        (e.g., a custom comparison dashboard or an anomaly-focused view).
+
+        Args:
+            context: Conversation context and data to guide the
+                secondary LLM's UI design.
+        """
+        llm_cfg = config or {}
+        try:
+            secondary_llm = create_model(llm_cfg)
+        except Exception:
+            logger.exception("Failed to create secondary LLM for generate_obs_a2ui")
+            return json.dumps({"error": "Failed to initialise secondary LLM"})
+
+        model_with_tool = secondary_llm.bind_tools(
+            [render_a2ui],
+            tool_choice="render_a2ui",
+        )
+
+        system_content = OBS_DYNAMIC_SCHEMA_CONTEXT + "\n\n" + (context or "Generate an observability dashboard.")
+        try:
+            response = model_with_tool.invoke(
+                [SystemMessage(content=system_content)],
+            )
+        except Exception:
+            logger.exception("Secondary LLM invocation failed for obs A2UI")
+            return json.dumps({"error": "Secondary LLM invocation failed"})
+
+        if not getattr(response, "tool_calls", None):
+            return json.dumps({"error": "LLM did not call render_a2ui"})
+
+        tool_call = response.tool_calls[0]
+        args = tool_call.get("args", {}) if isinstance(tool_call, dict) else {}
+
+        # Override catalog ID to use observability catalog
+        args["catalogId"] = OBSERVABILITY_CATALOG_ID
+
+        result = build_a2ui_operations_from_tool_call(args)
+        return json.dumps(result)
+
+    return generate_obs_a2ui

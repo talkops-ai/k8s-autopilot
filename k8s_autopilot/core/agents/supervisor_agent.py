@@ -1368,21 +1368,18 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                         fwd_node = chunk_data.get("node", "agent")
                         fwd_ns = chunk_data.get("ns", ())
                         if fwd_data is not None:
-                            try:
+                            if isinstance(fwd_data, (tuple, list)) and len(fwd_data) == 2:
                                 fwd_msg, fwd_meta = fwd_data
-                            except (TypeError, ValueError):
-                                pass
-                            else:
                                 fwd_source = fwd_node
-                                if fwd_ns:
-                                    first_seg = fwd_ns[0] if fwd_ns else ""
+                                if isinstance(fwd_ns, (list, tuple)) and fwd_ns:
+                                    first_seg = str(fwd_ns[0])
                                     fwd_source = first_seg.split(":")[0] if ":" in first_seg else first_seg
 
                                 fwd_agent = fwd_meta.get("lc_agent_name", "") if isinstance(fwd_meta, dict) else ""
-                                fwd_display = fwd_agent or fwd_source or fwd_node
+                                fwd_display = str(fwd_agent or fwd_source or fwd_node)
 
                                 # Delegation label
-                                if fwd_display != _current_agent and fwd_display != "supervisor":
+                                if fwd_display and fwd_display != _current_agent and fwd_display != "supervisor":
                                     _current_agent = fwd_display
                                     if fwd_display not in _seen_delegations:
                                         _seen_delegations.add(fwd_display)
@@ -1425,7 +1422,8 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                                             )
                                 elif isinstance(fwd_msg, ToolMessage):
                                     t_name = getattr(fwd_msg, "name", "tool")
-                                    snippet = _sanitize_result_snippet(getattr(fwd_msg, "content", ""))
+                                    raw_content = getattr(fwd_msg, "content", "")
+                                    snippet = _sanitize_result_snippet(raw_content)
                                     status = getattr(fwd_msg, "status", "success")
                                     emoji = "❌" if status == "error" else "✅"
                                     yield _make_working(
@@ -1433,6 +1431,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                                         source=fwd_display,
                                         message_type="tool_result",
                                         tool_name=t_name,
+                                        raw_tool_result=raw_content,
                                     )
 
                 # ── Updates stream: node completions + interrupts ──

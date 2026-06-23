@@ -1,9 +1,8 @@
 <p align="center">
-  <img src="docs/assets/k8s-autopilot-banner.png" alt="k8s-autopilot Banner">
+  <img src="docs/assets/k8s-autopilot-banner.svg" alt="k8s-autopilot Banner">
 </p>
 
-# k8s-autopilot
-**A stateful, multi-agent AI system that orchestrates Kubernetes deployments, manages progressive GitOps delivery, and safely debugs your cluster through conversation.**
+**A stateful, multi-agent Kubernetes autopilot that orchestrates deployments, progressive GitOps delivery, observability workflows, and safe cluster operations through natural conversation.**
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -29,13 +28,15 @@ See **k8s-autopilot** in action generating a Helm chart, validating it against b
 
 ## ❓ Why k8s-autopilot?
 
+k8s-autopilot turns Kubernetes operations into a conversational, multi-agent workflow.
+
 ### The Real Problem
-If you've spent hours debugging a `CrashLoopBackOff`, trying to figure out why an ArgoCD sync is stuck, or carefully orchestrating a zero-downtime canary rollout, you know the pain of Kubernetes sprawl. It’s not just about writing YAML—it’s about the massive cognitive load of context-switching between `kubectl`, Argo dashboards, Helm releases, and Prometheus metrics just to safely ship or rollback code.
+If you've spent hours debugging a `CrashLoopBackOff`, trying to figure out why an ArgoCD sync is stuck, or carefully orchestrating a zero-downtime canary rollout, you know the pain of Kubernetes sprawl. It’s not just about writing YAML—it’s about the massive cognitive load of context-switching between `kubectl`, Argo dashboards, Helm releases, Prometheus metrics, Loki logs, and Tempo traces just to safely ship or rollback code.
 
 ### Our Solution
-**k8s-autopilot** is built to give you those hours back. We didn't just build a chatbot that generates YAML; we built a stateful, multi-agent AI system powered by the `deepagents` LangGraph framework that actually *understands* your cluster's context.
+**k8s-autopilot** is a stateful, multi-agent AI system built on LangGraph and deep agents that understands cluster context, routes work to specialized operators, and safely executes Kubernetes, GitOps, and observability operations with explicit Human-in-the-Loop approval.
 
-You simply talk to the **Supervisor Agent**. Need to migrate a legacy deployment to an Argo Rollouts blue-green deployment with zero downtime? The Supervisor hands it off to the **App Operator**, which actively reads your cluster state, generates the `workloadRef` configurations, sets up Prometheus `AnalysisTemplates` for safety, and waits for your explicit Human-in-the-Loop (HITL) approval before touching a single resource. 
+Need to migrate a workload to Argo Rollouts, inspect a failing pod, query Prometheus, trace an incident in Loki or Tempo, or debug an Alertmanager route? The Supervisor Agent delegates the task to the right domain operator, gathers live system context, proposes a plan, and waits for approval before making changes. 
 
 ---
 
@@ -71,7 +72,7 @@ k8s-autopilot natively supports dozens of complex, multi-step workflows across f
 - **Live Upgrades & Rollbacks:** Modify active releases using `--reuse-values` or rollback to specific known-good revisions using the persistent operations journal.
 - **GitHub Persistence:** Once a chart is generated and approved via HITL, the `github-agent` uses the GitHub MCP to commit the structured chart directly to your repository—no manual copy-pasting required.
 
-### 🔭 Observability (Observability Operator — Prometheus & Alertmanager)
+### 🔭 Observability (Observability Operator — Prometheus, Alertmanager, OpenTelemetry, Loki & Tempo)
 - **PromQL Queries & Metric Exploration:** Ask natural language questions like "how much CPU is my app using?" and the agent translates them into precise PromQL queries via the Prometheus MCP server.
 - **Exporter Lifecycle Management:** Deploy, verify, and uninstall Prometheus exporters (Redis, PostgreSQL, etc.) for any service — including automatic health validation after installation.
 - **Synthetic Monitoring & Probes:** Set up endpoint monitoring using native Probe CRDs with Blackbox exporter, following the strict sequence: `prom_install_exporter` → `prom_apply_probe` → `prom_query_instant` for validation.
@@ -81,6 +82,9 @@ k8s-autopilot natively supports dozens of complex, multi-step workflows across f
 - **Silence Lifecycle:** Create, preview blast radius, validate against policy, extend, and expire alert silences — all with mandatory dry-run previews before creation.
 - **Routing Audit & Governance:** Inspect Alertmanager routing trees, simulate "who gets paged?" scenarios, and audit default route misconfigurations.
 - **Integration Testing:** Push synthetic test alerts to validate that downstream notification channels (Slack, PagerDuty, email) are correctly configured.
+- **OpenTelemetry Pipelines & Instrumentation:** Provision collectors, onboard services with auto-instrumentation, audit metric cardinality, optimize sampling, and manage security posture via the OpenTelemetry MCP server.
+- **Loki Log Observability:** Discover label schemas, analyze log structures, construct and execute LogQL queries, perform trace-log correlation, and investigate incident response logs.
+- **Tempo Distributed Tracing:** Build and execute TraceQL queries, retrieve and summarize traces (critical path, error detection), map service topologies, pivot across pillars (metrics→traces, logs→traces), and manage Tempo Operator CRD lifecycles.
 
 ---
 
@@ -121,6 +125,9 @@ graph TD
     subgraph "Observability Domain"
         ObsCoord --> PromOp[prometheus-operator]
         ObsCoord --> AMOp[alertmanager-operator]
+        ObsCoord --> OTelOp[opentelemetry-operator]
+        ObsCoord --> LokiOp[loki-operator]
+        ObsCoord --> TempoOp[tempo-operator]
     end
     
     HVal -.-> HMCP[(Helm MCP)]
@@ -132,6 +139,9 @@ graph TD
     K8sOp -.-> KMCP[(Kubernetes MCP)]
     PromOp -.-> PMCP[(Prometheus MCP)]
     AMOp -.-> AlertMCP[(Alertmanager MCP)]
+    OTelOp -.-> OTelMCP[(OpenTelemetry MCP)]
+    LokiOp -.-> LokiMCP[(Loki MCP)]
+    TempoOp -.-> TempoMCP[(Tempo MCP)]
 ```
 
 ### The Flow in Practice:
@@ -172,6 +182,9 @@ This "blackboard pattern" enables seamless multi-domain investigations. For exam
 | **K8s** | `k8s-cluster-ops` | `kubernetes_mcp_server` | JIT MCP | ✅ |
 | **Observability** | `prometheus-operator` | `prometheus-mcp-server` | JIT MCP | ✅ |
 | **Observability** | `alertmanager-operator` | `alertmanager-mcp-server` | JIT MCP | ✅ |
+| **Observability** | `opentelemetry-operator` | `opentelemetry-mcp-server` | JIT MCP | ✅ |
+| **Observability** | `loki-operator` | `loki-mcp-server` | JIT MCP | No |
+| **Observability** | `tempo-operator` | `tempo-mcp-server` | JIT MCP | ✅ |
 
 ---
 
@@ -228,6 +241,9 @@ Skills are strict operational playbooks that dictate exactly how each sub-agent 
 | **K8s** | `k8s-operator/kubernetes-cluster-ops` | k8s-cluster-ops |
 | **Observability** | `observability/prometheus` | prometheus-operator |
 | **Observability** | `observability/alertmanager` | alertmanager-operator |
+| **Observability** | `observability/opentelemetry` | opentelemetry-operator |
+| **Observability** | `observability/loki` | loki-operator |
+| **Observability** | `observability/tempo` | tempo-operator |
 
 ### Memory (`/memories/`)
 
@@ -264,7 +280,7 @@ The Supervisor agent uses its own 3-layer middleware stack to maintain routing a
 | :--- | :--- | :--- |
 | **Agent Framework** | `deepagents` / LangGraph | State machine, orchestration, sub-graph routing. |
 | **LLM Interface** | LangChain Core | Tool execution, message schemas. |
-| **Tools/Integrations**| Model Context Protocol (MCP)| Standardized protocol for Helm, Argo, Traefik, K8s, GitHub, Prometheus, Alertmanager. |
+| **Tools/Integrations**| Model Context Protocol (MCP)| Standardized protocol for Helm, Argo, Traefik, K8s, GitHub, Prometheus, Alertmanager, OpenTelemetry, Loki, Tempo. |
 | **User Interface** | A2UI / TalkOps A2A | Real-time streaming, HITL approval cards, markdown rendering. |
 | **Runtime** | Python 3.12+ | Core agent backend. |
 
@@ -280,6 +296,9 @@ k8s-autopilot connects to **7 MCP servers** — 6 TalkOps-native servers (PyPI p
 | `argo_rollout_mcp_server` | `argo-rollout-mcp-server` | stdio | Argo Rollouts progressive delivery |
 | `prometheus-mcp-server` | `prometheus-mcp-server` | stdio | Prometheus monitoring & PromQL |
 | `alertmanager-mcp-server` | `alertmanager-mcp-server` | stdio | Alertmanager alerting & silences |
+| `opentelemetry-mcp-server` | `opentelemetry-mcp-server` | stdio | OpenTelemetry pipelines |
+| `loki-mcp-server` | `loki-mcp-server` | stdio | Loki log observability |
+| `tempo-mcp-server` | `tempo-mcp-server` | stdio | Tempo distributed tracing |
 | `github_mcp` | GitHub Copilot API | HTTP | GitHub file operations |
 | `kubernetes_mcp_server` | `npx kubernetes-mcp-server@latest` | stdio | Raw Kubernetes cluster ops |
 
@@ -346,6 +365,9 @@ services:
         {"name": "argo_rollout_mcp_server", "command": "argo-rollout-mcp-server", "transport": "stdio", "args": [], "env": {}},
         {"name": "prometheus-mcp-server", "command": "prometheus-mcp-server", "transport": "stdio", "args": [], "env": {}},
         {"name": "alertmanager-mcp-server", "command": "alertmanager-mcp-server", "transport": "stdio", "args": [], "env": {}},
+        {"name": "opentelemetry-mcp-server", "command": "opentelemetry-mcp-server", "transport": "stdio", "args": [], "env": {}},
+        {"name": "loki-mcp-server", "command": "loki-mcp-server", "transport": "stdio", "args": [], "env": {}},
+        {"name": "tempo-mcp-server", "command": "tempo-mcp-server", "transport": "stdio", "args": [], "env": {}},
         {"name": "kubernetes_mcp_server", "command": "npx", "transport": "stdio", "args": ["-y", "kubernetes-mcp-server@latest"]}
         ]
 

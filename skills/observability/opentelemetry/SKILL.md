@@ -81,6 +81,7 @@ patterns, read [references/workflows.md](references/workflows.md).
 | Sampling Review | Optimize trace sampling | `otel_inspect_sampling_configuration` → `otel_toggle_sampling_strategy` |
 | Security Audit | Scan eBPF and collector RBAC | `otel_analyze_ebpf_footprint` |
 | Collector Provisioning | Intent-driven deployment | `otel_provision_collector` |
+| Visualizing pipelines (A2UI)| Pipeline Dashboard | `otel_query_a2ui` |
 
 ## Safety Rules — MUST Follow
 

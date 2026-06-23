@@ -17,7 +17,7 @@ metadata:
   mcp_server: Loki MCP Server
 compatibility: >-
   Requires Loki MCP Server (server name: loki-mcp-server).
-  Provides 8 read-only tools, 8 resources, and 5 guided prompts.
+  Provides 9 read-only tools, 8 resources, and 5 guided prompts.
   All tools are read-only — no state-modifying operations exist.
 ---
 
@@ -50,7 +50,8 @@ are handled directly by the sub-agent via the Query Fast-Path and do NOT require
 ### 3. Query — Cost-Aware Execution
 - ALWAYS call `get_query_stats` before executing expensive queries to estimate cost (streams, chunks, bytes).
 - If `exceeds_threshold` is `true`, narrow the time range or add more specific selectors.
-- Call `execute_logql_query` for log range queries (returns streams) or metric range queries (returns matrix).
+- Call `execute_logql_query` for log range queries (returns raw markdown) or metric range queries.
+- Call `loki_query_a2ui` instead of `execute_logql_query` when you want to render interactive UI log tables. **CRITICAL: When using this tool, ALWAYS append parsers and `| line_format` to your LogQL query (e.g., `| json | line_format "Method: {{.method}}, Status: {{.status}}"`) so the UI clusters and displays clean, parsed fields instead of raw access logs.**
 - Call `execute_logql_instant` for point-in-time scalar answers (current error rate, log count).
 
 ### 4. Analyze & Correlate
@@ -69,8 +70,8 @@ patterns, read [references/workflows.md](references/workflows.md).
 |---|---|---|
 | Investigate errors | Error Investigation | `get_cluster_labels` → `get_label_values` → `get_active_series` → `get_detected_fields` → `get_query_stats` → `execute_logql_query` |
 | Check service health | Service Health Check | `loki://system/health` → `get_cluster_labels` → `get_active_series` → `get_query_stats` → `execute_logql_query` |
-| Analyze log structure | Log Structure Analysis | `get_active_series` → `get_detected_fields` → `get_log_patterns` → `execute_logql_query` |
-| Build LogQL query | LogQL Query Builder | `get_cluster_labels` → `get_label_values` → `get_active_series` → `get_detected_fields` → `get_query_stats` → `execute_logql_query` |
+| Analyze log structure | Log Structure Analysis | `get_active_series` → `get_detected_fields` → `get_log_patterns` → `execute_logql_query` / `loki_query_a2ui` |
+| Build LogQL query | LogQL Query Builder | `get_cluster_labels` → `get_label_values` → `get_active_series` → `get_detected_fields` → `get_query_stats` → `execute_logql_query` / `loki_query_a2ui` |
 | Explore label schema | Schema Exploration | `get_cluster_labels` → `get_label_values` → `get_active_series` → `get_detected_fields` |
 | Incident response | Incident Response | `execute_logql_query` → `execute_logql_instant` → `get_log_patterns` |
 | Performance analysis | Performance Analysis | `execute_logql_instant` → `execute_logql_query` → trace correlation |

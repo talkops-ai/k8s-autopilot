@@ -437,6 +437,7 @@ def build_k8s_middleware(
     *,
     write_file_limit: Optional[int] = None,
     global_tool_limit: Optional[int] = None,
+    model_call_limit: Optional[int] = None,
     enable_tool_retry: Optional[bool] = None,
     extra_middleware: Optional[List[Any]] = None,
     model: Optional[str] = None,
@@ -461,6 +462,7 @@ def build_k8s_middleware(
     from langchain.agents.middleware import (
         ToolCallLimitMiddleware,
         ToolRetryMiddleware,
+        ModelCallLimitMiddleware,
     )
 
     middleware: List[Any] = []
@@ -516,12 +518,23 @@ def build_k8s_middleware(
         extra={"run_limit": gt_limit},
     )
 
-    # ── 3. Model call guard — REMOVED ──────────────────────────────────────
-    # ModelCallLimitMiddleware was silently terminating the deep agent
-    # (exit_behavior="end") before it could produce a final summary,
-    # causing the agent to appear "stuck" after completing operations.
-    # LangGraph's recursion_limit (250) and the global ToolCallLimitMiddleware
-    # above provide sufficient safety nets against runaway loops.
+    # ── 3. Model call guard — RE-ENABLED with generous limit ──────────────
+    # Previously removed because a too-low limit + exit_behavior="end"
+    # terminated the agent before it could produce a final summary.
+    # With run_limit=40 (configurable), there is ample room for normal
+    # multi-step Helm operations while still catching runaway loops.
+    _K8S_MODEL_CALL_LIMIT = int(os.getenv("K8S_MODEL_CALL_LIMIT", "40"))
+    _mc_limit = model_call_limit or _K8S_MODEL_CALL_LIMIT
+    middleware.append(
+        ModelCallLimitMiddleware(
+            run_limit=_mc_limit,
+            exit_behavior="end",
+        )
+    )
+    logger.info(
+        "Middleware: model call limit",
+        extra={"run_limit": _mc_limit},
+    )
 
     # ── 4. Tool retry (transient failures) ────────────────────────────────
     should_retry = enable_tool_retry if enable_tool_retry is not None else _ENABLE_TOOL_RETRY

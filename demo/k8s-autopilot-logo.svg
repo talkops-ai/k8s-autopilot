@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <defs>
+    <!-- Outer Helm Lug -->
+    <rect id="lug" x="47" y="3" width="6" height="10" rx="2" fill="#326CE5" />
+    
+    <!-- TalkOps Core -->
+    <g id="talkops-core">
+      <path d="M110 12 C58 12 16 46 16 88 c0 26 15 48 38 62 v26 l28-18 c9 2 18 3 28 3 c52 0 94-34 94-76 S162 12 110 12Z" stroke="#1F7ACB" stroke-width="10" stroke-linejoin="round" fill="none" />
+      <path d="M68 92 C68 66 98 66 110 92 C122 118 152 118 152 92" stroke="#1F7ACB" stroke-width="12" stroke-linecap="round" fill="none" />
+      <path d="M68 92 C68 118 98 118 110 92 C122 66 152 66 152 92" stroke="#7AC143" stroke-width="12" stroke-linecap="round" fill="none" />
+    </g>
+  </defs>
+
+  <!-- 1. Outer Helm Wheel Ring -->
+  <g id="helm-wheel">
+    <circle cx="50" cy="50" r="35" stroke="#326CE5" stroke-width="3" fill="none" />
+    <use href="#lug" />
+    <use href="#lug" transform="rotate(45 50 50)" />
+    <use href="#lug" transform="rotate(90 50 50)" />
+    <use href="#lug" transform="rotate(135 50 50)" />
+    <use href="#lug" transform="rotate(180 50 50)" />
+    <use href="#lug" transform="rotate(225 50 50)" />
+    <use href="#lug" transform="rotate(270 50 50)" />
+    <use href="#lug" transform="rotate(315 50 50)" />
+  </g>
+
+  <!-- 2. Middle Agent Orbit -->
+  <g id="agent-orbit">
+    <!-- Orbit circle (radius ~22) - dashed to hint at graph edges -->
+    <!-- dasharray "0 8 30.06 8" creates a gap around the nodes at 0, 120, 240 degrees -->
+    <circle cx="50" cy="50" r="22" stroke="#326CE5" stroke-width="1.5" fill="none" opacity="0.4" stroke-dasharray="0 8 30.06 8" transform="rotate(-90 50 50)" />
+    
+    <!-- Nodes -->
+    <!-- Top Supervisor Node (Highlighted with HITL cue) -->
+    <circle cx="50" cy="28" r="4.5" fill="#FFB347" stroke="#326CE5" stroke-width="1.5" />
+    <!-- HITL cue (small check/shield dot) -->
+    <circle cx="50" cy="28" r="1.5" fill="#326CE5" />
+
+    <!-- Lower-right Node -->
+    <circle cx="69.05" cy="61" r="3.5" fill="#326CE5" />
+    
+    <!-- Lower-left Node -->
+    <circle cx="30.95" cy="61" r="3.5" fill="#326CE5" />
+  </g>
+
+  <!-- 3. Core TalkOps Cockpit -->
+  <!-- Scaled exactly to fit cleanly inside the orbit without touching, retaining exact original brand colors -->
+  <use href="#talkops-core" transform="translate(33.5, 35.9) scale(0.15)" />
+</svg>

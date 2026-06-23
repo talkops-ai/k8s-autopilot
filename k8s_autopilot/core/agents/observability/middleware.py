@@ -83,6 +83,96 @@ class ObsOperationContextMiddleware(AgentMiddleware):
         return self.before_model(state, runtime)
 
 
+class A2UIBufferMiddleware(AgentMiddleware):
+    """Intercepts large A2UI JSON responses from MCP tools and buffers them in artifacts.
+    
+    Prevents LLM context exhaustion by removing the huge JSON payload from the
+    text content that the model sees, replacing it with a pointer for build_obs_a2ui.
+    """
+    
+    A2UI_TOOLS = {
+        "prom_query_a2ui_chart": "metrics",
+        "loki_query_a2ui": "logs",
+        "tempo_query_a2ui": "traces",
+        "otel_query_a2ui": "otel",
+        "am_query_a2ui": "alerts"
+    }
+
+    def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+        result = handler(request)
+        return self._process_result(request, result)
+
+    async def awrap_tool_call(self, request: Any, handler: Any) -> Any:
+        result = await handler(request)
+        return self._process_result(request, result)
+
+    def _process_result(self, request: Any, result: Any) -> Any:
+        from langchain_core.messages import ToolMessage
+        import json
+        
+        try:
+            # LangGraph tool call dict is usually in request.tool_call
+            # LangChain ToolCall is dict-like
+            tool_name = request.tool_call.get("name") if isinstance(request.tool_call, dict) else request.tool_call.name
+        except AttributeError:
+            return result
+
+        if tool_name not in self.A2UI_TOOLS:
+            return result
+
+        if not isinstance(result, ToolMessage):
+            return result
+
+        # 1. Skip buffering if LangChain marked the tool execution as an error
+        if getattr(result, "is_error", False) or getattr(result, "status", "") == "error":
+            return result
+
+        try:
+            content_str = result.content
+            if isinstance(content_str, list):
+                # If it's a list of blocks, join text
+                parts = []
+                for block in content_str:
+                    if isinstance(block, str):
+                        parts.append(block)
+                    elif isinstance(block, dict) and "text" in block:
+                        parts.append(str(block["text"]))
+                    elif hasattr(block, "text"):
+                        parts.append(str(getattr(block, "text")))
+                    else:
+                        parts.append(str(block))
+                content_str = "".join(parts)
+
+            # 2. Skip buffering if output is plain text (like an error message); json.loads will fail
+            data = json.loads(content_str)
+            
+            # 3. Skip buffering if the MCP server returned a valid JSON error object
+            if isinstance(data, dict) and data.get("isError") or "error" in data:
+                return result
+            
+            # Save the raw data into the artifact
+            artifact = result.artifact or {}
+            if isinstance(artifact, dict):
+                artifact["a2ui_buffered_data"] = data
+            else:
+                # If artifact is not a dict, wrap it
+                artifact = {"original_artifact": artifact, "a2ui_buffered_data": data}
+            result.artifact = artifact
+            
+            kind = self.A2UI_TOOLS[tool_name]
+            
+            # Replace the massive text content with a safe pointer string
+            result.content = (
+                f"Data successfully fetched and buffered in tool artifact. "
+                f"Now call `build_obs_a2ui` with kind='{kind}' and data='__USE_ARTIFACT__' to render it."
+            )
+        except Exception as e:
+            logger.debug(f"A2UIBufferMiddleware failed to parse JSON from {tool_name}: {e}")
+            
+        return result
+
+
+
 # ---------------------------------------------------------------------------
 # Default limits (overridable via env vars or Config)
 # ---------------------------------------------------------------------------
@@ -620,6 +710,7 @@ def build_obs_operator_middleware(
     *,
     write_file_limit: Optional[int] = None,
     global_tool_limit: Optional[int] = None,
+    model_call_limit: Optional[int] = None,
     enable_tool_retry: Optional[bool] = None,
     extra_middleware: Optional[List[Any]] = None,
     model: Optional[str] = None,
@@ -632,13 +723,15 @@ def build_obs_operator_middleware(
         0b. PlanLockMiddleware — re-injects approved plan constraints
         1. ToolCallLimitMiddleware (write_file) — prevent runaway writes
         2. ToolCallLimitMiddleware (global) — hard cap on total tool calls
-        3. ToolRetryMiddleware (optional) — transient failure recovery
-        4. SummarizationToolMiddleware — proactive context compression
-        5. Extra middleware (caller-supplied)
+        3. ModelCallLimitMiddleware — cap on total LLM invocations
+        4. ToolRetryMiddleware (optional) — transient failure recovery
+        5. SummarizationToolMiddleware — proactive context compression
+        6. Extra middleware (caller-supplied)
     """
     from langchain.agents.middleware import (
         ToolCallLimitMiddleware,
         ToolRetryMiddleware,
+        ModelCallLimitMiddleware,
     )
     from k8s_autopilot.core.agents.app_operator.middleware import PlanLockMiddleware
 
@@ -671,12 +764,22 @@ def build_obs_operator_middleware(
         )
     )
 
-    # 3. Model call guard — REMOVED
-    # ModelCallLimitMiddleware was silently terminating the deep agent
-    # (exit_behavior="end") before it could produce a final summary,
-    # causing the agent to appear "stuck" after completing operations.
-    # LangGraph's recursion_limit and the global ToolCallLimitMiddleware
-    # above provide sufficient safety nets against runaway loops.
+    # 3. Model call guard — RE-ENABLED with generous limit
+    # Previously removed because a too-low limit + exit_behavior="end"
+    # terminated the agent before it could produce a final summary.
+    # With run_limit=30, there is ample room for normal multi-step
+    # operations while still catching runaway loops.
+    # Note: ModelCallLimitMiddleware only supports "end" (graceful with
+    # AI message) and "error" (raise exception). We use "end" for clean UX.
+    # Ref: https://docs.langchain.com/oss/python/langchain/middleware/built-in#model-call-limit
+    _mc_limit = model_call_limit or int(os.getenv("OBS_OP_MODEL_CALL_LIMIT", "30"))
+    middleware.append(
+        ModelCallLimitMiddleware(
+            run_limit=_mc_limit,
+            exit_behavior="end",
+        )
+    )
+
 
     # 4. Tool retry (transient failures)
     should_retry = enable_tool_retry if enable_tool_retry is not None else _ENABLE_TOOL_RETRY

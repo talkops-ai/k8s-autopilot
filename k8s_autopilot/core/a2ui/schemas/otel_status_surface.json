@@ -1,0 +1,51 @@
+[
+  {
+    "id": "root",
+    "component": {
+      "Column": {
+        "children": {"explicitList": ["header-row", "divider", "otel-table"]}
+      }
+    }
+  },
+  {
+    "id": "header-row",
+    "component": {
+      "Row": {
+        "children": {"explicitList": ["title-text", "overall-status"]},
+        "alignment": "center",
+        "distribution": "spaceBetween"
+      }
+    }
+  },
+  {
+    "id": "title-text",
+    "component": {
+      "Text": {
+        "text": {"path": "title"},
+        "usageHint": "h3"
+      }
+    }
+  },
+  {
+    "id": "overall-status",
+    "component": {
+      "StatusIndicator": {
+        "severity": {"path": "overallSeverity"},
+        "label": {"path": "overallStatusLabel"},
+        "value": {"path": "overallStatusValue"}
+      }
+    }
+  },
+  {"id": "divider", "component": {"Divider": {}}},
+  {
+    "id": "otel-table",
+    "component": {
+      "DataTable": {
+        "columns": {"path": "columns"},
+        "rows": {"path": "rows"},
+        "searchable": true,
+        "pageSize": 20
+      }
+    }
+  }
+]

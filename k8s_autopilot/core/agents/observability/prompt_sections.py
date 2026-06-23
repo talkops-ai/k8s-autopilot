@@ -502,7 +502,16 @@ Iron Rules (never violate):
      // ... process data ...
      results.push(data);
      results; // <--- The last expression is automatically returned! No "return" keyword!
-     ```"""
+     ```
+5. **Duplicate call ban**: Do NOT call the same tool with the same arguments twice.
+   If you already received a result, use that result. Never re-fetch identical data.
+6. **Error = stop**: If a tool returns HTTP 400, syntax error, or "not found",
+   STOP immediately. Report the exact error to the coordinator. Do NOT retry with
+   different escaping, workarounds, or reformatted queries.
+7. **Step budget**: You have a maximum of 25 tool calls per task. A simple read-only
+   query should use 1-3 calls. If you have used 10+ calls without a clear answer,
+   STOP and summarize what you have found so far."""
+
 
 SUBAGENT_SKILL_DISCOVERY_TEMPLATE = """\
 <skill_discovery>
@@ -529,8 +538,12 @@ If the user REJECTS a plan (via middleware or request_human_input):
 
 SUBAGENT_OUTPUT_CONTRACT_TEMPLATE = """\
 <output_contract>
-Return: "Completed {domain_label} operation: {{summary}}".
-CRITICAL: Do NOT use request_human_input for final results. Return raw text string.
+For read-only queries (metrics, logs, traces, alerts) that use A2UI, do NOT return the raw JSON in your final message. End your turn with a brief conversational summary like "Observability dashboard generated successfully."
+If a read-only query is NOT visualized via A2UI, return a concise markdown summary of the results.
+
+For state-modifying operations (creating rules, applying ServiceMonitors), return: "Completed {domain_label} operation: {{summary}}".
+
+CRITICAL: Do NOT use request_human_input for final results.
 </output_contract>"""
 
 
@@ -550,7 +563,7 @@ PROMETHEUS_IDENTITY_PARAMS = {
 
 PROMETHEUS_READ_ONLY_FAST_PATH = """\
 <read_only_fast_path>
-For READ-ONLY tasks: call tool EXACTLY ONCE → format → return. Do NOT read SKILL.md.
+For READ-ONLY tasks: call tool EXACTLY ONCE → format → return (unless A2UI rendering is requested, which requires validating the query first).
 ANTI-ENRICHMENT: Do NOT loop over results. Do NOT call additional tools to enrich a list. Just return it.
 
 {iron_rules}
@@ -577,7 +590,9 @@ Tool Routing Table:
 |---|---|
 | Run instant query | prom_query_instant |
 |                   | → pass max_samples=N for high-cardinality queries (e.g. per-pod). Default: 500, max: 5000. |
-| Run range query | prom_query_range |
+| Run range query (A2UI) | prom_query_a2ui_chart |
+|                   | → natively formats output for A2UI charts. (NOTE: Output is buffered. Validate your query with `prom_query_instant` first, and ensure `title` is a simple string). |
+| Run range query (raw) | prom_query_range |
 | Validate PromQL | prom_validate_promql |
 | Explore metric labels | prom_explore_labels |
 | Test endpoint health | prom_test_endpoint |
@@ -704,7 +719,7 @@ ALERTMANAGER_IDENTITY_PARAMS = {
 
 ALERTMANAGER_READ_ONLY_FAST_PATH = """\
 <read_only_fast_path>
-For READ-ONLY tasks: call tool EXACTLY ONCE → format → return. Do NOT read SKILL.md.
+For READ-ONLY tasks: call tool EXACTLY ONCE → format → return (unless A2UI rendering is requested, which requires validating the query first).
 ANTI-ENRICHMENT: Do NOT loop over results. Do NOT call additional tools to enrich a list. Just return it.
 
 {iron_rules}
@@ -841,7 +856,7 @@ OPENTELEMETRY_IDENTITY_PARAMS = {
 
 OPENTELEMETRY_READ_ONLY_FAST_PATH = """\
 <read_only_fast_path>
-For READ-ONLY tasks: call tool EXACTLY ONCE → format → return. Do NOT read SKILL.md.
+For READ-ONLY tasks: call tool EXACTLY ONCE → format → return (unless A2UI rendering is requested, which requires validating the query first).
 ANTI-ENRICHMENT: Do NOT loop over results. Do NOT call additional tools to enrich a list. Just return it.
 
 {iron_rules}
@@ -862,6 +877,8 @@ Resource URI Routing Table (for read_mcp_resource):
 Tool Routing Table (READ-ONLY):
 | Query Type | Tool |
 |---|---|
+| Visualizing pipelines (A2UI) | otel_query_a2ui |
+|                              | → natively formats output for A2UI datatables. (NOTE: Output is buffered. Validate with `otel_list_collectors` first, ensure `title` is a simple string). |
 | List collectors | otel_list_collectors |
 | Get collector details | otel_get_collector |
 | List instrumented services | otel_list_instrumented_services |
@@ -878,7 +895,8 @@ Tool Routing Table (READ-ONLY):
 
 OPENTELEMETRY_SKILL_DISCOVERY = """\
 For STATE-MODIFYING tasks only: read_file /skills/observability/opentelemetry/SKILL.md before proceeding.
-Do NOT read SKILL.md for read-only queries."""
+Do NOT read SKILL.md for read-only queries.
+For UI visualization of pipeline health via A2UI, ALWAYS use otel_query_a2ui instead of standard list_collectors."""
 
 OPENTELEMETRY_STATE_WORKFLOW = """\
 <workflow_state_modifying>
@@ -949,7 +967,7 @@ All 8 Loki tools are READ-ONLY. There are NO state-modifying operations in your 
 
 LOKI_READ_ONLY_FAST_PATH = """\
 <read_only_fast_path>
-For ALL tasks: call tool EXACTLY ONCE → format → return.
+For ALL tasks: call tool EXACTLY ONCE → format → return (unless A2UI rendering is requested, which requires validating the query first).
 ANTI-ENRICHMENT: Do NOT loop over results. Do NOT call additional tools to enrich a list. Just return it.
 
 {iron_rules}
@@ -977,10 +995,27 @@ Tool Routing Table:
 | Estimate query cost | get_query_stats |
 | Execute LogQL instant query (scalar) | execute_logql_instant |
 | Execute LogQL range query (logs/metrics) | execute_logql_query |
+| Execute LogQL range query for UI rendering | loki_query_a2ui |
 |                                          | → use max_log_lines=N (default 100, max 1000) to control log volume |
 |                                          | → metric (matrix) results: auto-capped at 100 series × 200 pts each |
-|                                          | → DEPRECATED: `limit` param removed — use `max_log_lines` instead |
+|                                          | → title: MUST be a plain string (e.g., "My App Logs") |
+|                                          | → CRITICAL: ALWAYS append `| json` (or `| logfmt`) and `| line_format` to the LogQL query so the A2UI table displays parsed fields! |
+|                                          | → natively formats output for A2UI tables/charts. (NOTE: Output is buffered. Validate with `execute_logql_instant` first). |
+
+CRITICAL EFFICIENCY RULES for Loki:
+- To count services with a specific error, use a SINGLE aggregation query:
+  count(count by (service_name) ({{...}} |= "error_string" [range]))
+  Do NOT query each service individually. One query = one answer.
+- If a query returns empty/zero results, that IS the answer. Report
+  "0 services affected" or "No matching logs found". Do NOT retry with
+  different time ranges, different escaping, or alternative queries.
+- Max tool calls for a log search task: 5. If you need label discovery
+  (1-2 calls) + the actual query (1 call) = 3 calls total.
+- For "how many X have Y error" questions: 1 call to execute_logql_instant
+  with a count aggregation. That's it.
 </read_only_fast_path>"""
+
+
 
 LOKI_SKILL_DISCOVERY = """\
 For multi-step guided workflows (error investigation, log structure analysis, trace-log correlation):
@@ -993,7 +1028,9 @@ Recommended tool call order for multi-step investigations:
 3. get_active_series — confirm the selector matches real data
 4. get_detected_fields — know what fields can be filtered on
 5. get_query_stats — estimate query cost
-6. execute_logql_query — run the actual query
+6. execute_logql_query / loki_query_a2ui — run the actual query
+   • Use `loki_query_a2ui` exclusively when you want to render interactive UI tables.
+   • Use `execute_logql_query` for raw markdown text outputs or metric matrix queries.
    • Start with max_log_lines=50 for a first pass; increase only if results are truncated.
    • For metric queries (rate/count_over_time), series are auto-capped at 100."""
 
@@ -1045,7 +1082,7 @@ tempo_get_operator_cr, tempo_generate_alerting_expression
 2 STATE-MODIFYING tools (gated by HumanInTheLoopMiddleware):
 tempo_create_operator_cr, tempo_patch_operator_cr
 
-For READ-ONLY tasks: call tool EXACTLY ONCE → format → return.
+For READ-ONLY tasks: call tool EXACTLY ONCE → format → return (unless A2UI rendering is requested, which requires validating the query first).
 ANTI-ENRICHMENT: Do NOT loop over results. Do NOT call additional tools to enrich a list.
 
 {iron_rules}
@@ -1076,6 +1113,8 @@ Tool Routing Table:
 | K8s attribute mapping | tempo_get_k8s_attribute_map |
 | Search traces (TraceQL or filters) | tempo_traceql_search |
 | Get single trace by ID | tempo_get_trace |
+| Get trace formatted for A2UI Timeline | tempo_query_a2ui |
+|                                       | → natively formats output for A2UI trace timelines. (NOTE: Output is buffered. Validate with standard search tools first, ensure `title` is a simple string). |
 | Summarize trace (critical path, errors) | tempo_summarize_trace |
 | Find related traces | tempo_find_related_traces |
 | Compare two traces (diff) | tempo_compare_traces |
@@ -1096,12 +1135,23 @@ TEMPO_SKILL_DISCOVERY = """\
 For multi-step investigations or CRD lifecycle (STATE-MODIFYING): read_file /skills/observability/tempo/SKILL.md before proceeding.
 Do NOT read SKILL.md for simple single-tool queries.
 
+TraceQL Query Construction — MANDATORY steps:
+1. If you need to write a raw TraceQL query, FIRST read the reference:
+   read_mcp_resource("tempo://reference/traceql") — syntax, scoping, examples.
+   read_mcp_resource("tempo://examples/common-queries") — proven query patterns.
+2. When possible, prefer the tool's STRUCTURED PARAMETERS (service, namespace,
+   deployment, status, min_duration_ms, max_duration_ms) over raw TraceQL.
+   These are automatically wrapped in correct TraceQL syntax by the server.
+3. If you MUST use the raw `query` parameter, ensure it is wrapped in { } braces.
+   See <safety_rules> for the CRITICAL SYNTAX rule.
+
 Recommended tool call order for multi-step investigations:
 1. tempo_get_diagnostics — backend healthy?
 2. tempo_get_attribute_names — what attributes exist (scoped: resource, span, intrinsic)?
 3. tempo_get_attribute_values — what services / namespaces are sending traces?
 4. tempo_traceql_search — find traces matching criteria
 5. tempo_summarize_trace — analyze critical path, errors, root cause
+   • Use `tempo_query_a2ui` exclusively when you want to render an interactive Trace Timeline UI.
 6. tempo_find_related_traces / tempo_compare_traces — correlate and diff"""
 
 TEMPO_CROSS_MCP_WORKFLOWS = """\
@@ -1169,6 +1219,80 @@ Example commands:
   kubectl_readonly("kubectl get events -n {namespace} --sort-by='.lastTimestamp'")
 </kubectl_diagnostics>"""
 
+TEMPO_SAFETY_RULES = """\
+<safety_rules>
+CRITICAL — TraceQL Syntax (MUST FOLLOW):
+Every raw TraceQL query MUST be wrapped in { } selector braces.
+Queries without { } braces WILL FAIL with a validation error.
+
+❌ WRONG (bare predicates — will error):
+  resource.service.name = "api" && status = error
+  .http.method != ""
+  duration > 500ms && duration < 15s
+  has(.http.method)
+  status = error
+
+✅ CORRECT (wrapped in { } braces):
+  { resource.service.name = "api" && status = error }
+  { .http.method != "" }
+  { duration > 500ms && duration < 15s }
+  { status = error }
+
+✅ EVEN BETTER — Use structured parameters instead of raw query:
+  tempo_traceql_search(service="api", status="error", since="1h")
+  tempo_traceql_search(min_duration_ms=500, max_duration_ms=15000, since="1h")
+  The server auto-builds correct TraceQL from these parameters.
+
+Attribute Scoping:
+- Resource attributes: resource.service.name, resource.k8s.namespace.name
+- Span attributes: span.http.status_code
+- Unscoped: .http.method (searches both resource and span)
+- Intrinsic (NO prefix): duration, status, name, kind, rootName, rootServiceName
+- ❌ NEVER: service.name (must be resource.service.name)
+
+Reference-First Rule:
+Before constructing a TraceQL query, read tempo://reference/traceql
+and tempo://examples/common-queries to confirm correct syntax.
+</safety_rules>"""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# A2UI VISUALIZATION SECTIONS (shared across all subagents + coordinator)
+# ═══════════════════════════════════════════════════════════════════════════
+
+SUBAGENT_A2UI_VISUALIZATION = """
+<a2ui_visualization>
+After completing an observability query for visualization, you MUST render results
+using A2UI surfaces instead of markdown. 
+
+CRITICAL BUFFERING RULES:
+We use a state-based buffer to shield you from massive JSON payloads. 
+1. The massive JSON data is securely buffered in the backend. You will NOT see the raw data from A2UI tools. You will only receive a pointer string: `__USE_ARTIFACT__`.
+2. BEFORE using an A2UI tool (`prom_query_a2ui_chart`, `loki_query_a2ui`, `tempo_query_a2ui`, `am_query_a2ui`, `otel_query_a2ui`), you MUST first use the standard raw query tools (e.g., `execute_logql_instant`, `prom_query_instant`) to verify your query actually returns data. Do NOT guess the query and blindly send it to the A2UI tool.
+3. Once you verify the query returns valid data, use the domain-specific A2UI query tool.
+4. IMPORTANT: For all A2UI tools, the `title` parameter MUST be a simple string (e.g., "Logs for my-service"), NEVER a dictionary or object.
+5. Do NOT abandon the A2UI tool and switch back to a raw query tool just because you cannot read the buffered output. Rely on your verified query.
+
+Tool Usage Pipeline:
+1. Validate your query using standard raw tools (e.g., `execute_logql_instant`).
+2. Call the specific A2UI query tool (e.g., `loki_query_a2ui(query="{...}", title="App Logs", max_log_lines=50)`).
+3. Receive the pointer: `"Data successfully fetched... call build_obs_a2ui... data='__USE_ARTIFACT__'"`
+4. Call `build_obs_a2ui(kind="<metrics|logs|traces|alerts|otel>", data="__USE_ARTIFACT__")`
+5. The tool will return a massive JSON payload of `a2ui_operations`. Ignore it completely. The middleware intercepts this and renders the UI automatically. Do NOT print the raw JSON. End your turn with a brief summary like "Observability dashboard generated successfully."
+
+CRITICAL: Do NOT generate markdown tables, bullet lists, or code blocks for
+observability query results. Always use A2UI visualization via build_obs_a2ui.
+</a2ui_visualization>
+"""
+
+COORDINATOR_A2UI_ORCHESTRATION = """
+<a2ui_visualization>
+Subagents automatically render observability results as rich A2UI surfaces
+(charts, tables, timelines) instead of markdown. No special action is needed
+from you — simply delegate as usual and pass through the subagent's response.
+</a2ui_visualization>
+"""
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # REGISTRY FACTORY FUNCTIONS
@@ -1202,6 +1326,9 @@ def create_coordinator_registry(**overrides: str) -> PromptRegistry:
     reg.register("response_style", COORDINATOR_RESPONSE_STYLE)
     reg.register("safety_guardrails", COORDINATOR_SAFETY_GUARDRAILS)
     reg.register("tool_contracts", COORDINATOR_TOOL_CONTRACTS)
+
+    # A2UI visualization note (subagents handle rendering automatically)
+    reg.register("a2ui_orchestration", COORDINATOR_A2UI_ORCHESTRATION)
 
     # Apply overrides
     for section_name, content in overrides.items():
@@ -1300,7 +1427,7 @@ def create_subagent_registry(domain: str, **overrides: str) -> PromptRegistry:
             ),
             "skill_discovery": TEMPO_SKILL_DISCOVERY,
             "state_workflow": TEMPO_STATE_WORKFLOW,
-            "safety_rules": None,
+            "safety_rules": TEMPO_SAFETY_RULES,
             "extra_sections": {
                 "cross_mcp_workflows": TEMPO_CROSS_MCP_WORKFLOWS,
                 "kubectl_diagnostics": TEMPO_KUBECTL_DIAGNOSTICS,
@@ -1372,6 +1499,9 @@ def create_subagent_registry(domain: str, **overrides: str) -> PromptRegistry:
         "output_contract",
         SUBAGENT_OUTPUT_CONTRACT_TEMPLATE.format(domain_label=domain_label),
     )
+
+    # 10. A2UI visualization (all subagents)
+    reg.register("a2ui_visualization", SUBAGENT_A2UI_VISUALIZATION)
 
     # Apply overrides
     for section_name, content in overrides.items():

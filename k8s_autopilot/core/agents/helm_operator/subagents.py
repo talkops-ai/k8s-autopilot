@@ -259,7 +259,7 @@ HELM_SKILL_BUILDER_SUBAGENT: dict[str, Any] = {
     ),
     "system_prompt": HELM_SKILL_BUILDER_PROMPT,
     "tools": [],
-    "skills": ["/skills/"],
+    "skills": ["/skills/helm-operator/helm-skill-builder"],
 }
 
 HELM_GENERATOR_SUBAGENT: dict[str, Any] = {
@@ -271,7 +271,7 @@ HELM_GENERATOR_SUBAGENT: dict[str, Any] = {
     ),
     "system_prompt": HELM_GENERATOR_PROMPT,
     "tools": [],
-    "skills": ["/skills/"],
+    "skills": ["/skills/helm-operator/helm-generator"],
 }
 
 
@@ -283,7 +283,7 @@ HELM_UPDATER_SUBAGENT: dict[str, Any] = {
     ),
     "system_prompt": HELM_UPDATER_PROMPT,
     "tools": [],
-    "skills": ["/skills/"],
+    "skills": ["/skills/helm-operator/helm-updater"],
 }
 
 HELM_OPERATION_SUBAGENT: dict[str, Any] = {
@@ -294,7 +294,7 @@ HELM_OPERATION_SUBAGENT: dict[str, Any] = {
     ),
     "system_prompt": HELM_OPERATION_PROMPT,
     "tools": [],
-    "skills": ["/skills/"],
+    "skills": ["/skills/helm-operator/helm-operation"],
 }
 
 HELM_VALIDATOR_SUBAGENT: dict[str, Any] = {
@@ -306,7 +306,7 @@ HELM_VALIDATOR_SUBAGENT: dict[str, Any] = {
     ),
     "system_prompt": HELM_VALIDATOR_PROMPT,
     "tools": [],
-    "skills": ["/skills/"],
+    "skills": ["/skills/helm-operator/helm-validator"],
 }
 
 # tools=[] here — GitHub MCP tools are merged in build_mcp_subagent() only.
@@ -319,7 +319,7 @@ GITHUB_AGENT_SUBAGENT: dict[str, Any] = {
     ),
     "system_prompt": GITHUB_AGENT_PROMPT,
     "tools": [],
-    "skills": ["/skills/"],
+    "skills": ["/skills/helm-operator/github-agent"],
 }
 
 

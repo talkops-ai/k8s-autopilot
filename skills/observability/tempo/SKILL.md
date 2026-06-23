@@ -19,7 +19,7 @@ metadata:
   mcp_server: Tempo MCP Server
 compatibility: >-
   Requires Tempo MCP Server (server name: tempo-mcp-server).
-  Provides 22 tools (20 read-only + 2 CRD mutations), 11 resources, and 5 guided prompts.
+  Provides 23 tools (21 read-only + 2 CRD mutations), 11 resources, and 5 guided prompts.
   CRD mutation tools (tempo_create_operator_cr, tempo_patch_operator_cr) default to dry_run=true
   and are gated by HumanInTheLoopMiddleware.
 ---
@@ -54,6 +54,7 @@ are handled directly by the sub-agent via the Query Fast-Path and do NOT require
 
 ### 3. Analyze
 - Use `tempo_summarize_trace` for intelligent trace summarization — critical path, error detection, root cause, recommended next queries.
+- Use `tempo_query_a2ui` exclusively to fetch and format a DAG-pruned trace payload for rendering an interactive Trace Timeline UI.
 - Use `tempo_compare_traces` to diff two traces by ID (5-dimensional: structure, spans, timing, errors, attributes).
 - Use `tempo_find_related_traces` to correlate via strategies: `same_service_errors`, `same_endpoint`, `temporal_neighbors`.
 
