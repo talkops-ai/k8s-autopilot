@@ -490,7 +490,10 @@ Chart files should be at: {chart_path}"""
                 f"Review validation results and FIX them before proceeding."
             )
         
-        workflow_state_obj.last_agent = "validation_swarm"
+        if hasattr(workflow_state_obj, "last_agent"):
+            workflow_state_obj.last_agent = "validation_swarm"
+        elif isinstance(workflow_state_obj, dict):
+            workflow_state_obj["last_agent"] = "validation_swarm"
             
         # Return object directly to avoid Pydantic serialization warnings
         updated_workflow_state = workflow_state_obj

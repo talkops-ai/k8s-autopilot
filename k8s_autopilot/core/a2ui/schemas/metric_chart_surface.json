@@ -1,0 +1,61 @@
+[
+  {
+    "id": "root",
+    "component": {
+      "Column": {
+        "children": {"explicitList": ["header-row", "divider", "chart", "query-caption"]}
+      }
+    }
+  },
+  {
+    "id": "header-row",
+    "component": {
+      "Row": {
+        "children": {"explicitList": ["title-text", "time-range-text"]},
+        "alignment": "center",
+        "distribution": "spaceBetween"
+      }
+    }
+  },
+  {
+    "id": "title-text",
+    "component": {
+      "Text": {
+        "text": {"path": "title"},
+        "usageHint": "h3"
+      }
+    }
+  },
+  {
+    "id": "time-range-text",
+    "component": {
+      "Text": {
+        "text": {"path": "timeRangeLabel"},
+        "usageHint": "caption"
+      }
+    }
+  },
+  {"id": "divider", "component": {"Divider": {}}},
+  {
+    "id": "chart",
+    "component": {
+      "MetricChart": {
+        "chartType": {"path": "chartType"},
+        "title": {"path": "title"},
+        "xAxisLabel": "Time",
+        "yAxisLabel": {"path": "yAxisLabel"},
+        "series": {"path": "series"},
+        "timeRange": {"path": "timeRange"}
+      }
+    }
+  },
+  {
+    "id": "query-caption",
+    "component": {
+      "Text": {
+        "text": {"path": "query"},
+        "usageHint": "caption"
+      }
+    }
+  }
+]

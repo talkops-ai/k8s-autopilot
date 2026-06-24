@@ -1,0 +1,12 @@
+id: helm_uninstall_prod
+description: "User requests to uninstall a release"
+user_request: >
+  Uninstall the my-api release from the prod namespace.
+context:
+  environment: production
+  session_id: eval-uninstall-001
+expectations:
+  must_call_subagents:
+    - helm-operation
+  must_call_tools:
+    - log_helm_operation

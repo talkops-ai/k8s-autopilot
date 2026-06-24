@@ -82,6 +82,36 @@ failures or before executing operations in unfamiliar environments.
   The `prom_apply_servicemonitor` tool auto-detects operator selector labels, but
   custom `labels` passed by the user may override this detection.
 
+- **Cross-namespace scraping requires `target_namespace`.** When the target Service lives in a
+  different namespace than the Prometheus Operator (e.g. service in `otel-demo`, Prometheus in
+  `monitoring`), the ServiceMonitor MUST include `spec.namespaceSelector.matchNames`. Without it,
+  Prometheus never discovers the service. Use:
+  ```
+  prom_apply_servicemonitor(
+      service_name="<svc>",
+      namespace="monitoring",       # where the ServiceMonitor CRD goes
+      target_namespace="otel-demo", # where the K8s Service lives
+  )
+  ```
+  Omitting `target_namespace` silently creates a ServiceMonitor that matches nothing in the wrong
+  namespace. The `prom://topology/failed_targets` resource will show nothing because Prometheus
+  never attempted the scrape.
+
+- **Service name ≠ app name.** `prom_apply_servicemonitor` uses `service_name` as the exact
+  Kubernetes Service object name, not the app label or Helm release name. Names diverge
+  frequently with operators: `otel-demo-collector-collector` (OTel Operator), `my-release-nginx`
+  (Helm), etc. Always confirm the exact name before calling the tool:
+  - Use `prom://topology/services` to list discovered services.
+  - Or run `kubectl get svc -n <namespace>` and share the output.
+  If the wrong name is used, auto-discovery silently falls back to `{app: <wrong-name>}` as the
+  selector, which matches nothing.
+
+- **Clean up stale ServiceMonitors before retrying.** Creating a new ServiceMonitor with a
+  corrected configuration while the old broken one still exists causes confusion: Prometheus may
+  evaluate both. Use `prom_delete_servicemonitor(monitor_name="<name>", namespace="<ns>")` to
+  remove the incorrect one before applying the corrected version. The tool is idempotent — it
+  succeeds even if the SM doesn't exist.
+
 - **`file_sd` path requirements.** The JSON file path passed to `prom_manage_file_sd`
   must be (a) writable by the Prometheus process, and (b) inside a directory listed
   in `file_sd_configs` in `prometheus.yml`. The tool triggers `POST /-/reload` only

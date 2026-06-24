@@ -18,6 +18,8 @@ Matches when:
 
 from typing import Any, Dict, List
 
+from copilotkit import a2ui
+
 from k8s_autopilot.core.a2ui.registry import (
     BaseComponent,
     RenderContext,
@@ -73,7 +75,7 @@ class UserInputComponent(BaseComponent):
         components: List[dict] = [
             # Root Column (removed Card wrapper for clean markdown-like look)
             {
-                "id": "input-root",
+                "id": "root",
                 "component": {
                     "Column": {
                         "children": {"explicitList": children_ids}
@@ -178,42 +180,19 @@ class UserInputComponent(BaseComponent):
             })
 
         # ── Data model ───────────────────────────────────────────────
-        data_entries = [
-            {"key": "markdown", "valueString": markdown_text},
-        ]
+        data_entries: Dict[str, Any] = {
+            "markdown": markdown_text,
+        }
         # Pre-fill input field defaults
         for field in input_fields:
             field_key = field.get("key", "")
             field_default = field.get("default", "")
             if field_key:
-                data_entries.append(
-                    {"key": field_key, "valueString": field_default}
-                )
+                data_entries[field_key] = field_default
 
-        return [
-            {
-                "beginRendering": {
-                    "surfaceId": "user-input",
-                    "root": "input-root",
-                    "styles": {
-                        "primaryColor": "#6366F1",
-                        "foregroundColor": "#E2E8F0",
-                        "surfaceColor": "#1E293B",
-                        "font": "Inter",
-                    },
-                }
-            },
-            {
-                "surfaceUpdate": {
-                    "surfaceId": "user-input",
-                    "components": components,
-                }
-            },
-            {
-                "dataModelUpdate": {
-                    "surfaceId": "user-input",
-                    "path": "/",
-                    "contents": data_entries,
-                }
-            },
+        operations = [
+            a2ui.create_surface("user-input"),
+            a2ui.update_components("user-input", components),
+            a2ui.update_data_model("user-input", data_entries),
         ]
+        return operations

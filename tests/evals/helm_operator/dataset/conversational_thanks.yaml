@@ -1,0 +1,12 @@
+id: conversational_thanks
+description: "User says thanks — should get a conversational reply with no tool calls"
+user_request: >
+  Thanks for your help!
+context:
+  environment: development
+  session_id: eval-conv-001
+expectations:
+  forbidden_subagents:
+    - helm-generator
+    - helm-operation
+    - helm-planner

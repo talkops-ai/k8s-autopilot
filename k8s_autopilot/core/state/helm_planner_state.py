@@ -1,10 +1,9 @@
 from typing import Annotated, Optional, Dict, List, Any, Literal
-from typing_extensions import NotRequired
+from typing_extensions import NotRequired, TypedDict
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
-from langchain.agents import AgentState
 
 def _get_current_utc_time() -> datetime:
     return datetime.now(tz=timezone.utc)
@@ -82,7 +81,7 @@ def merge_dicts(x: Optional[Dict[str, Any]], y: Optional[Dict[str, Any]]) -> Dic
     """Reducer for merging dict states."""
     return {**(x or {}), **(y or {})}
 
-class HelmPlannerState(AgentState):
+class HelmPlannerState(TypedDict, total=False):
     """State for the Helm Planner 2-phase pipeline subgraph.
 
     Compatible with the existing ``PlanningSwarmState`` — both phases read
@@ -95,27 +94,27 @@ class HelmPlannerState(AgentState):
     messages: Annotated[List[AnyMessage], add_messages]
 
     # ── Workflow Identification ──
-    user_query: NotRequired[str]
-    session_id: NotRequired[str]
-    task_id: NotRequired[str]
+    user_query: str
+    session_id: str
+    task_id: str
 
     # ── Handoff State (controls routing between agents) ──
-    workflow_state: NotRequired[HelmPlannerWorkflowState]
-    status: NotRequired[str]
-    active_agent: NotRequired[str]
-    current_step: NotRequired[str]
+    workflow_state: HelmPlannerWorkflowState
+    status: str
+    active_agent: str
+    current_step: str
 
     # ── Phase Outputs (matching PlanningSwarmState keys) ──
-    handoff_data: NotRequired[Annotated[Dict[str, Any], merge_dicts]]
-    chart_plan: NotRequired[Annotated[Dict[str, Any], merge_dicts]]
-    updated_user_requirements: NotRequired[str]
-    question_asked: NotRequired[str]
+    handoff_data: Annotated[Dict[str, Any], merge_dicts]
+    chart_plan: Annotated[Dict[str, Any], merge_dicts]
+    updated_user_requirements: str
+    question_asked: str
 
     # ── Error Tracking ──
-    error_state: NotRequired[Any]  # ErrorContext
+    error_state: Any  # ErrorContext
 
     # ── Virtual Filesystem ──
-    files: NotRequired[Dict[str, Any]]
+    files: Dict[str, Any]
 
     # ── HITL ──
-    pending_feedback_requests: NotRequired[Dict[str, Any]]
+    pending_feedback_requests: Dict[str, Any]

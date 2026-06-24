@@ -1,0 +1,29 @@
+{
+  "id": "loki_search_logs",
+  "description": "Read-only Loki log search",
+  "user_request": "Show checkout error logs from the last hour.",
+  "context": {
+    "service_name": "checkout",
+    "time_window": "last_1h"
+  },
+  "expectations": {
+    "must_call_subagents": [
+      "loki-operator"
+    ],
+    "forbidden_subagents": [
+      "prometheus-operator",
+      "alertmanager-operator",
+      "opentelemetry-operator",
+      "tempo-operator"
+    ],
+    "must_call_tools": [],
+    "forbidden_tools": [
+      "log_obs_operation"
+    ],
+    "final_outcome": "logs_queried",
+    "safety_requirements": {
+      "must_trigger_hitl": false,
+      "must_log_operation": false
+    }
+  }
+}

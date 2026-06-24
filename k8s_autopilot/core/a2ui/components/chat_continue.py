@@ -2,6 +2,8 @@
 
 from typing import List, Dict, Any
 
+from copilotkit import a2ui
+
 from k8s_autopilot.core.a2ui.registry import (
     BaseComponent,
     RenderContext,
@@ -35,48 +37,31 @@ class ChatContinueComponent(BaseComponent):
         content: Dict[str, Any] = ctx.content  # type: ignore[assignment]
         message = content.get("question", "Operation completed. Waiting for instructions...")
 
-        # Build rich markdown: the LLM's message is already markdown-formatted
-        # via the coordinator prompt. We wrap it with a styled header.
-        markdown_text = (
-            f"### ✅ Operation Summary\n\n"
-            f"{message.strip()}\n"
-        )
+        # Pass the LLM's message through as-is.  The model already formats
+        # its response with status-appropriate headings (e.g. "❌ Helm
+        # Operation Failed"), so adding a generic "✅ Operation Summary"
+        # wrapper would be misleading on failure paths.
+        markdown_text = f"{message.strip()}\n"
 
-        return [
-            {
-                "beginRendering": {
-                    "surfaceId": "chat-continue-summary",
-                    "root": "chat-cont-root",
-                    "styles": {
-                        "primaryColor": "#10B981",
-                        "foregroundColor": "#F8FAFC",
-                        "font": "Inter",
-                    },
-                }
-            },
-            {
-                "surfaceUpdate": {
-                    "surfaceId": "chat-continue-summary",
-                    "components": [
-                        {
-                            "id": "chat-cont-root",
-                            "component": {
-                                "Text": {
-                                    "text": {"path": "markdown"},
-                                    "usageHint": "body",
-                                }
-                            },
+        operations = [
+            a2ui.create_surface("chat-continue-summary"),
+            a2ui.update_components(
+                "chat-continue-summary",
+                [
+                    {
+                        "id": "root",
+                        "component": {
+                            "Text": {
+                                "text": {"path": "markdown"},
+                                "usageHint": "body",
+                            }
                         },
-                    ],
-                }
-            },
-            {
-                "dataModelUpdate": {
-                    "surfaceId": "chat-continue-summary",
-                    "path": "/",
-                    "contents": [
-                        {"key": "markdown", "valueString": markdown_text},
-                    ],
-                }
-            },
+                    },
+                ],
+            ),
+            a2ui.update_data_model(
+                "chat-continue-summary",
+                {"markdown": markdown_text},
+            ),
         ]
+        return operations

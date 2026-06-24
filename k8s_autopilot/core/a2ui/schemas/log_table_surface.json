@@ -1,0 +1,59 @@
+[
+  {
+    "id": "root",
+    "component": {
+      "Column": {
+        "children": {"explicitList": ["header-row", "divider", "log-table", "query-caption"]}
+      }
+    }
+  },
+  {
+    "id": "header-row",
+    "component": {
+      "Row": {
+        "children": {"explicitList": ["title-text", "total-lines-text"]},
+        "alignment": "center",
+        "distribution": "spaceBetween"
+      }
+    }
+  },
+  {
+    "id": "title-text",
+    "component": {
+      "Text": {
+        "text": {"path": "title"},
+        "usageHint": "h3"
+      }
+    }
+  },
+  {
+    "id": "total-lines-text",
+    "component": {
+      "Text": {
+        "text": {"path": "totalLinesLabel"},
+        "usageHint": "caption"
+      }
+    }
+  },
+  {"id": "divider", "component": {"Divider": {}}},
+  {
+    "id": "log-table",
+    "component": {
+      "DataTable": {
+        "columns": {"path": "columns"},
+        "rows": {"path": "rows"},
+        "searchable": true,
+        "pageSize": 25
+      }
+    }
+  },
+  {
+    "id": "query-caption",
+    "component": {
+      "Text": {
+        "text": {"path": "query"},
+        "usageHint": "caption"
+      }
+    }
+  }
+]

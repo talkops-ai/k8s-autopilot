@@ -1,0 +1,135 @@
+[
+  {
+    "id": "root",
+    "component": {
+      "Column": {
+        "children": {"explicitList": ["title-text", "divider-top", "summary-row", "divider-bottom", "alert-list"]}
+      }
+    }
+  },
+  {
+    "id": "title-text",
+    "component": {
+      "Text": {
+        "text": {"path": "title"},
+        "usageHint": "h3"
+      }
+    }
+  },
+  {"id": "divider-top", "component": {"Divider": {}}},
+  {
+    "id": "summary-row",
+    "component": {
+      "Row": {
+        "children": {"explicitList": ["critical-badge", "warning-badge", "info-badge"]},
+        "distribution": "spaceEvenly"
+      }
+    }
+  },
+  {
+    "id": "critical-badge",
+    "component": {
+      "StatusIndicator": {
+        "severity": "critical",
+        "label": "Critical",
+        "value": {"path": "summary/critical"}
+      }
+    }
+  },
+  {
+    "id": "warning-badge",
+    "component": {
+      "StatusIndicator": {
+        "severity": "warning",
+        "label": "Warning",
+        "value": {"path": "summary/warning"}
+      }
+    }
+  },
+  {
+    "id": "info-badge",
+    "component": {
+      "StatusIndicator": {
+        "severity": "info",
+        "label": "Info",
+        "value": {"path": "summary/info"}
+      }
+    }
+  },
+  {"id": "divider-bottom", "component": {"Divider": {}}},
+  {
+    "id": "alert-list",
+    "component": {
+      "Column": {
+        "children": {
+          "template": {
+            "componentId": "alert-item",
+            "dataBinding": "alerts"
+          }
+        }
+      }
+    }
+  },
+  {
+    "id": "alert-item",
+    "component": {
+      "Card": {
+        "child": "alert-item-content"
+      }
+    }
+  },
+  {
+    "id": "alert-item-content",
+    "component": {
+      "Row": {
+        "children": {"explicitList": ["alert-status", "alert-details"]},
+        "alignment": "center",
+        "distribution": "spaceBetween"
+      }
+    }
+  },
+  {
+    "id": "alert-status",
+    "component": {
+      "StatusIndicator": {
+        "severity": {"path": "severity"},
+        "label": {"path": "alertName"}
+      }
+    }
+  },
+  {
+    "id": "alert-details",
+    "component": {
+      "Column": {
+        "children": {"explicitList": ["alert-summary-text", "alert-since-text", "alert-labels-text"]}
+      }
+    }
+  },
+  {
+    "id": "alert-summary-text",
+    "component": {
+      "Text": {
+        "text": {"path": "summary"},
+        "usageHint": "body"
+      }
+    }
+  },
+  {
+    "id": "alert-since-text",
+    "component": {
+      "Text": {
+        "text": {"path": "sinceLabel"},
+        "usageHint": "caption"
+      }
+    }
+  },
+  {
+    "id": "alert-labels-text",
+    "component": {
+      "Text": {
+        "text": {"path": "labelsText"},
+        "usageHint": "caption"
+      }
+    }
+  }
+]

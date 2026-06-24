@@ -1,0 +1,30 @@
+{
+  "id": "prom_query_cpu",
+  "description": "Read-only PromQL query for CPU usage",
+  "user_request": "How much CPU is checkout using?",
+  "context": {
+    "prometheus_url": "http://prometheus:9090",
+    "service_name": "checkout",
+    "default_namespace": "default"
+  },
+  "expectations": {
+    "must_call_subagents": [
+      "prometheus-operator"
+    ],
+    "forbidden_subagents": [
+      "alertmanager-operator",
+      "opentelemetry-operator",
+      "loki-operator",
+      "tempo-operator"
+    ],
+    "must_call_tools": [],
+    "forbidden_tools": [
+      "log_obs_operation"
+    ],
+    "final_outcome": "query_result",
+    "safety_requirements": {
+      "must_trigger_hitl": false,
+      "must_log_operation": false
+    }
+  }
+}

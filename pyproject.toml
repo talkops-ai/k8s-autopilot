@@ -5,21 +5,20 @@ description = "Multi Agents responsible for complete Kubernetes deployment autom
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "a2a-sdk>=0.3.25",
+    "a2a-sdk>=1.1.0",
     "a2ui-agent",
     "colorama>=0.4.6",
-    "deepagents>=0.4.12",
-    "langchain>=1.2.13",
-    "langchain-anthropic>=1.4.0",
-    "langchain-aws>=1.4.1",
-    "langchain-core>=1.2.22",
-    "langchain-google-genai>=4.2.1",
+    "copilotkit>=0.1.0",
+    "deepagents>=0.6.7",
+    "langchain>=1.3.2",
+    "langchain-anthropic>=1.4.4",
+    "langchain-aws>=1.5.0",
+    "langchain-core>=1.4.0",
+    "langchain-google-genai>=4.2.4",
     "langchain-mcp-adapters>=0.2.2",
-    "langchain-openai>=1.1.12",
-    "langgraph>=1.1.3",
-    "langgraph-checkpoint-postgres>=3.0.5",
-    "langgraph-supervisor>=0.0.30",
-    "langgraph-swarm>=0.0.2",
+    "langchain-openai>=1.2.2",
+    "langgraph>=1.2.2",
+    "langgraph-checkpoint-postgres>=3.1.0",
     "loguru>=0.7.3",
     "pydantic>=2.12.5",
     "uvicorn>=0.42.0",
@@ -41,12 +40,18 @@ classifiers = [
 
 [project.optional-dependencies]
 mcp-servers = [
-    "talkops-prometheus-mcp-server>=0.1.0",
-    "talkops-alertmanager-mcp-server>=0.1.0",
-    "talkops-helm-mcp-server>=0.3.0",
-    "talkops-argocd-mcp-server>=0.2.0",
-    "talkops-argo-rollout-mcp-server>=0.1.0",
-    "talkops-traefik-mcp-server>=0.1.0",
+    "talkops-prometheus-mcp-server==0.1.11",
+    "talkops-alertmanager-mcp-server==0.1.2",
+    "talkops-helm-mcp-server==0.4.1",
+    "talkops-argocd-mcp-server==0.3.4",
+    "talkops-argo-rollout-mcp-server==0.1.1",
+    "talkops-traefik-mcp-server==0.1.2",
+    "talkops-opentelemetry-mcp-server==0.1.11",
+    "talkops-loki-mcp-server==0.1.12",
+    "talkops-tempo-mcp-server==0.1.5",
+]
+interpreter = [
+    "langchain-quickjs>=0.1.0",
 ]
 
 [project.urls]
@@ -67,6 +72,7 @@ dev = [
     "ipykernel>=6.29.0",
     "rich>=14.2.0",
     "asyncclick>=8.3.0.7",
+    "agentevals>=0.0.9",
 ]
 
 [build-system]
@@ -112,4 +118,16 @@ markers = [
 ]
 
 [tool.uv.sources]
-a2ui-agent = { path = "a2ui_extenstion" }
+a2ui-agent = { path = "a2ui_extenstion", editable = true }
+# talkops-opentelemetry-mcp-server = { path = "../talkops-mcp/src/opentelemetry-mcp-server", editable = true }
+# talkops-prometheus-mcp-server = { path = "../talkops-mcp/src/prometheus-mcp-server", editable = true }
+# talkops-alertmanager-mcp-server = { path = "../talkops-mcp/src/alertmanager-mcp-server", editable = true }
+# talkops-loki-mcp-server = { path = "../talkops-mcp/src/loki-mcp-server", editable = true }
+# talkops-tempo-mcp-server = { path = "../talkops-mcp/src/tempo-mcp-server", editable = true }
+# talkops-helm-mcp-server = { path = "../talkops-mcp/src/helm-mcp-server", editable = true }
+# talkops-argocd-mcp-server = { path = "../talkops-mcp/src/argocd-mcp-server", editable = true }
+# talkops-argo-rollout-mcp-server = { path = "../talkops-mcp/src/argo-rollout-mcp-server", editable = true }
+# talkops-traefik-mcp-server = { path = "../talkops-mcp/src/traefik-mcp-server", editable = true }
+
+[tool.pyrefly]
+python_interpreter = ".venv/bin/python"

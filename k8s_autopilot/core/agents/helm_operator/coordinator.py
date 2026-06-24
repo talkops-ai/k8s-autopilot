@@ -43,9 +43,13 @@ from k8s_autopilot.utils.user_input_tool import (
     create_chat_continue_tool,
 )
 from k8s_autopilot.utils.operations_context import create_log_operation_tool
+from k8s_autopilot.utils.escalate_tool import create_escalate_to_supervisor_tool
 from k8s_autopilot.core.state.helm_operator_state import HelmOperatorContext
 from k8s_autopilot.core.agents.helm_operator.subagents import get_helm_subagent_specs
 from k8s_autopilot.core.agents.helm_operator.middleware import build_k8s_middleware
+import k8s_autopilot.core.agents.profiles  # noqa: F401 — side-effect registration
+from k8s_autopilot.core.agents.profiles import register_domain_profiles
+register_domain_profiles("helm")
 from k8s_autopilot.utils.memory import (
     K8sBackendMixin,
     get_project_root,
@@ -53,6 +57,7 @@ from k8s_autopilot.utils.memory import (
 )
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.utils.domain_summary import extract_domain_summary
+from k8s_autopilot.core.state.handoff_contracts import extract_handoff_from_text
 
 if TYPE_CHECKING:
     from k8s_autopilot.config.config import Config
@@ -60,142 +65,26 @@ if TYPE_CHECKING:
 logger = AgentLogger("HelmOperatorCoordinator")
 
 
-# ---------------------------------------------------------------------------
-# Coordinator System Prompt
-# ---------------------------------------------------------------------------
 
-HELM_COORDINATOR_PROMPT = """\
-\
-You are the Helm Chart Generator coordinator.
-You orchestrate creating and updating Helm charts via specialized sub-agents.
+from k8s_autopilot.core.agents.helm_operator.prompt_sections import (
+    compose_coordinator_prompt,
+    create_coordinator_registry,
+)
 
-## Sub-Agent Skills
-Each sub-agent has its own specialized skills loaded automatically:
-- helm-generator: generates Helm chart files using skill-defined patterns, values, and templates
-- helm-validator: runs helm lint / helm template in sandbox
-- github-agent: GitHub commit workflow via MCP tools
-- helm-skill-builder: creates new skill directories when no skill exists for an app type
-- helm-updater: fetches and patches existing charts
-- helm-planner: orchestrates requirements analysis → architecture planning
-- helm-operation: performs live Helm operations (install, upgrade, rollback) on clusters
+# The coordinator prompt is composed from modular, testable prompt sections
+# registered in prompt_sections.py.  Each XML block (<identity>, <scope>,
+# <routing_rules>, etc.) is a standalone constant that can be overridden,
+# tested, or measured for token cost independently.
+#
+# To customise the prompt at runtime, use create_coordinator_registry()
+# with overrides:
+#     registry = create_coordinator_registry(scope="<scope>Custom</scope>")
+#     prompt = registry.compose()
+#
+# See prompt_sections.py for the full list of sections and their content.
+HELM_COORDINATOR_PROMPT = compose_coordinator_prompt()
 
-You do NOT need to tell sub-agents to read skill files — they load automatically.
 
-## Tool: request_user_input
-You have a generic HITL tool to pause and ask the user anything.
-Call it whenever you need human input.  Arguments:
-  - question (str, required): the question to ask
-  - title (str): card header
-  - context (str): extra context shown below the question
-  - options (list of dicts): buttons for the user, each with:
-      {"key": "...", "label": "...", "primary": true/false}
-  - input_fields (list of dicts): text fields to collect data, each with:
-      {"key": "...", "label": "...", "default": "...", "required": true/false}
-
-The user's response comes back as a ToolMessage.  Read it and act accordingly.
-
-## HITL Policy
-At session start, read /memory/helm-operator/hitl-policies.md for the complete HITL policy.
-That file defines WHEN you MUST call request_user_input (mandatory gates) and
-WHEN you MAY call it (optional gates, at your discretion).
-The workflow steps below show HOW to call it (which options and fields to use).
-
-## CRITICAL: Query Classification
-Before doing anything, classify the user request:
-
-**CONVERSATIONAL / END-OF-WORKFLOW** (e.g., "thanks", "done", "looks good", "no further questions", greetings, or any message indicating the workflow is finished):
-→ Do NOT call any tools.
-→ Just reply directly with a polite conversational message. This signals to the supervisor that your workflow is complete.
-
-**DIFFERENT DOMAIN / OUT-OF-SCOPE TASKS** (e.g., requests for ArgoCD passwords, Traefik routes, raw K8s pods, scaling, or any non-Helm tasks):
-→ Do NOT call any tools or delegate to any sub-agent.
-→ Immediately return the following string verbatim (fill in the brackets):
-"This is outside my scope. Please use the appropriate operator.
-User Request: [The user's specific request or goal]
-Context: [Briefly summarize what you previously did if relevant]"
-
-## Workflow — New Chart
-1. Check if skills exist for the requested application type:
-   - Use read_file to check /skills/helm-operator/{app}-chart-generator/SKILL.md
-   - If it exists: SKIP helm-planner and helm-skill-builder entirely. Go directly to step 3.
-   - If it does NOT exist:
-     task(helm-planner): "Plan Helm chart for: {request}" 
-2. CHECK the planner's output message:
-   - IF the planner output contains "Skills written for" → SKIP helm-skill-builder entirely.
-   - IF the planner output does NOT mention skills written → task(helm-skill-builder): "Build skill files for: {request}"
-3. task(helm-generator): "Generate Helm chart for {app}."
-4. Call sync_workspace tool to materialise virtual files to disk before validation
-5. task(helm-validator): "Validate chart at {chart-name}"
-6. If INVALID: task(helm-generator): "Fix these errors: {errors}" → call sync_workspace again → repeat step 5
-7. **[Commit Gate]** — (Mandatory). Call `request_user_input` using exactly the schema defined in **AGENTS.md §1 Commit Gate**.
-8. **Handle the response:**
-   - If user chose "push_to_github" and provided repository + branch:
-     → task(github-agent): "Commit {app} chart to {repository} branch {branch}"
-   - If user chose "keep_local" or provided no repository:
-     → Report local file paths to user. Do NOT call github-agent.
-9. **[Next Steps Gate]** — (Mandatory). Call `request_user_input` using exactly the schema defined in **AGENTS.md §2 Next Steps Gate**.
-
-## Workflow — Update Chart
-1. task(helm-planner): "Analyse {chart_path} on {repo}: {what to change}"
-2. task(helm-updater): "Fetch and update {chart_path} on {repo}: {what to change}"
-3. task(helm-validator): "Validate chart {chart_name}"
-4. If INVALID: task(helm-updater): "Fix: {errors}" → repeat step 3
-5. **[Commit Gate]** — (Mandatory). Call `request_user_input` using exactly the schema defined in **AGENTS.md §1 Commit Gate**.
-6. **[Next Steps Gate]** — (Mandatory). Call `request_user_input` using exactly the schema defined in **AGENTS.md §2 Next Steps Gate**.
-
-## Workflow — Helm Operation (Query or State-Modifying)
-1. task(helm-operation): "{user request}"
-   - The sub-agent determines whether this is a read-only query or a state-modifying operation.
-   - For queries: it calls the tool and returns results directly.
-   - For mutations: it follows its internal phased workflow (discovery → planning → execution → verification).
-   - **CRITICAL for FOLLOW-UP operations** (upgrade, modify values, rollback):
-     You MUST include ALL of the following in the task description:
-     - The exact chart source (e.g., "oci://registry/chart" or "bitnami/nginx")
-     - Release name and namespace
-     - Previous values that were set
-     - Example: task(helm-operation): "Upgrade release 'web-release' in namespace 'opstree'
-       (chart source: oci://ghcr.io/stakater/charts/web, version: 0.1.0,
-       current values: replicaCount=2, service.type=LoadBalancer).
-       Change: set replicaCount=1. Use --reuse-values."
-     - If you do not remember these details, read_file /memory/helm-operator/operations-log.md
-2. **Present the result to the user:** Do NOT blindly dump raw console output or unformatted JSON blocks to the user. Instead, synthesize the sub-agent's return data into a beautifully structured, human-readable Markdown summary. Use Markdown tables for lists, bold text for key-values, and clean bullet points for notes—presenting the information exactly like a high-quality AI assistant.
-3. **Log the operation**: For ALL state-modifying operations (install, upgrade, rollback, uninstall),
-   call `log_helm_operation` with action, release_name, namespace, chart_source, values, version.
-   This is MANDATORY — it preserves context for follow-up operations after conversation summarization.
-4. **[Next Steps Gate]** — (Mandatory for operations). You MUST pass this beautifully formatted summary as the `message` argument into the `request_chat_continue` tool. Include a short follow-up like "What would you like to do next?" at the end of the text. Do NOT rely on normal chat output, as only the tool's message is displayed to the user during operations. Do NOT call this tool for conversational closures (e.g., "thanks", "I am good here", or when the user indicates they are finished).
-
-## CRITICAL: Step Budget
-You have a limited number of steps (~150 total). Be efficient:
-- The typical flow is: helm-planner → helm-generator → helm-validator → request_user_input (3 sub-agent calls + 1–2 tool calls).
-- If helm-planner writes skills, helm-skill-builder is NEVER needed — still 3 sub-agent calls.
-- NEVER call more than 5 sub-agents for a single chart request (including github-agent if approved).
-- If a sub-agent reports FAILED, do NOT retry the same sub-agent more than once.
-
-## Memory Rules
-- AGENTS.md is auto-loaded — do NOT read_file it (it is already in your prompt).
-- For destructive operations: read_file /memory/helm-operator/hitl-policies.md for edge-case rules.
-- After successful chart generation or update: update /memory/helm-operator/chart-index.md
-  with the chart name, version, files generated, and timestamp.
-- The operations journal at /memory/helm-operator/operations-log.md is auto-injected
-  into your context before each model call. Use it for follow-up operations.
-
-## Workspace Sync
-Generated chart files are written to a virtual filesystem under /workspace/.
-The coordinator automatically syncs them to the real disk for validation.
-Do NOT ask helm-generator to re-write files just because helm-validator says
-"directory not found" — the sync happens automatically.
-
-## Rules — Never Violate
-- NEVER write chart files yourself — always delegate to helm-generator or helm-updater
-- NEVER run helm commands yourself — always delegate to helm-validator or helm-operation
-- NEVER interact with GitHub yourself — always delegate to github-agent
-- NEVER commit to GitHub without the user providing repository and branch
-- ALWAYS follow the HITL policies in /memory/helm-operator/hitl-policies.md
-- ALWAYS use the call patterns in /memory/helm-operator/AGENTS.md for request_user_input
-- ALWAYS call log_helm_operation after state-modifying helm operations
-- ALWAYS include full context (chart source, values, release) when delegating follow-up helm operations
-- The DEFAULT outcome for the commit gate is always LOCAL — do NOT assume GitHub push
-"""
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +126,16 @@ class HelmOperatorCoordinator(BaseDeepAgent):
     @property
     def system_prompt(self) -> str:
         return HELM_COORDINATOR_PROMPT
+
+    def get_task_categories(self) -> str:
+        """Helm Operator domain-specific task categories."""
+        return """\
+- **Discovery**: Chart metadata lookup, release listing, version discovery
+- **Configuration**: Requirements analysis, architecture planning, skill building
+- **Validation**: helm lint, helm template, schema validation, dry-run
+- **Live Apply**: Helm install, upgrade, rollback, uninstall
+- **Health Check**: Release status verification, pod health, rollout readiness
+- **Summary**: Generate walkthrough narrative from execution results"""
 
     @property
     def context_schema(self) -> type:
@@ -453,11 +352,14 @@ class HelmOperatorCoordinator(BaseDeepAgent):
 
         # Build the operations journal tool for context persistence
         log_operation = create_log_operation_tool()
-        
-        return [sync_workspace, user_input, chat_continue, log_operation]
+
+        # Build the escalation tool for cross-domain re-routing
+        escalate = create_escalate_to_supervisor_tool()
+
+        return [sync_workspace, user_input, chat_continue, log_operation, escalate]
 
     def get_skill_paths(self) -> List[str]:
-        return ["/skills/helm-operator"]
+        return ["/skills/helm-operator/helm-operation"]
 
     def get_memory_paths(self) -> List[str]:
         return [
@@ -475,9 +377,9 @@ class HelmOperatorCoordinator(BaseDeepAgent):
 
     # ── Abstract implementations — Backend & Storage ─────────────────────
 
-    def make_backend(self, runtime: Any) -> Any:
+    def make_backend(self) -> Any:
         """Use Helm-specific backend with LocalShellBackend for CLI."""
-        return K8sBackendMixin.make_backend(runtime)
+        return K8sBackendMixin.make_backend()
 
     def build_store(self) -> Any:
         """InMemoryStore for cross-thread long-term memory (dev mode).
@@ -545,7 +447,11 @@ class HelmOperatorCoordinator(BaseDeepAgent):
         checkpointer = self.build_checkpointer()
         tools = await self.get_tools()
         subagents = await self.get_subagent_specs()
-        middleware = build_k8s_middleware(config=self._config)
+        middleware = build_k8s_middleware(
+            config=self._config,
+            model=self.get_model(),
+            backend=self.make_backend(),
+        )
 
         self._agent = create_deep_agent(
             model=self.get_model(),
@@ -555,7 +461,7 @@ class HelmOperatorCoordinator(BaseDeepAgent):
             subagents=subagents,
             skills=self.get_skill_paths(),
             memory=self.get_memory_paths(),
-            backend=self.make_backend,
+            backend=self.make_backend(),
             store=self._store,
             checkpointer=checkpointer,
             interrupt_on=self.get_interrupt_config(),
@@ -714,9 +620,13 @@ class HelmOperatorCoordinator(BaseDeepAgent):
             state = agent_state.model_dump()
 
         # ── Sync virtual /workspace/ files to real disk ───────────────────
+        # Only sync when there are actual /workspace/ files (e.g. from chart
+        # generation).  Rollback/list/status operations only have /skills/ and
+        # /memories/ in state — syncing those would produce a spurious WARNING.
         files: Dict[str, Any] = state.get("files", {})
+        workspace_files = {k: v for k, v in files.items() if k.startswith("/workspace/")}
         synced: Dict[str, Any] = {}
-        if files:
+        if workspace_files:
             try:
                 synced = sync_workspace_to_disk(files)
             except Exception as e:
@@ -749,7 +659,7 @@ class HelmOperatorCoordinator(BaseDeepAgent):
                 final_message=final_message,
             ),
         }
-
+        
         logger.info(
             "output_transform: deep agent → supervisor state",
             extra={

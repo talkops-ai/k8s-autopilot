@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "catalogId": "https://talkops.ai/a2ui/observability_catalog.json",
+  "title": "TalkOps Observability Catalog",
+  "description": "Custom A2UI components for Kubernetes observability dashboards. Extends the v0.9 basic catalog with domain-specific visualizations for metrics, logs, traces, and alerts.",
+  "components": {
+    "MetricChart": {
+      "type": "object",
+      "description": "Time-series chart for Prometheus and OpenTelemetry metrics. Supports line, bar, and area chart types with multiple series. Data should be LTTB-downsampled to ≤500 points per series before binding.",
+      "properties": {
+        "component": {
+          "const": "MetricChart"
+        },
+        "chartType": {
+          "description": "The chart visualization type.",
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["line", "bar", "area"]
+            },
+            {
+              "type": "object",
+              "properties": { "path": { "type": "string" } },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "title": {
+          "description": "Chart title displayed above the visualization.",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "properties": { "path": { "type": "string" } },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "xAxisLabel": {
+          "description": "Label for the X axis. Defaults to 'Time'.",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "properties": { "path": { "type": "string" } },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "yAxisLabel": {
+          "description": "Label for the Y axis. Defaults to 'Value'.",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "properties": { "path": { "type": "string" } },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "series": {
+          "description": "Array of data series. Each series has name, data (array of {x, y} points), and optional color. Bind via path to data model.",
+          "type": "object",
+          "properties": { "path": { "type": "string" } },
+          "required": ["path"],
+          "additionalProperties": false
+        },
+        "timeRange": {
+          "description": "Time range object with start and end ISO timestamps. Bind via path to data model.",
+          "type": "object",
+          "properties": { "path": { "type": "string" } },
+          "required": ["path"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["component", "series"]
+    },
+    "DataTable": {
+      "type": "object",
+      "description": "Searchable, sortable, paginated data table for log entries, OTel collector listings, or any tabular observability data. For logs, rows should be SLCT-clustered into templates with counts.",
+      "properties": {
+        "component": {
+          "const": "DataTable"
+        },
+        "title": {
+          "description": "Table title.",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "properties": { "path": { "type": "string" } },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "columns": {
+          "description": "Column definitions array. Each column has key, label, and optional sortable boolean. Bind via path.",
+          "type": "object",
+          "properties": { "path": { "type": "string" } },
+          "required": ["path"],
+          "additionalProperties": false
+        },
+        "rows": {
+          "description": "Row data array. Each row is an object with keys matching column definitions. Bind via path.",
+          "type": "object",
+          "properties": { "path": { "type": "string" } },
+          "required": ["path"],
+          "additionalProperties": false
+        },
+        "searchable": {
+          "description": "Whether to show a search/filter input. Defaults to true.",
+          "type": "boolean",
+          "default": true
+        },
+        "pageSize": {
+          "description": "Number of rows per page. Defaults to 25.",
+          "type": "number",
+          "default": 25
+        }
+      },
+      "required": ["component", "columns", "rows"]
+    },
+    "TraceTimeline": {
+      "type": "object",
+      "description": "Gantt-style waterfall visualization for distributed trace spans from Tempo. Spans should be pruned to ≤100 entries (keeping root, error, and slow spans).",
+      "properties": {
+        "component": {
+          "const": "TraceTimeline"
+        },
+        "title": {
+          "description": "Timeline title.",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "properties": { "path": { "type": "string" } },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "spans": {
+          "description": "Pruned span array. Each span has spanId, parentSpanId, operationName, serviceName, startTime, duration, status. Bind via path.",
+          "type": "object",
+          "properties": { "path": { "type": "string" } },
+          "required": ["path"],
+          "additionalProperties": false
+        },
+        "focusSpanId": {
+          "description": "Optional span ID to highlight/focus in the timeline.",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "properties": { "path": { "type": "string" } },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "showMiniMap": {
+          "description": "Whether to show a minimap for navigating large traces. Defaults to true.",
+          "type": "boolean",
+          "default": true
+        },
+        "serviceName": {
+          "description": "Primary service name for context display.",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "properties": { "path": { "type": "string" } },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": ["component", "spans"]
+    },
+    "StatusIndicator": {
+      "type": "object",
+      "description": "Severity-colored badge for alert status, health checks, and OTel collector status. Renders as a colored dot or badge with label and optional value text.",
+      "properties": {
+        "component": {
+          "const": "StatusIndicator"
+        },
+        "severity": {
+          "description": "Severity level determining the indicator color. critical=red, warning=amber, info=blue, success=green, none=grey.",
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["critical", "warning", "info", "success", "none"]
+            },
+            {
+              "type": "object",
+              "properties": { "path": { "type": "string" } },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "label": {
+          "description": "Badge label text (e.g. 'Critical', 'CPU Usage', 'Healthy').",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "properties": { "path": { "type": "string" } },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "value": {
+          "description": "Optional value text displayed alongside the label (e.g. '3 firing', '99.9%').",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "properties": { "path": { "type": "string" } },
+              "required": ["path"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": ["component", "severity", "label"]
+    }
+  }
+}

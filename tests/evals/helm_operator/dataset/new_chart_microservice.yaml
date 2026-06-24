@@ -1,0 +1,16 @@
+id: new_chart_microservice
+description: "User requests a new Helm chart for a generic microservice"
+user_request: >
+  Create a new helm chart for a Python backend microservice called 'api-server'.
+  It should expose port 8080 and use a generic deployment structure.
+context:
+  environment: development
+  session_id: eval-microservice-001
+expectations:
+  must_call_subagents:
+    - helm-generator
+    - helm-validator
+  must_call_tools:
+    - sync_workspace
+    - request_user_input
+  final_outcome: chart_generated_awaiting_commit

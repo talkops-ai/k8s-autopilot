@@ -1,0 +1,12 @@
+id: helm_rollback
+description: "User requests to rollback a release"
+user_request: >
+  Rollback my-api release to revision 1.
+context:
+  environment: production
+  session_id: eval-rollback-001
+expectations:
+  must_call_subagents:
+    - helm-operation
+  must_call_tools:
+    - log_helm_operation

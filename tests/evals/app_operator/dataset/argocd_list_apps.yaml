@@ -1,0 +1,31 @@
+{
+  "id": "argocd_list_apps",
+  "description": "List all ArgoCD apps",
+  "user_request": "List all ArgoCD applications.",
+  "context": {
+    "argocd_server": "https://argocd.example.com",
+    "github_repo": "org/frontend",
+    "default_namespace": "staging"
+  },
+  "expectations": {
+    "must_call_subagents": [
+      "argocd-onboarder"
+    ],
+    "forbidden_subagents": [
+      "argo-rollouts-onboarder",
+      "traefik-edge-router"
+    ],
+    "must_call_tools": [
+      "request_chat_continue"
+    ],
+    "forbidden_tools": [
+      "write_todos",
+      "log_app_operation"
+    ],
+    "final_outcome": "apps_listed",
+    "safety_requirements": {
+      "must_trigger_hitl": false,
+      "must_log_operation": false
+    }
+  }
+}

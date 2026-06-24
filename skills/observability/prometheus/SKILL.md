@@ -25,7 +25,7 @@ compatibility: >-
 ## When to Use
 
 Load this skill ONLY for **state-modifying** Prometheus operations: installing exporters,
-applying ServiceMonitors, applying Probes, upserting rule groups, managing file_sd targets, or configuring
+applying ServiceMonitors, deleting stale ServiceMonitors, applying Probes, upserting rule groups, managing file_sd targets, or configuring
 remote-write.
 
 Read-only queries (PromQL queries, metric exploration, backend health, cardinality checks)
@@ -76,6 +76,9 @@ patterns, read [references/workflows.md](references/workflows.md).
 | User Intent | Workflow | Key Entry Point |
 |---|---|---|
 | Onboard K8s app | K8s App Onboarding | `prom_recommend_instrumentation` |
+| Wire K8s service (same namespace) | K8s App Onboarding step 5b | `prom_apply_servicemonitor(namespace=..., service_name=...)` |
+| Wire K8s service (cross-namespace) | K8s App Onboarding step 5c | `prom_apply_servicemonitor(namespace="monitoring", service_name=..., target_namespace=...)` |
+| Clean up broken ServiceMonitor | Retry / idempotency | `prom_delete_servicemonitor(monitor_name=..., namespace=...)` |
 | Deploy exporter | Exporter Onboarding | `prom_recommend_exporter` → `prom_install_exporter` |
 | Onboard VM target | VM/Legacy Onboarding | `prom_test_endpoint` → `prom_manage_file_sd` |
 | Query metrics | PromQL Querying | `prom_validate_promql` → `prom_query_instant` |
@@ -104,6 +107,18 @@ patterns, read [references/workflows.md](references/workflows.md).
 
 7. **Missing Inputs Protection.** Never hallucinate metric names or backend IDs.
 
+## Synthetic Probe Workflow
+
+When a user requests endpoint monitoring, uptime monitoring, or synthetic probes:
+
+1. **Deploy the Prober**: Install blackbox_exporter in namespace 'monitoring' using
+   `prom_install_exporter`.
+2. **Apply the Probe**: Apply a Probe targeting the URL using `prom_apply_probe`,
+   with `prober_url='blackbox-exporter:9115'` and `module='http_2xx'`.
+3. **Verify**: Query `probe_success` metric to confirm the endpoint is healthy.
+
+Do NOT use kubectl fallbacks for any step in this workflow.
+
 ## Gotchas
 
 For common failure patterns, edge cases, and diagnostic fixes, read
@@ -123,3 +138,62 @@ Always state derived defaults in the plan preview so the user can override.
 - Lead with query results or operation status.
 - Use tables for multi-metric or multi-target results.
 - For errors: provide root cause + immediate fixes + preventive measures.
+
+## State-Modifying Workflow Details
+
+Idempotency — Check Before Creating:
+| Before creating... | First check with... | If exists... |
+|---|---|---|
+| Exporter | prom://topology/services or prom_verify_exporter | Skip install or update |
+| ServiceMonitor | prom://topology/services | Skip — already wired |
+| Stale/broken SM | prom://topology/services (if target missing) | Delete with prom_delete_servicemonitor before retrying |
+| Rule Group | prom://rules/groups | Use prom_upsert_rule_group to update |
+| File SD target | prom_query_instant with up{job=...} | Skip — already scraping |
+
+Phase 1: Discovery
+1. Task description has context? → proceed.
+2. Else check /memories/observability/operations-log.md.
+3. Unknown + list request → enumerate via resource/tool, return.
+4. Unknown + targeted op → return "INCOMPLETE: missing [params]".
+5. NEVER guess names. "Not found" = STOP → return INCOMPLETE.
+
+Phase 2: Planning — call request_human_input
+| Operation | question | context fields |
+|---|---|---|
+| Exporter Install | "Install exporter. Approve?" | 📦 Type, Namespace, K8s Resources |
+| Rule Create/Update | "Rule group changes. Approve?" | 📋 Group, Backend, Rule count, Storage mode |
+| ServiceMonitor (same-ns) | "Wire service to Prometheus. Approve?" | 📡 Service, Namespace, Port, Interval |
+| ServiceMonitor (cross-ns) | "Wire service to Prometheus (cross-namespace). Approve?" | 📡 Service, service namespace, SM namespace, Port, Interval |
+| ServiceMonitor delete | "Delete ServiceMonitor. Approve?" | 🗑 SM name, Namespace, Reason |
+| File SD Add/Remove | "Modify targets. Approve?" | 📁 Targets, File path, Action |
+
+ServiceMonitor Pre-flight Checklist:
+- Confirm EXACT Kubernetes Service name (not app name, not Helm release name).
+  Use prom://topology/services or ask user: `kubectl get svc -n <namespace>`.
+- Confirm which namespace holds the Service. If different from monitoring namespace → use target_namespace.
+- Correct call for cross-namespace: prom_apply_servicemonitor(service_name=..., namespace="monitoring", target_namespace=<ns>)
+- If retrying: call prom_delete_servicemonitor first to remove the old broken SM.
+
+WAIT for approval before proceeding.
+
+Phase 3: Execution
+Tools gated by HumanInTheLoopMiddleware. Execute with exact approved parameters.
+
+Phase 4: Verification & Failure Diagnosis (MANDATORY)
+Never declare success based on tool stdout. Always run the verification query and return
+a structured health status (✅ Verified, ⚠️ Deployed but Unhealthy, or ❌ Failed).
+
+| After... | Verify with... | If Failed |
+|---|---|---|
+| Exporter install | prom_verify_exporter → confirm up{} series | 1. Check prom://topology/failed_targets. 2. Run prom_test_endpoint. 3. Escalate. |
+| ServiceMonitor apply | prom_query_instant(query="up{job='...'}") | 1. Check prom://topology/failed_targets. 2. Run prom_test_endpoint. 3. If no up series at all: verify correct service name and namespace (cross-namespace = target_namespace). |
+| ServiceMonitor delete | prom://topology/services → confirm job gone | If job still present: confirm monitor_name and namespace were correct. |
+| Rule upsert | prom://rules/groups → confirm group appears | Check namespace and ruleSelector in prom://config/runtime. |
+| File SD add | prom_query_instant(query="up{job='...'}") | Same as exporter install. |
+
+Out-of-Scope Escalation:
+Exhaust all MCP tools first. If root cause remains hidden after MCP diagnostics (e.g., up=0
+but prom_test_endpoint is unreachable), return:
+"I have exhausted my MCP diagnostic tools. Further diagnosis requires cluster access.
+Please run kubectl logs <pod-name> -n <namespace> and kubectl describe pod <pod-name> -n <namespace> and share the output."
+

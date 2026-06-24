@@ -26,7 +26,8 @@ Usage::
 Reference: aws-orchestrator-agent tf_operator/middleware.py
 """
 import os
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+import re
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from k8s_autopilot.utils.logger import AgentLogger
 
@@ -34,6 +35,178 @@ if TYPE_CHECKING:
     from k8s_autopilot.config.config import Config
 
 logger = AgentLogger("K8sMiddleware")
+
+
+# ---------------------------------------------------------------------------
+# Layer 1: SkillExistsShortcut — deterministic planner bypass
+# ---------------------------------------------------------------------------
+#
+# When skill files (e.g. /skills/helm-operator/nginx-chart-generator/SKILL.md)
+# already exist in state["files"], the helm-planner and helm-skill-builder
+# sub-agents are redundant.  This middleware:
+#
+#   1. REMOVES helm-planner & helm-skill-builder from the model's tool list
+#      → the LLM physically cannot call them (deterministic guarantee)
+#   2. INJECTS a SystemMessage directing the coordinator to skip to generator
+#      → reinforces the routing decision (belt & suspenders)
+#
+# This fixes a production bug where the coordinator prompt's skill-exists
+# check was unreliably followed by the model (it would call helm-planner
+# even when skills were pre-loaded in state).
+#
+# Pattern: LangChain docs — Filtering pre-registered tools
+#          https://docs.langchain.com/oss/python/langchain/tools#filtering-pre-registered-tools
+# Pattern: LangChain docs — Dynamic prompt via @wrap_model_call
+#          https://docs.langchain.com/oss/python/langchain/middleware/custom#dynamic-prompt
+# ---------------------------------------------------------------------------
+
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    AgentState,
+    ModelRequest,
+    ModelResponse,
+)
+from langchain_core.messages import SystemMessage
+
+# Matches app-specific chart generator skill paths
+_SKILL_PATTERN = re.compile(
+    r"^/skills/helm-operator/[\w-]+-chart-generator/SKILL\.md$"
+)
+
+# Sub-agents to hide when skills already exist
+_SKIP_WHEN_SKILLS_EXIST = frozenset({"helm-planner", "helm-skill-builder"})
+
+
+def _apply_skill_shortcut(
+    state: Any,
+    tools: List[Any],
+    messages: List[Any],
+) -> tuple:
+    """Core logic for skill-exists shortcut — extracted for testability.
+
+    Args:
+        state: Agent state dict (must contain ``files`` key).
+        tools: Current tool list.
+        messages: Current message list.
+
+    Returns:
+        Tuple of ``(filtered_tools, updated_messages, was_activated)``.
+        When no matching skills exist, returns the inputs unchanged with
+        ``was_activated=False``.
+    """
+    files = state.get("files", {}) if isinstance(state, dict) else {}
+
+    # Find matching skill files
+    matching_skills = [f for f in files.keys() if _SKILL_PATTERN.match(f)]
+
+    if not matching_skills:
+        return tools, messages, False
+
+    # ── 1. Remove planner/skill-builder from available tools ───────────
+    filtered_tools = [
+        t for t in tools
+        if getattr(t, "name", "") not in _SKIP_WHEN_SKILLS_EXIST
+    ]
+
+    # ── 2. Inject directive system message (transient) ─────────────────
+    skill_names = ", ".join(matching_skills)
+    skip_directive = SystemMessage(
+        content=(
+            f"[SKILL-EXISTS SHORTCUT] Skills already exist for this "
+            f"application type: {skill_names}. "
+            f"You MUST skip helm-planner and helm-skill-builder entirely. "
+            f"Go directly to task(helm-generator). "
+            f"Do NOT call helm-planner under any circumstances."
+        )
+    )
+    updated_messages = list(messages) + [skip_directive]
+
+    logger.info(
+        "SkillExistsMiddleware: planner/skill-builder removed, "
+        "directive injected",
+        extra={
+            "matching_skills": matching_skills,
+            "tools_removed": list(_SKIP_WHEN_SKILLS_EXIST),
+        },
+    )
+
+    return filtered_tools, updated_messages, True
+
+
+class SkillExistsMiddleware(AgentMiddleware):
+    """Skip helm-planner when skills already exist for the requested app type.
+
+    Reads ``request.state["files"]`` to check for existing skill directories
+    matching the ``/skills/helm-operator/{app}-chart-generator/SKILL.md``
+    pattern.  When found:
+
+      1. **Removes** ``helm-planner`` and ``helm-skill-builder`` from the
+         model's available tools so the LLM physically cannot call them.
+      2. **Injects** a transient ``SystemMessage`` directing the coordinator
+         to go directly to ``helm-generator``.
+
+    When no matching skills exist the request passes through unmodified.
+
+    The check is stateless — it inspects ``state["files"]`` on every model
+    call, so follow-up turns in the same thread are handled correctly (if a
+    new chart request arrives for a different app without skills, the planner
+    is still available).
+
+    Implements both ``wrap_model_call`` (sync) and ``awrap_model_call`` (async)
+    to support both ``invoke()`` and ``ainvoke()`` execution paths.
+
+    Reference
+    ---------
+    - LangChain: Filtering pre-registered tools
+      https://docs.langchain.com/oss/python/langchain/tools#filtering-pre-registered-tools
+    - LangChain: Dynamic prompt via wrap_model_call
+      https://docs.langchain.com/oss/python/langchain/middleware/custom#dynamic-prompt
+    - Project: OperationContextMiddleware (same file) for the before_model pattern
+    """
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        """Sync wrap_model_call — filters tools and injects directive."""
+        filtered_tools, updated_messages, activated = _apply_skill_shortcut(
+            state=request.state,
+            tools=request.tools,
+            messages=request.messages,
+        )
+
+        if not activated:
+            return handler(request)
+
+        return handler(request.override(
+            tools=filtered_tools,
+            messages=updated_messages,
+        ))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable,
+    ) -> ModelResponse:
+        """Async wrap_model_call — same logic, async handler."""
+        filtered_tools, updated_messages, activated = _apply_skill_shortcut(
+            state=request.state,
+            tools=request.tools,
+            messages=request.messages,
+        )
+
+        if not activated:
+            return await handler(request)
+
+        return await handler(request.override(
+            tools=filtered_tools,
+            messages=updated_messages,
+        ))
+
+
+# Module-level convenience instance for use in build_k8s_middleware()
+skill_exists_shortcut = SkillExistsMiddleware()
 
 
 # ---------------------------------------------------------------------------
@@ -55,9 +228,6 @@ logger = AgentLogger("K8sMiddleware")
 # Reference: LangChain docs — Custom Middleware → before_model hook
 #            https://docs.langchain.com/oss/python/langchain/middleware/custom
 # ---------------------------------------------------------------------------
-
-from langchain.agents.middleware import AgentMiddleware, AgentState
-from langchain_core.messages import SystemMessage
 
 
 class OperationContextMiddleware(AgentMiddleware):
@@ -125,9 +295,6 @@ _WRITE_FILE_RUN_LIMIT = int(os.getenv("K8S_WRITE_FILE_RUN_LIMIT", "20"))
 
 # Global tool call limit per single invocation
 _GLOBAL_TOOL_RUN_LIMIT = int(os.getenv("K8S_GLOBAL_TOOL_RUN_LIMIT", "60"))
-
-# Model call limit per invocation
-_MODEL_CALL_RUN_LIMIT = int(os.getenv("K8S_MODEL_CALL_RUN_LIMIT", "40"))
 
 # Whether to enable tool retry middleware (disabled by default as it swallows GraphInterrupt)
 _ENABLE_TOOL_RETRY = os.getenv("K8S_ENABLE_TOOL_RETRY", "false").lower() == "true"
@@ -231,7 +398,7 @@ def build_helm_hitl_middleware() -> HumanInTheLoopMiddleware:
 
     Returns:
         Configured ``HumanInTheLoopMiddleware`` instance ready for
-        ``create_agent(middleware=[...])`` or ``_build_mcp_subagent()``.
+        ``create_agent(middleware=[...])`` or ``build_mcp_subagent()``.
     """
     logger.info("Building HumanInTheLoopMiddleware for Helm execution tools")
 
@@ -273,6 +440,8 @@ def build_k8s_middleware(
     model_call_limit: Optional[int] = None,
     enable_tool_retry: Optional[bool] = None,
     extra_middleware: Optional[List[Any]] = None,
+    model: Optional[str] = None,
+    backend: Optional[Any] = None,
 ) -> List[Any]:
     """Assemble the middleware stack for the HelmOperatorCoordinator deep agent.
 
@@ -283,7 +452,6 @@ def build_k8s_middleware(
         config: Application config (reserved for future per-agent overrides).
         write_file_limit: Max ``write_file`` calls per run.
         global_tool_limit: Max total tool calls per run (all tools).
-        model_call_limit: Max LLM calls per run.
         enable_tool_retry: Whether to auto-retry transient tool failures.
         extra_middleware: Additional middleware instances to append.
 
@@ -293,8 +461,8 @@ def build_k8s_middleware(
     """
     from langchain.agents.middleware import (
         ToolCallLimitMiddleware,
-        ModelCallLimitMiddleware,
         ToolRetryMiddleware,
+        ModelCallLimitMiddleware,
     )
 
     middleware: List[Any] = []
@@ -304,6 +472,24 @@ def build_k8s_middleware(
     # even after the built-in summarization compresses conversation history.
     middleware.append(OperationContextMiddleware())
     logger.info("Middleware: OperationContextMiddleware (before_model)")
+
+    # ── 0a. Plan lock enforcement (survives summarization) ────────────────
+    # Re-injects the user-approved plan (from state["files"]["/plan/active-plan.md"])
+    # as a SystemMessage before every model call.  This is the LangChain-idiomatic
+    # approach to surviving summarization: data stored in state["files"] is persistent
+    # (filesystem-backed), and the before_model hook reconstructs it each turn.
+    # Pattern: Terraform plan→apply constraint, OPA admission control.
+    # Ref: https://docs.langchain.com/oss/python/langchain/middleware/custom#dynamic-prompt
+    from k8s_autopilot.core.agents.app_operator.middleware import PlanLockMiddleware
+    middleware.append(PlanLockMiddleware())
+    logger.info("Middleware: PlanLockMiddleware (before_model)")
+
+    # ── 0b. Skill-exists shortcut (deterministic planner bypass) ──────────
+    # Uses @wrap_model_call to remove helm-planner from the tool list when
+    # skill files already exist in state["files"].
+    # Ref: https://docs.langchain.com/oss/python/langchain/tools#filtering-pre-registered-tools
+    middleware.append(skill_exists_shortcut)
+    logger.info("Middleware: skill_exists_shortcut (wrap_model_call)")
 
     # ── 1. Per-tool write_file guard ──────────────────────────────────────
     wf_limit = write_file_limit or _WRITE_FILE_RUN_LIMIT
@@ -332,17 +518,22 @@ def build_k8s_middleware(
         extra={"run_limit": gt_limit},
     )
 
-    # ── 3. Model call guard ───────────────────────────────────────────────
-    mc_limit = model_call_limit or _MODEL_CALL_RUN_LIMIT
+    # ── 3. Model call guard — RE-ENABLED with generous limit ──────────────
+    # Previously removed because a too-low limit + exit_behavior="end"
+    # terminated the agent before it could produce a final summary.
+    # With run_limit=40 (configurable), there is ample room for normal
+    # multi-step Helm operations while still catching runaway loops.
+    _K8S_MODEL_CALL_LIMIT = int(os.getenv("K8S_MODEL_CALL_LIMIT", "40"))
+    _mc_limit = model_call_limit or _K8S_MODEL_CALL_LIMIT
     middleware.append(
         ModelCallLimitMiddleware(
-            run_limit=mc_limit,
-            exit_behavior="end",  # Graceful stop instead of exception
+            run_limit=_mc_limit,
+            exit_behavior="end",
         )
     )
     logger.info(
         "Middleware: model call limit",
-        extra={"run_limit": mc_limit},
+        extra={"run_limit": _mc_limit},
     )
 
     # ── 4. Tool retry (transient failures) ────────────────────────────────
@@ -359,7 +550,19 @@ def build_k8s_middleware(
         )
         logger.info("Middleware: tool retry enabled")
 
-    # ── 5. Extra (caller-provided) ────────────────────────────────────────
+    # 5. Shared coordinator middleware (CodeInterpreter + Summarization)
+    from k8s_autopilot.core.agents.shared_middleware import (
+        build_shared_coordinator_middleware,
+    )
+    middleware.extend(
+        build_shared_coordinator_middleware(
+            model=model,
+            backend=backend,
+            config=config,
+        )
+    )
+
+    # 6. Extra (caller-provided)
     if extra_middleware:
         middleware.extend(extra_middleware)
         logger.info(

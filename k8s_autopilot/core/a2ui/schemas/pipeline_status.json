@@ -1,0 +1,47 @@
+[
+  {
+    "id": "root",
+    "component": {
+      "Column": {
+        "children": {"explicitList": ["header-row", "divider", "status-text"]}
+      }
+    }
+  },
+  {
+    "id": "header-row",
+    "component": {
+      "Row": {
+        "children": {"explicitList": ["pipeline-icon", "pipeline-name"]},
+        "alignment": "center"
+      }
+    }
+  },
+  {
+    "id": "pipeline-icon",
+    "component": {
+      "Text": {
+        "text": {"literalString": "🔄"},
+        "usageHint": "h3"
+      }
+    }
+  },
+  {
+    "id": "pipeline-name",
+    "component": {
+      "Text": {
+        "text": {"path": "name"},
+        "usageHint": "h3"
+      }
+    }
+  },
+  {"id": "divider", "component": {"Divider": {}}},
+  {
+    "id": "status-text",
+    "component": {
+      "Text": {
+        "text": {"path": "status"},
+        "usageHint": "body"
+      }
+    }
+  }
+]

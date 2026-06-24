@@ -28,11 +28,12 @@ Reference: LangChain v1 SummarizationMiddleware, context-engineering docs,
            helm_operator/middleware.py OperationContextMiddleware pattern.
 """
 
+import base64
 import os
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
 
 from k8s_autopilot.utils.logger import AgentLogger
 
@@ -176,6 +177,167 @@ class SupervisorContextMiddleware(AgentMiddleware):
 
 
 # ---------------------------------------------------------------------------
+# Layer 0: ThoughtSignatureFixMiddleware — Gemini checkpoint resume fix
+# ---------------------------------------------------------------------------
+
+
+_FUNCTION_CALL_THOUGHT_SIGNATURES_MAP_KEY = (
+    "__gemini_function_call_thought_signatures__"
+)
+
+# The Gemini API accepts this special bypass value to skip strict
+# thought-signature validation on replayed tool-call history.
+_BYPASS_SIGNATURE = base64.b64encode(
+    b"skip_thought_signature_validator"
+).decode("utf-8")
+
+
+class ThoughtSignatureFixMiddleware(AgentMiddleware):
+    """Fix stale Gemini thought signatures on checkpoint resume.
+
+    Gemini 3.x models embed ``thought_signature`` bytes in function-call
+    parts.  These signatures are session-specific: when a LangGraph
+    checkpoint replays the message history on resume, the stale signatures
+    cause Gemini to reject with::
+
+        400 Bad Request — Thought signature is not valid.
+
+    This middleware patches **AIMessages that have tool_calls** by
+    injecting the ``skip_thought_signature_validator`` bypass string into
+    ``additional_kwargs``.  This tells the Gemini adapter to skip strict
+    signature validation during history replay.
+
+    **Provider-agnostic:** The middleware only patches messages whose
+    ``response_metadata["model_provider"]`` is ``"google_genai"`` (or
+    when tool calls are present and a Gemini model was used).  For
+    other providers (OpenAI, Anthropic, etc.) it is a no-op.
+
+    MUST be the **first** middleware so it runs before the model sees
+    the messages.
+    """
+
+    def before_model(
+        self, state: AgentState, runtime: Any,
+    ) -> dict[str, Any] | None:
+        messages = state.get("messages", [])
+        if not messages:
+            return None
+
+        patched: list[Any] = []
+        changed = False
+
+        for msg in messages:
+            if not isinstance(msg, AIMessage):
+                patched.append(msg)
+                continue
+
+            # Only patch AIMessages with tool calls
+            if not msg.tool_calls:
+                patched.append(msg)
+                continue
+
+            # Provider guard: only applies to Google GenAI models
+            provider = (msg.response_metadata or {}).get("model_provider", "")
+            model_name = (msg.response_metadata or {}).get("model_name", "")
+            is_google = (
+                provider == "google_genai"
+                or "gemini" in model_name.lower()
+            )
+            if not is_google:
+                patched.append(msg)
+                continue
+
+            # Check if we already have the bypass signature
+            existing_sigs = (msg.additional_kwargs or {}).get(
+                _FUNCTION_CALL_THOUGHT_SIGNATURES_MAP_KEY, {}
+            )
+            all_bypassed = existing_sigs and all(
+                v == _BYPASS_SIGNATURE for v in existing_sigs.values()
+            )
+            if all_bypassed:
+                patched.append(msg)
+                continue
+
+            # Build the bypass signature map for all tool calls
+            bypass_map = {}
+            for tc in msg.tool_calls:
+                tc_id = tc.get("id", "")
+                if tc_id:
+                    bypass_map[tc_id] = _BYPASS_SIGNATURE
+
+            if not bypass_map:
+                patched.append(msg)
+                continue
+
+            # Also strip thinking/reasoning signatures from content blocks
+            new_content: str | list[Any] = msg.content
+            if isinstance(msg.content, list):
+                new_content = []
+                for block in msg.content:
+                    if isinstance(block, dict):
+                        btype = block.get("type", "")
+                        if btype in ("thinking", "reasoning"):
+                            b = {
+                                k: v for k, v in block.items()
+                                if k != "signature"
+                            }
+                            extras = b.get("extras")
+                            if isinstance(extras, dict) and "signature" in extras:
+                                b["extras"] = {
+                                    k: v for k, v in extras.items()
+                                    if k != "signature"
+                                }
+                            new_content.append(b)
+                        elif btype == "text":
+                            extras = block.get("extras")
+                            if isinstance(extras, dict) and "signature" in extras:
+                                b = dict(block)
+                                b["extras"] = {
+                                    k: v for k, v in extras.items()
+                                    if k != "signature"
+                                }
+                                new_content.append(b)
+                            else:
+                                new_content.append(block)
+                        else:
+                            new_content.append(block)
+                    else:
+                        new_content.append(block)
+
+            new_kwargs = dict(msg.additional_kwargs or {})
+            new_kwargs[_FUNCTION_CALL_THOUGHT_SIGNATURES_MAP_KEY] = bypass_map
+
+            patched.append(
+                msg.model_copy(
+                    update={
+                        "additional_kwargs": new_kwargs,
+                        "content": new_content,
+                    },
+                ),
+            )
+            changed = True
+            logger.debug(
+                "ThoughtSignatureFixMiddleware: injected bypass signature",
+                extra={
+                    "tool_call_ids": list(bypass_map.keys()),
+                    "model_name": model_name,
+                },
+            )
+
+        if not changed:
+            return None
+
+        return {"messages": patched}
+
+    async def abefore_model(
+        self, state: AgentState, runtime: Any,
+    ) -> dict[str, Any] | None:
+        """Async version — delegates to sync implementation."""
+        return self.before_model(state, runtime)
+
+
+
+# ---------------------------------------------------------------------------
 # Factory: build_supervisor_middleware
 # ---------------------------------------------------------------------------
 
@@ -208,8 +370,12 @@ def build_supervisor_middleware(
 
     middleware: list[Any] = []
 
+    # ── 0. Strip stale Gemini thought signatures ──────────────────────
+    # MUST be first — runs before any model sees the messages.
+    middleware.append(ThoughtSignatureFixMiddleware())
+    logger.info("Middleware: ThoughtSignatureFixMiddleware (before_model)")
+
     # ── 1. Domain context injection (survives summarization) ──────────
-    # MUST be first — ensures cross-domain awareness is always present.
     middleware.append(SupervisorContextMiddleware())
     logger.info("Middleware: SupervisorContextMiddleware (before_model)")
 

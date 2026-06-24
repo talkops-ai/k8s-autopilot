@@ -1,6 +1,6 @@
-from typing import Annotated, TypedDict, Optional, Literal, Dict, List, Any
+from typing import Annotated, Optional, Literal, Dict, List, Any
 import operator 
-from typing_extensions import NotRequired
+from typing_extensions import NotRequired, TypedDict
 from operator import add
 from enum import Enum
 
@@ -8,7 +8,34 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 from langchain_core.messages import BaseMessage, AnyMessage
 from langgraph.graph.message import add_messages
-from langchain.agents import AgentState
+
+
+# ============================================================================
+# Stack-based routing reducer (bidirectional handoff)
+# ============================================================================
+
+def update_dialog_stack(left: list[str], right: list[str] | str | None) -> list[str]:
+    """Stack reducer for ``dialog_state``.
+
+    - ``None``  → no-op (return current stack unchanged)
+    - ``list``  → overwrite the stack entirely (useful for resets)
+    - ``"pop"`` → remove the top element
+    - any other string → push it onto the stack
+
+    This is the core of the deterministic call-and-return router.
+    Pushing an agent name adds a new callee; popping reveals the caller
+    beneath it.
+
+    Reference: k8s_autopilot_architecture_spec.md §Dialog stack reducer
+    """
+    if right is None:
+        return left
+    if isinstance(right, list):
+        return right
+    if right == "pop":
+        return left[:-1]
+    return left + [right]
+
 
 # ============================================================================
 # Shared Data Models
@@ -136,7 +163,7 @@ class ApprovalRecord(TypedDict, total=False):
     feedback: Optional[str]
 
 
-class ArgoCDOnboardingState(AgentState):
+class ArgoCDOnboardingState(TypedDict, total=False):
     """
     State schema for ArgoCD Application Onboarding Deep Agent.
     
@@ -363,7 +390,7 @@ class WorkflowStatus(str, Enum):
     ROLLED_BACK = "rolled_back"
     INTERRUPTED = "interrupted"
 
-class MainSupervisorState(AgentState):
+class MainSupervisorState(TypedDict, total=False):
     """Minimal supervisor state — coordinators manage their own internal state.
     
     The supervisor is now a router (create_agent + tool wrappers). Each coordinator
@@ -408,6 +435,32 @@ class MainSupervisorState(AgentState):
     # ── Domain summaries (blackboard for cross-domain awareness) ──────
     domain_summaries: Annotated[List[Dict[str, Any]], operator.add]
     
+    # ── Plan-and-Execute state (enhanced planning mode) ─────────────
+    # Serialized PlanEnvelope for cross-coordinator plan awareness
+    plan_envelope: NotRequired[Dict[str, Any]]
+    # Final walkthrough narrative generated after plan execution
+    execution_walkthrough: NotRequired[str]
+    # Plan version counter for replan cycles (generic, incremented on rejection)
+    plan_version: NotRequired[int]
+
+    # ── Stack-based routing (bidirectional handoff) ────────────────────
+    dialog_state: Annotated[list[str], update_dialog_stack]
+
+    active_agent: NotRequired[str]           # Currently executing coordinator
+    return_to: NotRequired[str]              # Agent to return to after callee completes
+    resume_cursor: NotRequired[str]          # Step/phase to resume at in caller
+    correlation_id: NotRequired[str]         # Links handoff request ↔ result
+
+    # ── Typed handoff envelopes ───────────────────────────────────────
+    handoff_request: NotRequired[Dict[str, Any]]   # HandoffRequest envelope
+    handoff_result: NotRequired[Dict[str, Any]]     # HandoffResult envelope
+
+    # ── Loop guard ────────────────────────────────────────────────────
+    loop_guard: NotRequired[Dict[str, Any]]        # per-correlation counters
+
+    # ── Error state (structured) ──────────────────────────────────────
+    error_state: NotRequired[Dict[str, Any]]
+
     # ── HITL ──────────────────────────────────────────────────────────
     pending_feedback_requests: NotRequired[Dict[str, Any]]
 
@@ -436,7 +489,7 @@ class K8sOperatorContext(BaseModel):
     workspace_dir: str = Field(default="/tmp/helm-charts", description="Physical workspace for generated charts")
 
 
-class PlanningSwarmState(AgentState):
+class PlanningSwarmState(TypedDict, total=False):
     """State for Planning Swarm (Deep Agent-based)"""
     messages: Annotated[List[AnyMessage], add_messages]
     
@@ -486,7 +539,7 @@ class PlanningSwarmState(AgentState):
 # Generation Swarm State
 # ============================================================================
 
-class GenerationSwarmState(AgentState):
+class GenerationSwarmState(TypedDict, total=False):
     """State for Generation Swarm (Deep Agent-based)"""
     messages: Annotated[List[AnyMessage], add_messages]
     
@@ -547,7 +600,7 @@ class GenerationSwarmState(AgentState):
 # Validation & Deployment Swarm State
 # ============================================================================
 
-class ValidationSwarmState(AgentState):
+class ValidationSwarmState(TypedDict, total=False):
     """State for Validation & Deployment Swarm"""
     messages: Annotated[List[AnyMessage], add_messages]
     
@@ -682,7 +735,7 @@ class RequestClassification(BaseModel):
         description="Brief explanation of classification"
     )
 
-class HelmAgentState(AgentState):
+class HelmAgentState(TypedDict, total=False):
     """Master state schema for the agent"""
     # Message history (auto-managed by LangGraph)
     messages: Annotated[List[AnyMessage], add_messages]

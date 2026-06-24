@@ -35,11 +35,36 @@ Read this when executing state-modifying operations that require multi-step coor
      endpoint returns non-Prometheus format
 
 5. **Apply ServiceMonitor**
-   - Call `prom_apply_servicemonitor(namespace="<ns>", service_name="<svc>")`
-   - Auto-detects Prometheus Operator selector labels
+
+   **Step 5a: Confirm the exact K8s Service name** (critical — avoid wrong selectors):
+   - Read `prom://topology/services` and look for the service, OR
+   - Ask the user to run `kubectl get svc -n <namespace>` and share output.
+   - ⚠️ Operator-managed services often have a different name than the app (e.g. OTel Operator
+     generates `otel-demo-collector-collector`, not `otel-demo-collector`).
+
+   **Step 5b: Same-namespace case** (Service and Prometheus in the same namespace):
+   ```
+   prom_apply_servicemonitor(namespace="<ns>", service_name="<exact-k8s-svc-name>")
+   ```
+
+   **Step 5c: Cross-namespace case** (Service in `<ns>`, Prometheus Operator in `monitoring`):
+   ```
+   prom_apply_servicemonitor(
+       service_name="<exact-k8s-svc-name>",
+       namespace="monitoring",   # where the ServiceMonitor CRD goes
+       target_namespace="<ns>", # where the K8s Service lives
+   )
+   ```
+   This injects `spec.namespaceSelector.matchNames: [<ns>]` so Prometheus can discover the
+   service across namespaces. Without this, the scrape never starts.
+
+   **Step 5d: Cleaning up before retry** — if a previous attempt created a broken SM:
+   ```
+   prom_delete_servicemonitor(monitor_name="<name>-monitor", namespace="monitoring")
+   # then re-apply with corrected parameters
+   ```
    - Optional params: `port_name`, `path`, `interval` (default 30s), `labels`
-   - With custom labels: `labels={"release": "kube-prometheus"}`
-   - Expected: returns ServiceMonitor YAML with auto-detected operator labels
+   - Expected: returns `{applied: "ServiceMonitor/<name>", manifest_yaml: "...", notes: "..."}`
 
 6. **Discover new metrics**
    - Call `prom_explore_labels(backend_id="default", metric_name="<metric>")`
@@ -148,13 +173,18 @@ Read this when executing state-modifying operations that require multi-step coor
 4. **Run instant query** (point-in-time)
    - Call `prom_query_instant(backend_id="default", query="<query>")`
 
-5. **Run range query** (time series)
+5. **Run range query for A2UI charts** (RECOMMENDED)
+   - Call `prom_query_a2ui_chart(backend_id="default", query="<query>", start=<unix>, end=<unix>, title="<title>")`
+   - Returns a strict A2UI JSON payload (`kind: "metrics"`) ready for direct frontend rendering.
+   - Optional: `chart_type="line"`, `y_axis_label="Value"`.
+
+6. **Run range query for raw data** (time series)
    - Call `prom_query_range(backend_id="default", query="<query>", start=<unix>, end=<unix>)`
    - Auto-computes `step` when omitted: `step = (end - start) / max_points_per_series`
    - Default: ~200 points per series (protects LLM context window)
    - Custom resolution: pass `step="60s"` or `max_points_per_series=50`
 
-6. **Calculate latency (histograms)**
+7. **Calculate latency (histograms)**
    - Average duration: `sum(rate(duration_sum[5m])) / sum(rate(duration_count[5m]))`
 
 ### Safety Guardrails

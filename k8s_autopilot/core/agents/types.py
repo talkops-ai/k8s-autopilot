@@ -23,7 +23,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     AsyncGenerator,
-    Callable,
     Dict,
     List,
     Optional,
@@ -360,7 +359,7 @@ class BaseDeepAgent(ABC):
         """
         Transform deep agent final state → supervisor-mergeable payload.
 
-        Called by the supervisor's ``_make_coordinator_tool`` after the deep
+        Called by the supervisor's ``_make_coordinator_node`` after the deep
         agent completes. Returns a dict suitable for payload extraction.
 
         Args:
@@ -389,12 +388,15 @@ class BaseDeepAgent(ABC):
     # ── Abstract — MUST override (implementation-specific) ────────────────
 
     @abstractmethod
-    def make_backend(self, runtime: Any) -> Any:
+    def make_backend(self) -> Any:
         """
         Build a backend for the deep agent's virtual filesystem.
 
         Typically a ``CompositeBackend`` routing paths to different storage
         backends (e.g. ``/memories/`` → ``StoreBackend``, default → ``StateBackend``).
+
+        Since ``deepagents>=0.5.0``, backends resolve runtime context
+        internally — do **not** accept a ``runtime`` parameter.
         """
         ...
 
@@ -444,20 +446,75 @@ class BaseDeepAgent(ABC):
         """
         ...
 
+    # ── Planning mode prompt (shared across coordinators) ────────────
+
+    def get_task_categories(self) -> str:
+        """Return domain-specific task category examples for the planning prompt.
+
+        Override in coordinator subclasses to provide context-appropriate
+        categories. Default covers generic Kubernetes operations.
+        """
+        return """\
+- **Discovery**: Read-only inspection (list resources, check status, get logs)
+- **Validation**: Schema checks, policy checks, dry-run verification
+- **Live Apply**: State-modifying mutation (create, update, delete, scale)
+- **Health Check**: Post-change verification and observability checks
+- **Summary**: Generate walkthrough narrative from execution results"""
+
+    def get_planning_prompt_section(self) -> str:
+        """Return the adaptive planning mode protocol for system prompts.
+
+        Describes the protocol shape (PATH A vs PATH B) only.
+        Full workflow detail (write_todos templates, walkthrough format,
+        step budget, rejection protocol) lives in each domain's AGENTS.md
+        memory file, which is pre-seeded at session start.
+
+        Override ``get_task_categories()`` to customize category examples
+        per domain without duplicating the entire planning protocol.
+        """
+        task_categories = self.get_task_categories()
+        return f"""\
+<planning_protocol>
+When a request modifies live state, classify it first into PATH A or PATH B.
+
+PATH A — Planned Execution (complex, multi-step, or destructive operations):
+1. Discover — resolve all required parameters.
+2. Plan — call `write_todos` with step checklist. Mark mutations with [MUTATION].
+3. Approve — present plan via `request_user_input` with approve/reject/modify options.
+   The PlanLockMiddleware will automatically track the todos and re-inject them as
+   a binding constraint before every model call, surviving context summarization.
+4. Execute — delegate each step with [PLAN-APPROVED] prefix; update TODO status via `write_todos`.
+5. Verify — run a read-only follow-up to confirm resulting state.
+6. Report — summarize via `request_chat_continue`; call domain log tool.
+
+Task categories for this domain:
+{task_categories}
+
+PATH B — Direct Execution (single-step, all parameters known, read-only):
+1. State intent in one line.
+2. Delegate with [PLAN-APPROVED] prefix — sub-agent skips its own plan gate.
+3. Report result via `request_chat_continue`; call domain log tool if state was changed.
+
+The [PLAN-APPROVED] prefix is REQUIRED even for PATH B — it prevents the sub-agent from
+creating a duplicate approval gate. The HITL middleware on the actual tool still fires.
+
+See AGENTS.md for: write_todos examples, walkthrough template, rejection protocol, step budget.
+</planning_protocol>"""
+
     # ── Concrete — inherited as-is ────────────────────────────────────────
 
     def build_memory_components(
         self,
-    ) -> tuple[Callable[..., Any], Any, Any]:
+    ) -> tuple[Any, Any, Any]:
         """
-        Return ``(backend_factory, store, checkpointer)`` for ``create_deep_agent``.
+        Return ``(backend, store, checkpointer)`` for ``create_deep_agent``.
 
-        The backend factory is a callable that receives a LangGraph ``runtime``
-        object and returns a backend instance.
+        Since ``deepagents>=0.5.0``, the backend is passed as a
+        pre-constructed instance, not a callable factory.
         """
         store = self.build_store()
         checkpointer = self.build_checkpointer()
-        return self.make_backend, store, checkpointer
+        return self.make_backend(), store, checkpointer
 
 
 

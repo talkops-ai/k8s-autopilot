@@ -1,0 +1,29 @@
+[
+  {
+    "id": "root",
+    "component": {
+      "Column": {
+        "children": {"explicitList": ["header", "divider", "table-body"]}
+      }
+    }
+  },
+  {
+    "id": "header",
+    "component": {
+      "Text": {
+        "text": {"path": "title"},
+        "usageHint": "h3"
+      }
+    }
+  },
+  {"id": "divider", "component": {"Divider": {}}},
+  {
+    "id": "table-body",
+    "component": {
+      "Text": {
+        "text": {"path": "tableMarkdown"},
+        "usageHint": "body"
+      }
+    }
+  }
+]

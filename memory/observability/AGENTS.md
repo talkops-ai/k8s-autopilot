@@ -115,3 +115,23 @@ Use it to persist information that other domains might need during multi-domain 
 | `/shared/k8s/pod-status-{service}.md` | K8s Operator | Pod health/restart data for investigated services |
 | `/shared/helm/release-{name}.md` | Helm Operator | Release metadata (version, values) for deployed services |
 | `/shared/app/deployment-{name}.md` | App Operator | ArgoCD sync status, rollout state for deployments |
+
+## Operational Workflows & Planning
+Detailed planning workflows (PATH A vs PATH B), `write_todos` examples, and step budgets have been migrated to the dedicated skill file.
+
+**For full orchestration instructions, read:** `skills/observability/coordinator/SKILL.md`
+
+## Response Format Reference
+
+Response format templates (for `request_chat_continue` outputs) are defined in the coordinator
+prompt inside the `<response_formats>` XML tag. The coordinator uses them for:
+- Prometheus read-only queries
+- Alert triage summaries
+- State-modifying results (✅/⚠️/❌)
+- No-results responses
+- Tempo trace search results
+- Tempo trace summaries
+- Tempo RED metrics
+
+Sub-agents do NOT use these templates — they return raw structured text.
+Only the coordinator synthesizes results into the formatted markdown before calling `request_chat_continue`.

@@ -22,15 +22,17 @@ services:
       # Example HTTP override:
       #   MCP_SERVERS=[{"name":"helm_mcp_server","url":"http://helm-svc:9000/mcp","transport":"http",...}]
       - >-
-        MCP_SERVERS=[ {"name": "github_mcp", "url": "https://api.githubcopilot.com/mcp/", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": "GITHUB_PERSONAL_ACCESS_TOKEN"},  {"name": "helm_mcp_server", "command": "helm-mcp-server", "transport": "stdio", "args": [], "env": {"MCP_ALLOW_WRITE": "true"}},  {"name": "argocd_mcp_server", "command": "argocd-mcp-server", "transport": "stdio", "args": [], "env": {"MCP_ALLOW_WRITE": "true"}},  {"name": "traefik_mcp_server", "command": "traefik-mcp-server", "transport": "stdio", "args": [], "env": {}},  {"name": "argo_rollout_mcp_server", "command": "argo-rollout-mcp-server", "transport": "stdio", "args": [], "env": {}},  {"name": "prometheus-mcp-server", "command": "prometheus-mcp-server", "transport": "stdio", "args": [], "env": {}},  {"name": "alertmanager-mcp-server", "command": "alertmanager-mcp-server", "transport": "stdio", "args": [], "env": {}},  {"name": "kubernetes_mcp_server", "command": "npx", "transport": "stdio", "args": ["-y", "kubernetes-mcp-server@latest"]} ]
+        MCP_SERVERS=[ {"name": "github_mcp", "url": "https://api.githubcopilot.com/mcp/", "transport": "http", "disabled": false, "headers": {}, "auth_token_env_var": "GITHUB_PERSONAL_ACCESS_TOKEN"},  {"name": "helm_mcp_server", "command": "helm-mcp-server", "transport": "stdio", "args": [], "env": {"MCP_ALLOW_WRITE": "true"}},  {"name": "argocd_mcp_server", "command": "argocd-mcp-server", "transport": "stdio", "args": [], "env": {"MCP_ALLOW_WRITE": "true"}},  {"name": "traefik_mcp_server", "command": "traefik-mcp-server", "transport": "stdio", "args": [], "env": {}},  {"name": "argo_rollout_mcp_server", "command": "argo-rollout-mcp-server", "transport": "stdio", "args": [], "env": {}},  {"name": "prometheus-mcp-server", "command": "prometheus-mcp-server", "transport": "stdio", "args": [], "env": {}},  {"name": "alertmanager-mcp-server", "command": "alertmanager-mcp-server", "transport": "stdio", "args": [], "env": {}},  {"name": "opentelemetry-mcp-server", "command": "opentelemetry-mcp-server", "transport": "stdio", "args": [], "env": {}},  {"name": "loki-mcp-server", "command": "loki-mcp-server", "transport": "stdio", "args": [], "env": {}},  {"name": "tempo-mcp-server", "command": "tempo-mcp-server", "transport": "stdio", "args": [], "env": {}},  {"name": "kubernetes_mcp_server", "command": "kubernetes-mcp-server", "transport": "stdio", "args": []} ]
 
       # LLM Configuration
       - LLM_PROVIDER=${LLM_PROVIDER}
       - LLM_MODEL=${LLM_MODEL}
+      - LLM_THINKING_ENABLED=${LLM_THINKING_ENABLED}
       - LLM_HIGHER_PROVIDER=${LLM_HIGHER_PROVIDER}
       - LLM_HIGHER_MODEL=${LLM_HIGHER_MODEL}
       - LLM_DEEPAGENT_PROVIDER=${LLM_DEEPAGENT_PROVIDER}
       - LLM_DEEPAGENT_MODEL=${LLM_DEEPAGENT_MODEL}
+      - LLM_DEEPAGENT_THINKING_ENABLED=${LLM_DEEPAGENT_THINKING_ENABLED}
 
       # Optional: Logging level
       - LOG_LEVEL=${LOG_LEVEL}
@@ -43,6 +45,46 @@ services:
       - PROMETHEUS_BACKEND_ID=${PROMETHEUS_BACKEND_ID:-default}
       - PROMETHEUS_TYPE=${PROMETHEUS_TYPE:-prometheus}
 
+      # Observability: Loki MCP server env vars
+      - LOKI_URL=${LOKI_URL:-http://localhost:3100}
+      - LOKI_TIMEOUT=${LOKI_TIMEOUT:-30}
+      - LOKI_VERIFY_SSL=${LOKI_VERIFY_SSL:-true}
+      - LOKI_AUTH_TOKEN=${LOKI_AUTH_TOKEN}
+      - LOKI_BASIC_AUTH_USER=${LOKI_BASIC_AUTH_USER}
+      - LOKI_BASIC_AUTH_PASSWORD=${LOKI_BASIC_AUTH_PASSWORD}
+      - LOKI_ORG_ID=${LOKI_ORG_ID:-talkops}
+      - LOKI_MAX_QUERY_BYTES=${LOKI_MAX_QUERY_BYTES:-5000000000}
+      - LOKI_MAX_TIME_WINDOW_HOURS=${LOKI_MAX_TIME_WINDOW_HOURS:-336}
+      - LOKI_MAX_LOG_LIMIT=${LOKI_MAX_LOG_LIMIT:-5000}
+      - LOKI_HIGH_CARDINALITY_THRESHOLD=${LOKI_HIGH_CARDINALITY_THRESHOLD:-10000}
+
+      # Observability: Tempo MCP server env vars
+      - TEMPO_BASE_URL=${TEMPO_BASE_URL:-http://localhost:3200}
+      - TEMPO_BACKEND_ID=${TEMPO_BACKEND_ID:-default}
+      - TEMPO_DISPLAY_NAME=${TEMPO_DISPLAY_NAME:-Local Tempo}
+      - TEMPO_TYPE=${TEMPO_TYPE:-tempo}
+      - TEMPO_DEPLOYMENT_MODE=${TEMPO_DEPLOYMENT_MODE:-microservices}
+      - TEMPO_AUTH_HEADER=${TEMPO_AUTH_HEADER}
+      - TEMPO_VERIFY_SSL=${TEMPO_VERIFY_SSL:-true}
+      - TEMPO_TIMEOUT=${TEMPO_TIMEOUT:-30}
+      - TEMPO_MULTI_TENANT=${TEMPO_MULTI_TENANT:-false}
+      - TEMPO_DEFAULT_TENANT=${TEMPO_DEFAULT_TENANT}
+      - TEMPO_MAX_LOOKBACK=${TEMPO_MAX_LOOKBACK:-168h}
+      - TEMPO_DEFAULT_SEARCH_LIMIT=${TEMPO_DEFAULT_SEARCH_LIMIT:-20}
+      - TEMPO_MAX_SEARCH_LIMIT=${TEMPO_MAX_SEARCH_LIMIT:-100}
+      - TEMPO_DEFAULT_SPSS=${TEMPO_DEFAULT_SPSS:-3}
+      - TEMPO_MAX_SPSS=${TEMPO_MAX_SPSS:-10}
+      - TEMPO_REQUIRE_TIME_RANGE=${TEMPO_REQUIRE_TIME_RANGE:-true}
+      - TEMPO_REQUIRE_FILTER_OR_QUERY=${TEMPO_REQUIRE_FILTER_OR_QUERY:-true}
+
+      # Observability: OpenTelemetry MCP server env vars
+      - OTEL_CRD_GROUP=${OTEL_CRD_GROUP:-opentelemetry.io}
+      - OTEL_CRD_API_VERSION=${OTEL_CRD_API_VERSION:-v1beta1}
+      - OTEL_INSTRUMENTATION_API_VERSION=${OTEL_INSTRUMENTATION_API_VERSION:-v1alpha1}
+      - OTEL_COLLECTOR_PLURAL=${OTEL_COLLECTOR_PLURAL:-opentelemetrycollectors}
+      - OTEL_INSTRUMENTATION_PLURAL=${OTEL_INSTRUMENTATION_PLURAL:-instrumentations}
+      - OTEL_TA_SERVICE_DISCOVERY=${OTEL_TA_SERVICE_DISCOVERY:-true}
+      - OTEL_TA_DEFAULT_PORT=${OTEL_TA_DEFAULT_PORT:-8080}
       # Observability: Alertmanager MCP server env vars
       # Inherited by the alertmanager-mcp-server stdio subprocess
       - ALERTMANAGER_BASE_URL=${ALERTMANAGER_BASE_URL:-http://alertmanager-operated.monitoring.svc:9093}
@@ -70,8 +112,10 @@ services:
     environment:
       - K8S_AGENT_URL=http://localhost:10102
       - TALKOPS_ENABLE_LOGGING=false
+      - TALKOPS_V2_STREAM_DEBUG=false
+      - VITE_ENVIRONMENT=production
     ports:
-      - "8080:80"
+      - "8888:80"
     depends_on:
       - k8s-autopilot
     restart: unless-stopped

@@ -16,3 +16,7 @@ class K8sOperatorContext(TypedDict, total=False):
     require_approval: NotRequired[bool]
     session_id: NotRequired[str]
     task_id: NotRequired[str]
+
+    # ── Cross-domain routing ──────────────────────────────────────────
+    escalation_request: NotRequired[dict]
+    handoff_request: NotRequired[dict]

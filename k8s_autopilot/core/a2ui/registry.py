@@ -24,16 +24,18 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Type
 
-from a2a.types import Part, DataPart
+from a2a.types import Part
 try:
     from a2ui.a2a import create_a2ui_part
 except ImportError:
     # Fallback: build a basic A2UI Part when the SDK is not installed
     def create_a2ui_part(a2ui_data: dict) -> Part:  # type: ignore[misc]
-        return Part(root=DataPart(
-            data=a2ui_data,
+        from google.protobuf.json_format import ParseDict
+        from google.protobuf.struct_pb2 import Value
+        return Part(
+            data=ParseDict(a2ui_data, Value()),
             metadata={"mimeType": "application/json+a2ui"},
-        ))
+        )
 
 from k8s_autopilot.utils.logger import AgentLogger
 
@@ -69,11 +71,11 @@ class RenderContext:
     def content_str(self) -> str:
         """Return *content* as a display-friendly string."""
         if isinstance(self.content, dict):
-            return (
+            return str(
                 self.content.get("summary")
                 or self.content.get("message")
                 or self.content.get("question")
-                or str(self.content)
+                or self.content
             )
         return str(self.content) if self.content else "Processing..."
 
@@ -83,12 +85,12 @@ class RenderContext:
         if self.phase_override:
             return self.phase_override
         if isinstance(self.content, dict):
-            return (
+            return str(
                 self.content.get("phase")
                 or self.content.get("active_phase")
                 or self.metadata.get("phase", "unknown")
             )
-        return self.metadata.get("phase", "unknown")
+        return str(self.metadata.get("phase", "unknown"))
 
 
 # ---------------------------------------------------------------------------
@@ -177,12 +179,11 @@ class ComponentRegistry:
                 return component.build_parts(ctx)
 
         # Fallback — no component matched
-        from a2a.types import TextPart
         logger.warning(
             f"No component matched for context (status={ctx.status}, response_type={ctx.response_type})"
         )
         return [
-            Part(root=TextPart(text=ctx.content_str))
+            Part(text=ctx.content_str)
         ]
 
     # ---- introspection ---------------------------------------------------
@@ -227,16 +228,11 @@ def _auto_discover_components() -> None:
     try:
         import importlib
         modules = [
-            "k8s_autopilot.core.a2ui.components.working_status",
-            "k8s_autopilot.core.a2ui.components.completion",
-            "k8s_autopilot.core.a2ui.components.k8s_operator_approval",
-            "k8s_autopilot.core.a2ui.components.app_operator_approval",
-            "k8s_autopilot.core.a2ui.components.observability_operator_approval",
-            "k8s_autopilot.core.a2ui.components.hitl_approval",
+            "k8s_autopilot.core.a2ui.components.unified_approval",
+            "k8s_autopilot.core.a2ui.components.unified_info",
             "k8s_autopilot.core.a2ui.components.values_confirmation",
-            "k8s_autopilot.core.a2ui.components.error",
-            "k8s_autopilot.core.a2ui.components.info_message",
             "k8s_autopilot.core.a2ui.components.user_input",
+            "k8s_autopilot.core.a2ui.components.planning_approval",
             "k8s_autopilot.core.a2ui.components.chat_continue",
         ]
         for mod in modules:

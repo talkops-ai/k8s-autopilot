@@ -56,12 +56,16 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # These are spawned as stdio subprocesses by the agent at runtime.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install -U \
-      talkops-prometheus-mcp-server \
-      talkops-alertmanager-mcp-server \
-      talkops-helm-mcp-server \
-      talkops-argocd-mcp-server \
-      talkops-argo-rollout-mcp-server \
-      talkops-traefik-mcp-server
+    fastmcp==3.3.1 \
+    talkops-prometheus-mcp-server \
+    talkops-alertmanager-mcp-server \
+    talkops-loki-mcp-server \
+    talkops-tempo-mcp-server \
+    talkops-opentelemetry-mcp-server \
+    talkops-helm-mcp-server \
+    talkops-argocd-mcp-server \
+    talkops-argo-rollout-mcp-server \
+    talkops-traefik-mcp-server 
 
 # Make the directory just in case it doesn't exist
 RUN mkdir -p /root/.local
@@ -76,6 +80,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 # Install runtime dependencies and create application user
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl nodejs npm && \
+    npm install -g kubernetes-mcp-server@latest && \
     rm -rf /var/lib/apt/lists/* && \
     update-ca-certificates && \
     curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
@@ -91,7 +96,7 @@ ARG PROMETHEUS_VERSION=3.4.1
 ARG TARGETARCH=amd64
 RUN curl -fsSL "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-${TARGETARCH}.tar.gz" \
     | tar xz --strip-components=1 -C /usr/local/bin \
-        "prometheus-${PROMETHEUS_VERSION}.linux-${TARGETARCH}/promtool" && \
+    "prometheus-${PROMETHEUS_VERSION}.linux-${TARGETARCH}/promtool" && \
     chmod +x /usr/local/bin/promtool && \
     promtool --version
 

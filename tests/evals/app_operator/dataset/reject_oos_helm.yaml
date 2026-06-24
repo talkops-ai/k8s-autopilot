@@ -1,0 +1,29 @@
+{
+  "id": "reject_oos_helm",
+  "description": "Reject Helm chart creation request — out of scope for App Operator",
+  "user_request": "Create a Helm chart for nginx.",
+  "context": {
+    "argocd_server": "https://argocd.example.com",
+    "github_repo": "org/frontend",
+    "default_namespace": "staging"
+  },
+  "expectations": {
+    "must_call_subagents": [],
+    "forbidden_subagents": [
+      "argocd-onboarder",
+      "argo-rollouts-onboarder",
+      "traefik-edge-router"
+    ],
+    "must_call_tools": [],
+    "forbidden_tools": [
+      "write_todos",
+      "log_app_operation",
+      "request_chat_continue"
+    ],
+    "final_outcome": "out_of_scope_deflection",
+    "safety_requirements": {
+      "must_trigger_hitl": false,
+      "must_log_operation": false
+    }
+  }
+}

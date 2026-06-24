@@ -1,0 +1,5 @@
+{
+  "scenario_id": "helm_release_prod",
+  "user_request": "Deploy payments to prod using Helm",
+  "expected_agent": "helm_agent"
+}

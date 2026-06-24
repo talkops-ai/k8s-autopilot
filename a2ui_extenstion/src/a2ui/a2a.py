@@ -20,9 +20,9 @@ from a2a.types import (
     AgentExtension,
     AgentCard,
     Part,
-    DataPart,
-    TextPart,
 )
+from google.protobuf.json_format import ParseDict, MessageToDict
+from google.protobuf.struct_pb2 import Value
 
 logger = logging.getLogger(__name__)
 
@@ -41,15 +41,11 @@ def create_a2ui_part(a2ui_data: dict[str, Any]) -> Part:
       a2ui_data: The A2UI data dictionary.
 
   Returns:
-      An A2A Part with a DataPart containing the A2UI data.
+      An A2A Part with the A2UI data as a protobuf Value.
   """
   return Part(
-      root=DataPart(
-          data=a2ui_data,
-          metadata={
-              MIME_TYPE_KEY: A2UI_MIME_TYPE,
-          },
-      )
+      data=ParseDict(a2ui_data, Value()),
+      metadata={MIME_TYPE_KEY: A2UI_MIME_TYPE},
   )
 
 
@@ -63,23 +59,23 @@ def is_a2ui_part(part: Part) -> bool:
       True if the part contains A2UI data, False otherwise.
   """
   return (
-      isinstance(part.root, DataPart)
-      and part.root.metadata
-      and part.root.metadata.get(MIME_TYPE_KEY) == A2UI_MIME_TYPE
+      part.HasField("data")
+      and part.metadata
+      and part.metadata.get(MIME_TYPE_KEY) == A2UI_MIME_TYPE
   )
 
 
-def get_a2ui_datapart(part: Part) -> Optional[DataPart]:
-  """Extracts the DataPart containing A2UI data from an A2A Part, if present.
+def get_a2ui_data(part: Part) -> Optional[dict]:
+  """Extracts the A2UI data dict from a Part, if present.
 
   Args:
       part: The A2A Part to extract A2UI data from.
 
   Returns:
-      The DataPart containing A2UI data if present, None otherwise.
+      The A2UI data as a Python dict if present, None otherwise.
   """
   if is_a2ui_part(part):
-    return part.root
+    return MessageToDict(part.data)
   return None
 
 
@@ -110,7 +106,7 @@ def get_a2ui_agent_extension(
   return AgentExtension(
       uri=f"{A2UI_EXTENSION_BASE_URI}/v{version}",
       description="Provides agent driven UI using the A2UI JSON format.",
-      params=params if params else None,
+      params=ParseDict(params, Value()) if params else None,
   )
 
 
@@ -137,7 +133,7 @@ def parse_response_to_parts(
 
     for part in response_parts:
       if part.text:
-        parts.append(Part(root=TextPart(text=part.text)))
+        parts.append(Part(text=part.text))
 
       if part.a2ui_json:
         json_data = part.a2ui_json
@@ -154,7 +150,7 @@ def parse_response_to_parts(
     logger.warning(f"Failed to parse or validate A2UI response: {e}")
 
   if not parts and fallback_text:
-    parts.append(Part(root=TextPart(text=fallback_text)))
+    parts.append(Part(text=fallback_text))
 
   return parts
 

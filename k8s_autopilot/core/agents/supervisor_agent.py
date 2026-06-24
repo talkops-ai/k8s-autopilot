@@ -1,300 +1,128 @@
-"""
-K8s Autopilot Supervisor Agent.
+"""K8s Autopilot Supervisor Agent — pure router delegating to coordinators."""
 
-Pure router using the CI-supervisor "tool-wrapper" pattern to delegate ALL
-Kubernetes infrastructure requests to domain-specific coordinators.
-
-Architecture::
-
-    A2AExecutor.execute()
-      → SupervisorAgent.stream(query, context_id, task_id)
-          → compiled_graph.astream(
-                input, config,
-                stream_mode=["updates","messages"], subgraphs=True, version="v2",
-            )
-              → yields AgentResponse (working / input_required / completed)
-
-Tool-wrapper delegation (5 tools)::
-
-    SupervisorAgent (create_agent)
-      → transfer_to_helm_operator  @tool → HelmOperatorCoordinator → Command
-      → transfer_to_k8s_operator   @tool → HelmMgmtCoordinator    → Command
-      → transfer_to_app_operator   @tool → ArgoCDCoordinator       → Command
-      → transfer_to_observability_operator @tool → ObservabilityCoordinator → Command
-      → request_human_feedback     @tool → interrupt()
-
-Reference: aws-orchestrator-agent SupervisorAgent
-"""
-
+import asyncio
 import json
 import re
-from datetime import datetime, timezone
 from collections.abc import AsyncGenerator
-from typing import Annotated, Any, cast
-
-from langchain.agents import create_agent
-from langchain.tools import InjectedToolCallId, ToolRuntime, tool
-from langchain_core.messages import HumanMessage, ToolMessage
+from typing import Any, cast, Literal
+from pydantic import BaseModel, Field
+from langchain.tools import tool
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphInterrupt
+from langgraph.graph import StateGraph, START, END
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import Command, interrupt
+from langgraph.types import Command, StreamMode, StreamWriter, interrupt
 
 from k8s_autopilot.config.config import Config
 from k8s_autopilot.core.state.base import (
     MainSupervisorState,
     SupervisorWorkflowState,
 )
-from k8s_autopilot.utils.exceptions import AgentExecutionError
+from k8s_autopilot.core.state.handoff_contracts import (
+    check_loop_guard,
+    increment_loop_guard,
+    format_handoff_for_context,
+)
+
 from k8s_autopilot.utils.llm import create_model
 from k8s_autopilot.utils.logger import AgentLogger, log_async, log_sync
 
-from .supervisor_middleware import build_supervisor_middleware
+
+from .supervisor_middleware import build_supervisor_middleware  # noqa: F401 — kept for backward compat
 from .types import AgentResponse, BaseAgent, BaseDeepAgent, BaseSubgraphAgent
 
 logger = AgentLogger("SupervisorAgent")
-
-# Matches UUID-like strings (namespace segments)
-_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-")
-
 
 # ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
 
-SUPERVISOR_PROMPT = """\
-You are the K8s Autopilot Supervisor — a pure router that delegates ALL \
-Kubernetes infrastructure requests to the appropriate coordinator.
-
-**Routing table — match the request to the correct tool:**
-
-| Request type | Tool |
-|---|---|
-| Create / generate / update Helm charts | ``transfer_to_helm_operator`` |
-| K8s cluster ops (pods, scaling, exec, events) | ``transfer_to_k8s_operator`` |
-| ArgoCD projects / repos / apps / sync / debug | ``transfer_to_app_operator`` |
-| Argo Rollouts canary / blue-green / analysis / list | ``transfer_to_app_operator`` |
-| Traefik routing, middleware, traffic mgmt | ``transfer_to_app_operator`` |
-| Prometheus metrics, queries, exporters, rules, TSDB | ``transfer_to_observability_operator`` |
-| Alertmanager alerts, silences, routing, triage | ``transfer_to_observability_operator`` |
-| Out-of-scope / greetings / clarification | ``request_human_feedback`` |
-
-**VALID REQUEST EXAMPLES:**
-- "Create a Helm chart for nginx" → transfer_to_helm_operator
-- "Update my Helm chart templates" → transfer_to_helm_operator
-- "List pods in production namespace" → transfer_to_k8s_operator
-- "Scale deployment nginx to 5 replicas" → transfer_to_k8s_operator
-- "Delete the stuck pod" → transfer_to_k8s_operator
-- "Check cluster health" → transfer_to_k8s_operator
-- "Run a debug pod with busybox" → transfer_to_k8s_operator
-- "Create an ArgoCD project" → transfer_to_app_operator
-- "Sync my-app ArgoCD application" → transfer_to_app_operator
-- "Set 80/20 canary split" → transfer_to_app_operator
-- "Show me the rollout list" → transfer_to_app_operator
-- "Configure Traefik weighted routing" → transfer_to_app_operator
-- "What alerts are firing?" → transfer_to_observability_operator
-- "Query CPU metrics" → transfer_to_observability_operator
-- "Silence the noisy alerts" → transfer_to_observability_operator
-- "Install postgres exporter" → transfer_to_observability_operator
-- "Check cardinality" → transfer_to_observability_operator
-- "Create alerting rule for high error rate" → transfer_to_observability_operator
-- "Who gets paged for critical alerts?" → transfer_to_observability_operator
-
-**OUT-OF-SCOPE REQUEST HANDLING:**
-If a request is NOT related to Helm/ArgoCD/K8s/Traefik/Prometheus/Alertmanager:
-1. **CRITICAL: Use request_human_feedback** - no direct text
-2. **Create dynamic, contextual messages** for the user
-3. **NEVER output text without calling request_human_feedback**
-
-Available tools:
-- transfer_to_helm_operator: Helm chart generation/update
-- transfer_to_k8s_operator: K8s cluster ops (pods, scale, exec)
-- transfer_to_app_operator: ArgoCD, Argo Rollouts, Traefik
-- transfer_to_observability_operator: Prometheus monitoring, Alertmanager alerting
-- request_human_feedback: Human feedback or clarification
-
-**TASK DESCRIPTION CRAFTING (for transfer_to_* tools):**
-Translate the user's intent into a clear DevOps-aware task description.
-If the user uses non-technical language, map it to the correct domain:
-
-| User says | Translate to | Tool |
-|---|---|---|
-| "deploy" / "ship" / "release" | Create or sync ArgoCD Application | transfer_to_app_operator |
-| "rollback" / "undo" / "revert" | ArgoCD rollback or Rollout abort | transfer_to_app_operator |
-| "zero downtime" / "gradual" | Argo Rollouts canary/blue-green | transfer_to_app_operator |
-| "split traffic" / "A/B test" | Traefik weighted routing | transfer_to_app_operator |
-| "scale up" / "more capacity" | K8s scaling or HPA | transfer_to_k8s_operator |
-| "check" / "status" / "health" | Read-only diagnostics | appropriate operator |
-| "what's firing" / "alerts" / "on-call" | Alert triage | transfer_to_observability_operator |
-| "silence" / "mute" / "suppress" | Create silence | transfer_to_observability_operator |
-| "metrics" / "query" / "PromQL" | Prometheus query | transfer_to_observability_operator |
-| "exporter" / "monitor postgres" | Exporter lifecycle | transfer_to_observability_operator |
-| "alerting rule" / "notify when" | Rule authoring | transfer_to_observability_operator |
-| "cardinality" / "TSDB" / "storage" | TSDB FinOps | transfer_to_observability_operator |
-
-Parse the request, extract intent, create a clear description.
-Do NOT pass raw user messages verbatim.
-
-**CROSS-DOMAIN RE-ROUTING (CRITICAL):**
-If a coordinator returns a message containing "outside my scope" (typically formatted with "User Request:" and "Context:"):
-→ Do NOT summarize the context to the user. Do NOT complete the workflow.
-→ Read the "User Request" section to determine the correct coordinator tool.
-→ Call the correct coordinator tool immediately. Do NOT ask the user for permission.
-→ Pass both the "User Request" and "Context" in the task parameter to the new coordinator.
-→ **PREFIX the task with cross-domain context**: \
-  `[CROSS-DOMAIN] Source: {source_domain}. Prior findings: {context_summary}. User Request: {request}`
-Example: If observability coordinator returns "User Request: Check pod status for checkout":
-  `[CROSS-DOMAIN] Source: observability. Prior findings: 5 critical alerts for checkout service, silence created. User Request: Check pod status for checkout service`
-Example: If k8s coordinator returns "User Request: What alerts are firing?":
-  `[CROSS-DOMAIN] Source: k8s_operator. Prior findings: checkout pods restarting (CrashLoopBackOff). User Request: Check if any alerts are firing for checkout`
-
-**ERROR RECOVERY:**
-If a coordinator returns an error (e.g., "encountered an error", MCP unavailable):
-→ Use `request_human_feedback` to inform the user what happened and suggest alternatives.
-→ Do NOT retry the same coordinator in a loop. Max 1 retry, then report to user.
-
-**CRITICAL RULES:**
-- Always call tools immediately, don't describe what you will do
-- Do NOT do chart generation/validation/K8s ops yourself
-- You are a ROUTER, not a CREATOR
-- When a coordinator defers to another domain, YOU must re-route — never leave the user stranded
-""".strip()
-
-
-# ---------------------------------------------------------------------------
-# Cross-domain handoff detection
-# ---------------------------------------------------------------------------
-
-# Phrases that coordinators emit when a request is outside their domain.
-# Case-insensitive matching. Patterns are broad enough to catch natural
-# language variations while specific enough to avoid false positives.
-_HANDOFF_PATTERNS: tuple[str, ...] = (
-    "use the k8s operator",
-    "use the kubernetes operator",
-    "use the kubernetes assistant",
-    "use the helm operator",
-    "use the app operator",
-    "use the observability operator",
-    "use the prometheus operator",
-    "use the alertmanager operator",
-    "use the k8s-operator",
-    "use the k8s cluster",
-    "k8s operator to inspect",
-    "k8s operator can",
-    "kubernetes operator can",
-    "kubernetes assistant can",
-    "helm operator can",
-    "app operator can",
-    "observability operator can",
-    "outside my scope",
-    "outside of my scope",
-    "beyond my scope",
-    "not within my capabilities",
-    "different domain",
-    "another operator",
-    "so the kubernetes operator can take over",
-    "so the k8s operator can take over",
-    "so the helm operator can take over",
-    "so the app operator can take over",
-    "so the observability operator can take over",
-    "returning to coordinator for re-routing",
-)
-
-
-def _detect_cross_domain_handoff(content: Any) -> bool:
-    """Detect if a coordinator message contains a cross-domain handoff signal.
-
-    When a coordinator determines that the user's request requires a
-    different domain operator, it emits natural language like
-    "Use the K8s Operator to inspect raw Kubernetes objects."
-
-    This function detects such signals so the supervisor can re-route
-    instead of treating the response as a final completion.
-
-    Returns True if any handoff pattern matches.
-    """
-    text = _extract_content_text(content)
-    if not text:  # noqa: SIM103
-        return False
-    content_lower = text.lower()
-    return any(pattern in content_lower for pattern in _HANDOFF_PATTERNS)
-
-# ---------------------------------------------------------------------------
-# Cross-domain handoff context extraction
-# ---------------------------------------------------------------------------
-
-def _extract_handoff_context(
-    message: str,
-    source_tool: str,
-    payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Extract structured handoff context from a coordinator out-of-scope message.
-
-    When a coordinator returns "This is outside my scope. Please use the
-    appropriate operator.\\nUser Request: ...\\nContext: ...", this function
-    parses the structured sections and produces a dict that the supervisor
-    stores in ``MainSupervisorState.cross_domain_context``.
-
-    The receiving coordinator can then read this context to avoid making
-    the user re-explain what was already discovered.
-
-    Args:
-        message: The raw coordinator output message.
-        source_tool: The tool name that produced the message (e.g.
-            ``transfer_to_observability_operator``).
-        payload: Optional full output payload from the coordinator for
-            extracting domain summaries.
-
-    Returns:
-        A structured dict with source_domain, user_request, prior_context,
-        domain_summary (if available), and timestamp.
-    """
-    source_domain = source_tool.replace("transfer_to_", "").replace(
-        "_operator", "",
+class RouterDecision(BaseModel):
+    """Routing decision for the K8s Autopilot Supervisor."""
+    destination: Literal[
+        "transfer_to_helm_operator",
+        "transfer_to_k8s_operator",
+        "transfer_to_app_operator",
+        "transfer_to_observability_operator",
+        "request_human_feedback",
+    ] = Field(
+        description="The target coordinator for the user's query. Use request_human_feedback for out-of-scope requests."
     )
-    context: dict[str, Any] = {
-        "source_domain": source_domain,
-        "source_tool": source_tool,
-        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-    }
+    task: str = Field(
+        description="A concise technical task description for the destination, or the clarifying question to ask the user if destination is request_human_feedback."
+    )
+    reasoning: str = Field(
+        description="Brief explanation of why this route was chosen."
+    )
 
-    # Parse "User Request:" section
-    if "User Request:" in message:
-        parts = message.split("User Request:", 1)
-        request_part = parts[1]
-        if "Context:" in request_part:
-            context["user_request"] = request_part.split("Context:")[0].strip()
-        else:
-            context["user_request"] = request_part.strip()
+SUPERVISOR_PROMPT = """\
+<role>
+You are the K8s Autopilot router.
+Classify each request and route it to exactly one coordinator tool.
+Do not perform any operational work yourself.
+</role>
 
-    # Parse "Context:" section
-    if "Context:" in message:
-        context["prior_context"] = message.split("Context:", 1)[1].strip()
+<destinations>
+- transfer_to_helm_operator: Helm chart creation, update, validation.
+- transfer_to_k8s_operator: Kubernetes cluster operations and diagnostics.
+- transfer_to_app_operator: ArgoCD, Argo Rollouts, and Traefik traffic control.
+- transfer_to_observability_operator: Prometheus, Alertmanager, OpenTelemetry, Loki, and Tempo.
+- request_human_feedback: Out-of-scope, unclear, or non-infrastructure requests.
+</destinations>
 
-    # Extract domain summary from payload if available
-    if payload and isinstance(payload, dict):
-        domain_summary = payload.get("domain_summary")
-        if domain_summary:
-            context["domain_summary"] = domain_summary
+<decision_rules>
+- Route by primary operational intent.
+- If a request spans multiple domains, choose the first actionable infrastructure step.
+- For read-only checks, route by the resource being inspected.
+- For telemetry, logging, tracing, alerting, and instrumentation, route to observability.
+- If the request is unclear or unrelated, route to human feedback.
+</decision_rules>
 
-    return context
+<task_rules>
+Return a concise technical task for the chosen destination.
+Normalize user wording into DevOps terminology.
+Do not copy the user message verbatim.
+CRITICAL: If the destination is `request_human_feedback`, the `task` field MUST be the exact conversational response or clarifying question you want to display directly to the user (e.g., "Hi! How can I help you with Kubernetes today?"). Do NOT output instructions like "Acknowledge the user".
+</task_rules>
+
+<cross_domain>
+If a coordinator says it is outside its scope and includes a User Request and Context:
+- re-route immediately,
+- prefix the new task with:
+  [CROSS-DOMAIN] Source: {source_domain}. Prior findings: {context_summary}. User Request: {user_request}
+- do not ask the user for permission.
+</cross_domain>
+
+<output_contract>
+Follow the JSON schema exactly.
+Do not output natural language outside of the schema.
+</output_contract>
+"""
 
 
 # ---------------------------------------------------------------------------
-# Module-level helpers (v2 streaming)
+# Cross-domain handoff logic has moved to core/state/handoff_contracts.py
 # ---------------------------------------------------------------------------
 
-def _iter_messages(node_data: dict[str, Any]):
-    """Yield individual messages from a node's update data."""
-    messages = node_data.get("messages", [])
-    if hasattr(messages, "value"):
-        messages = messages.value
-    if not messages:
-        return
-    if not isinstance(messages, list):
-        messages = [messages]
-    yield from messages
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+# Compiled regex patterns for stripping internal repr objects
+_REPR_PATTERNS = [
+    re.compile(p, re.DOTALL)
+    for p in (
+        r"Command\(update=\{.*?\}\)",
+        r"ToolMessage\(content=.*?\)",
+        r"AIMessage\(content=.*?\)",
+        r"HumanMessage\(content=.*?\)",
+        r"\[ToolMessage\(.*?\)\]",
+    )
+]
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _extract_content_text(content: Any) -> str:
@@ -310,49 +138,173 @@ def _extract_content_text(content: Any) -> str:
     return str(content) if content else ""
 
 
-def _extract_text_from_tool_chunks(chunks: Any, fields: tuple) -> str:
-    """Extract AI-reasoning text from Gemini-style tool_call_chunks."""
-    if not chunks:
+def _extract_reasoning_text(msg_chunk: Any) -> str:
+    """Extract reasoning/thinking from an AIMessageChunk (provider-agnostic).
+
+    Covers Gemini (thinking/thought blocks), OpenAI o1/o3 (reasoning_content
+    in additional_kwargs), and Anthropic (thinking blocks).
+    """
+    parts: list[str] = []
+
+    # 1. Content list — thinking/thought/reasoning blocks (Gemini, Anthropic)
+    raw_content = getattr(msg_chunk, "content", None)
+    if isinstance(raw_content, list):
+        _THINKING_TYPES = {"thinking", "thought", "reasoning"}
+        _THINKING_KEYS = ("thinking", "thought", "reasoning", "text")
+        for block in raw_content:
+            if isinstance(block, dict) and block.get("type", "") in _THINKING_TYPES:
+                text = next((block[k] for k in _THINKING_KEYS if block.get(k)), "")
+                if text:
+                    parts.append(str(text))
+
+    # 2. additional_kwargs — OpenAI o1/o3 reasoning_content, Gemini thinking
+    if not parts:
+        kwargs = getattr(msg_chunk, "additional_kwargs", None) or {}
+        for key in ("thinking", "thought", "reasoning_content"):
+            val = kwargs.get(key)
+            if isinstance(val, str) and val:
+                parts.append(val)
+
+    return "".join(parts)
+
+
+def _humanize_tool_name(raw_name: str) -> str:
+    """Convert snake_case tool name to Title Case display name."""
+    if not raw_name:
+        return "Tool"
+
+    name = raw_name
+    for prefix in ("transfer_to_", "kubernetes_", "kubectl_", "k8s_"):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+
+    return name.replace("_", " ").strip().title() or raw_name.title()
+
+
+def _format_tool_args(args: Any, max_len: int = 200) -> str:
+    """Format tool args into a compact display string."""
+    if not args:
         return ""
-    for tcc in chunks:
-        args_str = (
-            tcc.get("args", "")
-            if isinstance(tcc, dict)
-            else getattr(tcc, "args", "")
-        )
-        if not args_str or not isinstance(args_str, str):
-            continue
+
+    if isinstance(args, str):
         try:
-            args = json.loads(args_str)
+            args = json.loads(args)
         except (json.JSONDecodeError, TypeError):
+            return args[:max_len]
+
+    if not isinstance(args, dict):
+        return str(args)[:max_len]
+
+    parts: list[str] = []
+    for key, val in args.items():
+        if key == "tool_call_id":
             continue
-        for key in fields:
-            val = args.get(key, "")
-            if val and str(val).strip():
-                return str(val).strip()
-    return ""
+        val_str = str(val) if not isinstance(val, str) else val
+        if len(val_str) > 80:
+            val_str = val_str[:77] + "..."
+        parts.append(f'{key}: "{val_str}"')
+
+    result = ", ".join(parts)
+    return result[:max_len - 3] + "..." if len(result) > max_len else result
 
 
-def _source_label(ns: tuple) -> str:
-    """Derive a human-readable label from the v2 namespace tuple."""
-    if not ns:
-        return "coordinator"
-    for seg in reversed(ns):
-        if not isinstance(seg, str):
-            continue
-        raw_name = seg
-        if raw_name.startswith("tools:"):
-            raw_name = raw_name.split(":", 1)[1]
-        if _UUID_RE.match(raw_name):
-            continue
-        for prefix in ("transfer_to_", "call_", "invoke_"):
-            if raw_name.startswith(prefix):
-                raw_name = raw_name[len(prefix):]
-                break
-        label = raw_name.replace("_", " ").strip()
-        if label:
-            return label
-    return "subagent"
+def _sanitize_result_snippet(raw: Any, max_len: int = 200) -> str:
+    """Clean up tool result for the thinking stream."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+
+    for pattern in _REPR_PATTERNS:
+        text = pattern.sub("", text)
+    text = _WHITESPACE_RE.sub(" ", text).strip()
+
+    if not text:
+        return ""
+    return text[:max_len - 1] + "…" if len(text) > max_len else text
+
+
+def _extract_interrupt_tool_name(interrupts: tuple) -> str:
+    """Extract the tool name from an interrupt payload."""
+    if not interrupts:
+        return ""
+
+    first = interrupts[0]
+    value = getattr(first, "value", first)
+    if not isinstance(value, dict):
+        return ""
+
+    # pending_feedback_requests (request_human_feedback)
+    feedback = value.get("pending_feedback_requests", {})
+    if isinstance(feedback, dict) and feedback.get("tool_name"):
+        return str(feedback["tool_name"])
+
+    # action_requests (HITL middleware)
+    action_reqs = value.get("action_requests", [])
+    if isinstance(action_reqs, list) and action_reqs:
+        action = action_reqs[0].get("action", {}) if isinstance(action_reqs[0], dict) else {}
+        if isinstance(action, dict) and action.get("tool"):
+            return str(action["tool"])
+
+    # Custom interrupt with "type" key
+    custom_type = value.get("type", "")
+    return custom_type if custom_type and custom_type != "generic" else ""
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# Coordinator tool spec table
+# ---------------------------------------------------------------------------
+
+_COORDINATOR_SPECS: list[tuple[str, str, str, str, str]] = [
+    (
+        "transfer_to_helm_operator",
+        "helm-operator-coordinator",
+        "helm_operator_output",
+        "helm_operator",
+        "Delegate Helm chart generation and updates.",
+    ),
+    (
+        "transfer_to_k8s_operator",
+        "k8s-operator-coordinator",
+        "k8s_operator_output",
+        "k8s_operator",
+        "Delegate K8s cluster operations (pods, scaling, exec, events, diagnostics).",
+    ),
+    (
+        "transfer_to_app_operator",
+        "app-operator-coordinator",
+        "app_operator_output",
+        "app_operator",
+        "Delegate app lifecycle operations (ArgoCD, Argo Rollouts, Traefik).",
+    ),
+    (
+        "transfer_to_observability_operator",
+        "observability-coordinator",
+        "observability_output",
+        "observability_operator",
+        "Delegate observability operations (Prometheus, Alertmanager).",
+    ),
+]
+
+# Node name mapping: tool names <-> StateGraph node names (architecture spec)
+_TOOL_TO_NODE: dict[str, str] = {
+    "transfer_to_helm_operator": "helm_agent",
+    "transfer_to_k8s_operator": "k8s_ops_agent",
+    "transfer_to_app_operator": "app_mgmt_agent",
+    "transfer_to_observability_operator": "observability_agent",
+}
+# Mapping logic remains. Handoff target keywords moved to handoff_contracts.py.
+
+
+def _extract_tc_fields(tc: Any) -> tuple[str, dict[str, Any] | None]:
+    """Extract name and args from a tool call (dict or object)."""
+    if isinstance(tc, dict):
+        return tc.get("name", ""), tc.get("args")
+    return getattr(tc, "name", ""), getattr(tc, "args", None)
 
 
 # ---------------------------------------------------------------------------
@@ -360,12 +312,15 @@ def _source_label(ns: tuple) -> str:
 # ---------------------------------------------------------------------------
 
 class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
-    """Supervisor agent that manages the K8s Autopilot workflow.
+    """Supervisor agent — StateGraph with deterministic stack-based routing.
 
-    Uses create_agent() with tool wrappers for each coordinator.
-    Streams using v2 mode for dynamic token/progress/interrupt processing.
+    Architecture (docs/k8s_autopilot_architecture_spec.md):
+      Entry → supervisor_router → classify_request → coordinator node(s) → finalize_response
+      Cross-domain handoff uses dialog_state stack (push/pop) for call-and-return.
 
-    Reference: aws-orchestrator-agent SupervisorAgent
+    The old ``create_agent()`` + tool-wrapper approach has been replaced by a
+    ``StateGraph`` where each coordinator is a dedicated node.  Routing is
+    deterministic after the initial LLM classification.
     """
 
     @log_sync
@@ -383,45 +338,32 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         self.config_instance = config or Config(custom_config or {})
         self._name = name
 
-        # Initialize checkpointer
         try:
-            from k8s_autopilot.core.hitl import (  # noqa: PLC0415
-                get_checkpointer,
-            )
-            self.memory = get_checkpointer(
-                config=self.config_instance,
-                prefer_postgres=True,
-            )
+            from k8s_autopilot.core.hitl import get_checkpointer  # noqa: PLC0415
+            self.memory = get_checkpointer(config=self.config_instance, prefer_postgres=True)
         except Exception:  # noqa: BLE001
             self.memory = MemorySaver()
 
-        # Initialize LLM
         self.model = create_model(self.config_instance.get_llm_config())
 
-        # ── Coordinator(s) — new multi-coordinator path ───────────────
+        # Coordinator(s) — multi-coordinator is preferred
         self.agents: dict[str, Any] = {}
         self._coordinator: BaseDeepAgent | None = None
 
         if coordinators:
-            # Multi-coordinator injection (preferred)
             for coord in coordinators:
                 self.agents[coord.name] = coord
-            # Set primary coordinator (first in list, typically helm-operator)
             self._coordinator = coordinators[0]
         elif coordinator is not None:
-            # Single coordinator (backward compat)
             self._coordinator = coordinator
             self.agents[coordinator.name] = coordinator
         else:
-            # Legacy path: accept list of BaseSubgraphAgent
             for agent in (agents or []):
                 if hasattr(agent, "memory"):
                     agent.memory = self.memory
                 self.agents[agent.name] = agent
 
         self.prompt_template = prompt_template or SUPERVISOR_PROMPT
-
-        # Build supervisor graph
         self._graph = self._build_supervisor_graph()
 
         mode = (
@@ -430,14 +372,8 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         )
         logger.info(
             "Supervisor agent initialized",
-            extra={
-                "mode": mode,
-                "agent_count": len(self.agents),
-                "agent_names": list(self.agents.keys()),
-            },
+            extra={"mode": mode, "agent_count": len(self.agents), "agent_names": list(self.agents.keys())},
         )
-
-    # ── BaseAgent interface ───────────────────────────────────────────
 
     @property
     def name(self) -> str:
@@ -446,120 +382,493 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
     # ── Graph builder ─────────────────────────────────────────────────
 
     def _build_supervisor_graph(self) -> CompiledStateGraph:
-        """Build supervisor using create_agent() with tool wrappers.
+        """Build supervisor as a StateGraph with deterministic stack-based routing.
 
-        Coordinator mode: transfer_to_helm/k8s/app_operator tools.
+        Architecture: docs/k8s_autopilot_architecture_spec.md
+
+        Nodes:
+          supervisor_router  — deterministic hub; processes handoff push/pop
+          classify_request   — LLM-based initial intent classification
+          <coordinator>      — helm_agent | k8s_ops_agent | app_mgmt_agent | observability_agent
+          error_handler      — structured error recovery
+          finalize_response  — terminal output
+
+        Routing (deterministic after classification):
+          1. error_state set        → error_handler
+          2. dialog_state non-empty → top of stack
+          3. fresh request          → classify_request
+          4. otherwise              → finalize_response
         """
         if self._coordinator is None:
             msg = "No coordinator configured for supervisor"
             raise RuntimeError(msg)
 
-        agent_tools = self._create_agent_tools(self._coordinator)
+        builder = StateGraph(MainSupervisorState)  # type: ignore[bad-specialization]
 
-        feedback_tool = self._make_request_human_feedback_tool()
-        all_tools = [*agent_tools, feedback_tool]
+        # ── Nodes ─────────────────────────────────────────────
+        builder.add_node("supervisor_router", self._supervisor_router_node)  # type: ignore[arg-type]
+        builder.add_node("classify_request", self._classify_request_node)  # type: ignore[arg-type]
+        builder.add_node("error_handler", self._error_handler_node)  # type: ignore[arg-type]
+        builder.add_node("finalize_response", self._finalize_response_node)  # type: ignore[arg-type]
 
-        mode = "coordinator" if self._coordinator else "legacy"
+        # Coordinator nodes (lazy-init deep agent invocation)
+        available_nodes: list[str] = []
+        for tool_name, agent_key, output_key, phase_name, _doc in _COORDINATOR_SPECS:
+            node_name = _TOOL_TO_NODE[tool_name]
+            coord = self._coordinator if not available_nodes else self.agents.get(agent_key)
+            if coord is None:
+                continue
+            builder.add_node(
+                node_name,
+                self._make_coordinator_node(
+                    coordinator=coord,
+                    node_name=node_name,
+                    tool_name=tool_name,
+                    output_key=output_key,
+                    phase_name=phase_name,
+                ),
+            )
+            available_nodes.append(node_name)
+
+        self._available_coordinator_nodes: set[str] = set(available_nodes)
+
+        # ── Edges ─────────────────────────────────────────────
+        builder.add_edge(START, "supervisor_router")
+
+        # supervisor_router → conditional routing
+        route_map: dict[str, str] = {
+            "classify_request": "classify_request",
+            "error_handler": "error_handler",
+            "finalize_response": "finalize_response",
+            END: END,
+        }
+        for nn in available_nodes:
+            route_map[nn] = nn
+
+        builder.add_conditional_edges(
+            "supervisor_router",
+            self._route_after_supervisor,
+            route_map,  # type: ignore[arg-type]
+        )
+
+        # Hub-and-spoke: all domain nodes → supervisor_router
+        builder.add_edge("classify_request", "supervisor_router")
+        for nn in available_nodes:
+            builder.add_edge(nn, "supervisor_router")
+        builder.add_edge("error_handler", "supervisor_router")
+
+        # Terminal
+        builder.add_edge("finalize_response", END)
+
         logger.info(
-            "Creating supervisor with create_agent()",
+            "Supervisor StateGraph built (stack-based routing)",
             extra={
-                "tool_names": [t.name for t in all_tools],
-                "mode": mode,
+                "coordinator_nodes": available_nodes,
+                "total_nodes": len(available_nodes) + 4,
             },
         )
 
-        return create_agent(
-            model=self.model,
-            tools=all_tools,
-            system_prompt=self.prompt_template,
-            state_schema=MainSupervisorState,
-            checkpointer=cast("MemorySaver", self.memory),
-            middleware=build_supervisor_middleware(self.config_instance),
+        return builder.compile(checkpointer=cast("MemorySaver", self.memory))
+
+    # ── Tool wrappers (Legacy code removed) ───────────────────────────
+
+    # ── Stack-based routing nodes (bidirectional handoff) ─────────────
+
+    async def _supervisor_router_node(
+        self, state: dict[str, Any], config: RunnableConfig,
+    ) -> dict[str, Any]:
+        """Process handoff state transitions (push/pop) before routing.
+
+        This node does NOT decide routing — that is the job of
+        ``_route_after_supervisor`` (the conditional edge function).
+        It processes incoming ``handoff_request`` / ``handoff_result``
+        envelopes to update the ``dialog_state`` stack.
+        """
+        updates: dict[str, Any] = {}
+
+        # ── Process handoff_request → push target onto stack ──────
+        handoff_req = state.get("handoff_request")
+        if isinstance(handoff_req, dict) and handoff_req.get("target_agent"):
+            target = handoff_req["target_agent"]
+            correlation_id = handoff_req.get("correlation_id", "")
+
+            # Loop guard
+            if check_loop_guard(state.get("loop_guard"), correlation_id):
+                logger.warning(
+                    "Loop guard triggered — too many handoffs",
+                    extra={"correlation_id": correlation_id, "target": target},
+                )
+                updates["error_state"] = {
+                    "type": "loop_detected",
+                    "correlation_id": correlation_id,
+                    "message": f"Too many handoffs for correlation {correlation_id}",
+                }
+                updates["handoff_request"] = {}
+                return updates
+
+            updates["dialog_state"] = target  # reducer pushes
+            updates["active_agent"] = target
+            updates["return_to"] = handoff_req.get("return_to", "")
+            updates["resume_cursor"] = handoff_req.get("resume_cursor", "")
+            updates["correlation_id"] = correlation_id
+            updates["handoff_request"] = {}  # consumed
+            updates["loop_guard"] = increment_loop_guard(
+                state.get("loop_guard"), correlation_id,
+            )
+
+            # ── Update user_query so the target coordinator gets
+            # the ACTUAL cross-domain request, not the original query.
+            intent = handoff_req.get("intent", "")
+            payload_data = handoff_req.get("payload", {})
+            user_request = (
+                payload_data.get("user_request", "") if isinstance(payload_data, dict) else ""
+            ) or intent
+            if user_request:
+                updates["user_query"] = user_request
+                updates["messages"] = [HumanMessage(content=user_request)]
+
+            logger.info(
+                "Stack push (handoff request)",
+                extra={
+                    "target": target,
+                    "return_to": updates["return_to"],
+                    "stack_depth": len(state.get("dialog_state", [])) + 1,
+                    "forwarded_query": user_request[:100] if user_request else "(unchanged)",
+                },
+            )
+            return updates
+
+        # ── Process handoff_result → callee already popped itself ─
+        #
+        # Architecture spec §Routing model: the callee has already popped
+        # itself off dialog_state. Now we pop the CALLER as well, because
+        # the cross-domain delegation round-trip is complete. The caller
+        # does not need to re-execute — it already did its work before
+        # requesting the handoff, and the callee has now fulfilled it.
+        #
+        # Without this pop, the caller would be re-invoked with the stale
+        # handoff intent as user_query, causing an infinite ping-pong.
+        handoff_res = state.get("handoff_result")
+        if isinstance(handoff_res, dict) and handoff_res.get("correlation_id"):
+            return_to = handoff_res.get("target_agent", "")
+            callee = handoff_res.get("source_agent", "")
+            callee_summary_raw = handoff_res.get("summary", "")
+            # Extract clean user-facing text (strips thinking blocks,
+            # signatures, and other internal Gemini content-block metadata).
+            from k8s_autopilot.core.state.handoff_contracts import (  # noqa: PLC0415
+                _extract_clean_text,
+            )
+            callee_summary = _extract_clean_text(callee_summary_raw)
+
+            summary = format_handoff_for_context(handoff_res)
+
+            # Pop the caller off the stack — the round-trip is complete.
+            # NOTE: We compute the popped stack explicitly (as a list) rather
+            # than returning the string "pop", because LangGraph may coerce a
+            # bare string to list("pop") → ['p','o','p'] before calling the
+            # reducer. Returning a list triggers the reducer's overwrite path.
+            current_stack = list(state.get("dialog_state", []))
+            if current_stack:
+                current_stack = current_stack[:-1]
+            updates["dialog_state"] = current_stack
+            updates["active_agent"] = ""
+            updates["status"] = "completed"
+
+            # Update user_query so finalize_response has proper context
+            updates["user_query"] = (
+                f"[Cross-domain delegation completed]\n"
+                f"Caller: {return_to} → Callee: {callee}\n"
+                f"Result: {callee_summary[:500]}"
+            )
+            # summary already includes "[Cross-domain result] ..." header
+            updates["messages"] = [
+                SystemMessage(content=summary),
+            ]
+            updates["handoff_result"] = {}  # consumed
+            # Clear stale handoff tracking fields
+            updates["return_to"] = ""
+            updates["resume_cursor"] = ""
+            updates["correlation_id"] = ""
+            logger.info(
+                "Handoff result consumed — caller popped (round-trip complete)",
+                extra={
+                    "caller": return_to,
+                    "callee": callee,
+                    "status": handoff_res.get("status"),
+                    "stack_depth": len(state.get("dialog_state", [])),
+                },
+            )
+            return updates
+
+        return updates
+
+    def _route_after_supervisor(self, state: dict[str, Any]) -> str:
+        """Deterministic routing based on dialog_state stack.
+
+        Routing algorithm (architecture spec §Routing model):
+          1. error_state unresolved → error_handler
+          2. dialog_state non-empty → top of stack
+          3. fresh request (pending) → classify_request
+          4. otherwise              → finalize_response
+        """
+        # 1. Error takes priority
+        error = state.get("error_state")
+        if isinstance(error, dict) and error.get("type"):
+            return "error_handler"
+
+        # 2. Stack-based routing
+        stack = state.get("dialog_state", [])
+        if stack:
+            top = stack[-1]
+            if top in self._available_coordinator_nodes:
+                return top
+            logger.warning(
+                f"Unknown agent on stack: {top!r} — routing to error_handler",
+                extra={"stack": list(stack)},
+            )
+            return "error_handler"
+
+        # 3. Fresh request needs classification
+        status = state.get("status", "pending")
+        if status == "pending":
+            return "classify_request"
+
+        # 4. Workflow finished
+        return "finalize_response"
+
+    async def _classify_request_node(
+        self, state: dict[str, Any], config: RunnableConfig,
+    ) -> dict[str, Any]:
+        """LLM-based intent classification for initial request routing.
+
+        Uses ``model.bind_tools()`` with lightweight routing tool stubs.
+        The LLM picks which coordinator handles the request; the node
+        extracts the target from the tool call and pushes it onto
+        ``dialog_state``.
+        """
+        # Bind to structured output
+        model_with_tools = self.model.with_structured_output(RouterDecision, include_raw=True)
+
+        # Inject cross-domain context (replaces SupervisorContextMiddleware)
+        context_msgs: list[Any] = []
+        domain_summaries = state.get("domain_summaries", [])
+        if domain_summaries:
+            lines = []
+            for s in domain_summaries:
+                if isinstance(s, dict):
+                    domain = s.get("domain", "unknown")
+                    outcome = s.get("outcome", "completed")
+                    detail = s.get("detail", "")
+                    lines.append(f"- **{domain}**: {outcome}" + (f" — {detail}" if detail else ""))
+            if lines:
+                context_msgs.append(SystemMessage(
+                    content=(
+                        "## Cross-Domain Context\n"
+                        "Previous coordinator outcomes this session:\n"
+                        + "\n".join(lines)
+                        + "\n\nUse this when routing follow-up requests."
+                    ),
+                ))
+
+        all_msgs = state.get("messages", [])
+        user_query = state.get("user_query", "")
+        
+        # Fallback if user_query is not set in state
+        if not user_query:
+            for msg in reversed(all_msgs):
+                if isinstance(msg, HumanMessage):
+                    user_query = _extract_content_text(getattr(msg, "content", ""))
+                    break
+
+        # Build limited chat history for context without overwhelming the router
+        chat_history = []
+        for m in all_msgs[-5:]:
+            role = "User" if isinstance(m, HumanMessage) else "Assistant" if isinstance(m, AIMessage) else "System"
+            content = _extract_content_text(getattr(m, "content", ""))
+            if content:
+                if len(content) > 300:
+                    content = content[:300] + " ... [truncated]"
+                chat_history.append(f"{role}: {content}")
+
+        history_text = "\n".join(chat_history) if chat_history else "No prior context."
+
+        classification_prompt = (
+            f"Recent conversation context (for reference only, these tasks may already be completed):\n"
+            f"{history_text}\n\n"
+            f"--------------------------------------------------\n"
+            f"CURRENT USER REQUEST TO CLASSIFY:\n"
+            f"<user_request>\n{user_query}\n</user_request>\n\n"
+            f"INSTRUCTION: Focus strictly on the <user_request> above. Route this exact request. Do not route based on past completed tasks."
         )
 
-    # ── Tool wrappers ─────────────────────────────────────────────────
+        messages = [
+            SystemMessage(content=self.prompt_template),
+            *context_msgs,
+            HumanMessage(content=classification_prompt),
+        ]
 
-    @staticmethod
-    def _make_coordinator_tool(
+        try:
+            response = await model_with_tools.ainvoke(messages, config=config)
+            response_dict = cast(dict[str, Any], response)
+            decision: RouterDecision | None = response_dict.get("parsed")
+            raw_msg = response_dict.get("raw")
+        except Exception as exc:
+            logger.error("Classification LLM call failed", extra={"error": str(exc)})
+            return {
+                "error_state": {
+                    "type": "classification_error",
+                    "message": str(exc),
+                },
+            }
+
+        # Fallback if parsing failed completely
+        if not decision:
+            logger.warning("Classification produced no parsed decision")
+            content = _extract_content_text(getattr(raw_msg, "content", "")) if raw_msg else "Unknown parsing error."
+            payload = {
+                "pending_feedback_requests": {
+                    "status": "input_required",
+                    "question": "I'm not sure how to help. Could you describe your Kubernetes task?",
+                    "context": content or "No matching coordinator",
+                    "tool_name": "request_human_feedback",
+                },
+            }
+            resume_val = interrupt(payload)
+            resume_str = str(resume_val) if resume_val is not None else ""
+            msgs = [raw_msg] if raw_msg else []
+            msgs.append(HumanMessage(content=resume_str))
+            return {
+                "pending_feedback_requests": {},
+                "messages": msgs,
+                "user_query": resume_str,
+                "status": "pending",
+            }
+
+        # Handle the structured decision
+        if decision.destination == "request_human_feedback":
+            payload = {
+                "pending_feedback_requests": {
+                    "status": "input_required",
+                    "question": decision.task,
+                    "context": decision.reasoning or "No additional context provided",
+                    "tool_name": "request_human_feedback",
+                },
+            }
+            resume_val = interrupt(payload)
+            resume_str = str(resume_val) if resume_val is not None else ""
+            
+            return {
+                "pending_feedback_requests": {},
+                "messages": [raw_msg, HumanMessage(content=resume_str)],
+                "user_query": resume_str,
+                "status": "pending",  # re-classify after feedback
+            }
+
+        target_node = _TOOL_TO_NODE.get(decision.destination)
+        if target_node:
+            logger.info(
+                "Request classified",
+                extra={"target": target_node, "reasoning": decision.reasoning, "task_preview": decision.task[:200]},
+            )
+            return {
+                "dialog_state": target_node,   # push onto stack
+                "active_agent": target_node,
+                "user_query": decision.task,
+                "status": "working",
+                "messages": [raw_msg],
+            }
+
+        # Fallback: unknown destination string
+        logger.warning(
+            "Classification produced unknown destination", extra={"destination": decision.destination},
+        )
+        payload = {
+            "pending_feedback_requests": {
+                "status": "input_required",
+                "question": "I'm not sure how to help. Could you describe your Kubernetes task?",
+                "context": "No matching coordinator",
+                "tool_name": "request_human_feedback",
+            },
+        }
+        resume_val = interrupt(payload)
+        resume_str = str(resume_val) if resume_val is not None else ""
+        return {
+            "pending_feedback_requests": {},
+            "messages": [raw_msg, HumanMessage(content=resume_str)],
+            "user_query": resume_str,
+            "status": "pending",
+        }
+
+    def _make_coordinator_node(
+        self,
         coordinator: BaseDeepAgent,
+        node_name: str,
         tool_name: str,
-        tool_doc: str,
         output_key: str,
         phase_name: str,
     ) -> Any:
-        """Create a coordinator tool wrapper.
+        """Create a StateGraph node that invokes a BaseDeepAgent coordinator.
 
-        Reusable factory that builds a @tool wrapper for any BaseDeepAgent
-        coordinator, following the AWS orchestrator reference pattern:
-        - Inject HumanMessage(task_description) into messages
-        - Lazy-init deep agent graph
-        - Bridge __pregel_runtime store for MemoryMiddleware
-        - Call 3-arg output_transform(agent_state, supervisor_state, tool_call_id)
-
-        Args:
-            coordinator: The deep agent coordinator to wrap.
-            tool_name: Name of the tool (e.g. 'transfer_to_helm_operator').
-            tool_doc: Docstring for the tool.
-            output_key: Key in supervisor state for coordinator output.
-
-        Reference: aws-orchestrator SupervisorAgent._create_agent_tools
+        Each coordinator node:
+          1. Lazy-inits the deep agent graph
+          2. Transforms supervisor state → coordinator input
+          3. Streams the deep agent (astream with config passthrough)
+          4. Transforms output → supervisor state update
+          5. Detects cross-domain handoff → sets handoff_request
+          6. Or completes → pops dialog_state
         """
 
-        @tool(tool_name)  # type: ignore[call-overload]
-        async def _coordinator_tool(
-            task_description: str,
-            runtime: ToolRuntime[None, MainSupervisorState],
-            tool_call_id: Annotated[str, InjectedToolCallId],
-            config: RunnableConfig,
-        ) -> Command:
-            """
-            Delegate to the deep agent coordinator.
-
-            task_description: intent-based summary from user request.
-            Do NOT pass the raw user message verbatim.
-            """
+        async def _coordinator_node(
+            state: dict[str, Any], config: RunnableConfig, *, writer: StreamWriter,
+        ) -> dict[str, Any]:
             logger.info(
-                f"{tool_name} invoked",
+                f"{node_name} coordinator node invoked",
                 extra={
-                    "task_description": task_description[:200],
-                    "session_id": runtime.state.get("session_id"),
-                    "task_id": runtime.state.get("task_id"),
+                    "session_id": state.get("session_id"),
+                    "task_id": state.get("task_id"),
+                    "user_query_preview": state.get("user_query", "")[:200],
                 },
             )
 
-            # Lazy-init the deep agent graph (JIT pattern)
+            # ── Lazy-init the deep agent graph ────────────────────
             if not coordinator._is_initialized:
-                logger.info(f"Building {tool_name} deep agent graph lazily")  # noqa: G004
-                coordinator._deep_agent_graph = (
-                    await coordinator.build_agent()
-                )
+                logger.info(f"Building {node_name} deep agent graph")
+                coordinator._deep_agent_graph = await coordinator.build_agent()
                 coordinator._is_initialized = True
 
-            deep_agent_graph = coordinator._deep_agent_graph
-            if deep_agent_graph is None:
-                msg = f"{tool_name}: deep agent graph not initialized"
-                raise AgentExecutionError(msg)
+            deep_graph = coordinator._deep_agent_graph
+            if deep_graph is None:
+                return {
+                    "error_state": {
+                        "type": "init_failed",
+                        "agent": node_name,
+                        "message": f"{node_name} deep agent graph not initialized",
+                    },
+                    "dialog_state": "pop",
+                }
 
-            # Build input: inject HumanMessage(task_description) into messages
-            # (AWS reference pattern — supervisor crafts the message)
-            send_payload: dict[str, Any] = dict(runtime.state)
-            send_payload["messages"] = [HumanMessage(content=task_description)]
-            send_payload["user_query"] = task_description
+            # ── Build input ───────────────────────────────────────
+            task = state.get("user_query", "")
+
+
+
+            send_payload: dict[str, Any] = dict(state)
+            send_payload["messages"] = [HumanMessage(content=task)]
+            send_payload["user_query"] = task
             child_input = coordinator.input_transform(send_payload)
 
-            # Build config: coordinator owns what context the deep agent needs
+            # ── Build config ──────────────────────────────────────
             child_config: dict[str, Any] = {
-                k: v for k, v in config.items() if k != "store"
+                k: v for k, v in config.items() if k not in ("store", "callbacks")
             }
+            configurable = dict(config.get("configurable", {}))
 
-            # ── Store bridging (AWS reference pattern) ─────────────────────
-            child_store = getattr(deep_agent_graph, "store", None)
+            # Store bridging
+            child_store = getattr(deep_graph, "store", None)
             if child_store is None:
-                bound = getattr(deep_agent_graph, "bound", None)
+                bound = getattr(deep_graph, "bound", None)
                 if bound is not None:
                     child_store = getattr(bound, "store", None)
-
-            configurable = dict(config.get("configurable", {}))
 
             runtime_obj = configurable.get("__pregel_runtime")
             if (
@@ -567,320 +876,328 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 and hasattr(runtime_obj, "override")
                 and child_store is not None
             ):
-                configurable["__pregel_runtime"] = (
-                    runtime_obj.override(store=child_store)
+                configurable["__pregel_runtime"] = runtime_obj.override(
+                    store=child_store,
                 )
 
             child_config["configurable"] = {
                 **configurable,
-                "thread_id": f"{runtime.state.get('session_id', 'default')}:{tool_name}",
+                "thread_id": f"{state.get('session_id', 'default')}:{tool_name}",
                 "context": coordinator.build_context(
-                    supervisor_state=dict(runtime.state),
+                    supervisor_state=dict(state),
                 ),
             }
-
             child_config["recursion_limit"] = 250
 
-            # ── Invoke child graph ─────────────────────────────────────────
-            #
-            # The child graph is compiled with checkpointer=None, so it uses
-            # per-invocation persistence — it inherits the parent supervisor's
-            # checkpointer via the config passed here.  This means:
-            #
-            #   1. interrupt() in the child (e.g. request_chat_continue)
-            #      propagates as GraphInterrupt through the parent graph.
-            #   2. Command(resume=X) from the parent flows to the child's
-            #      interrupt() automatically through LangGraph's replay.
-            #   3. No manual bridging (get_state/interrupt/while-loop) needed.
-            #
-            # Reference: LangGraph docs — Subgraph persistence / Per-invocation.
-
+            # ── Invoke deep agent ─────────────────────────────────
             try:
-                final_state = await deep_agent_graph.ainvoke(
+                final_state = None
+                async for chunk in deep_graph.astream(
                     child_input,
                     config=cast("RunnableConfig", child_config),
-                )
-            except GraphInterrupt:
-                logger.info(
-                    f"{tool_name} paused for human input (interrupt)",  # noqa: G004
-                )
+                    stream_mode=cast("list[StreamMode]", ["messages", "values"]),
+                    subgraphs=True,
+                    version="v2",
+                ):
+                    chunk_type = chunk.get("type", "") if isinstance(chunk, dict) else ""
+
+                    if chunk_type == "messages":
+                        # Forward LLM tokens to parent via custom stream
+                        msg_data = chunk.get("data")
+                        if msg_data is not None:
+                            writer({
+                                "kind": "deep_agent_message",
+                                "node": node_name,
+                                "data": msg_data,
+                                "ns": chunk.get("ns", ()),
+                            })
+
+                    elif chunk_type == "values":
+                        # Capture final state from values stream
+                        val = chunk.get("data")
+                        if isinstance(val, dict):
+                            final_state = val
+
+                    # Other chunk types — ignore silently
+
+            except GraphInterrupt as gi:
+                # Check if the interrupt is a chat_continue carrying a
+                # handoff/scope-refusal.  If so, DON'T re-raise — instead
+                # intercept and return a handoff_request so the supervisor
+                # routes to the correct coordinator.
+                try:
+                    from k8s_autopilot.core.state.handoff_contracts import (  # noqa: PLC0415
+                        extract_handoff_from_text,
+                    )
+                    interrupts = gi.args[0] if gi.args else []
+                    for intr in (interrupts if isinstance(interrupts, (list, tuple)) else [interrupts]):
+                        intr_val = getattr(intr, "value", intr)
+                        if not isinstance(intr_val, dict):
+                            continue
+                        # Ensure no handoff extraction happens for free-form text on interrupt
+                except Exception:  # noqa: BLE001
+                    pass  # fallback: re-raise the interrupt normally
+                logger.info(f"{node_name} paused for human input (interrupt)")
                 raise
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
+                import traceback
                 logger.error(
-                    f"{tool_name} ainvoke failed",  # noqa: G004
+                    f"{node_name} execution failed\n{traceback.format_exc()}",
                     extra={"error": str(exc)},
                 )
-                return Command(
-                    update={
-                        "messages": [
-                            ToolMessage(
-                                content=(
-                                    f"{tool_name} encountered an error: "
-                                    f"{exc}\n\n"
-                                    f"The {phase_name} coordinator was "
-                                    f"unable to complete the request."
-                                ),
-                                tool_call_id=tool_call_id,
-                                name=tool_name,
-                            )
-                        ],
-                        "status": "error",
-                    }
-                )
+                return {
+                    "status": "error",
+                    "error_state": {
+                        "type": "execution_error",
+                        "agent": node_name,
+                        "message": str(exc),
+                    },
+                    "dialog_state": "pop",
+                }
 
+            # ── Transform output ──────────────────────────────────
             try:
                 if final_state is None:
-                    msg = f"{tool_name} yielded no state"
-                    raise AgentExecutionError(msg)  # noqa: TRY301
+                    logger.error(f"{node_name} yielded no state")
+                    return {
+                        "status": "error",
+                        "error_state": {
+                            "type": "no_state", "agent": node_name,
+                            "message": f"{node_name} yielded no state",
+                        },
+                        "dialog_state": "pop",
+                    }
 
-                # Coerce to dict
+                child_dict: dict[str, Any]
                 if isinstance(final_state, dict):
-                    child_state_dict: dict[str, Any] = cast(
-                        "dict[str, Any]", final_state,
-                    )
+                    child_dict = cast("dict[str, Any]", final_state)
                 elif hasattr(final_state, "model_dump"):
-                    child_state_dict = cast(
-                        "dict[str, Any]", final_state.model_dump(),
-                    )
+                    child_dict = cast("dict[str, Any]", final_state.model_dump())
                 else:
-                    child_state_dict = cast(
-                        "dict[str, Any]", dict(final_state),
+                    child_dict = cast("dict[str, Any]", dict(final_state))
+
+                payload_out = coordinator.output_transform(child_dict)
+                final_msg = payload_out.get("final_message", f"{node_name} completed.")
+
+                # ── Escalation from deep agent tool? ──────────────
+                # The escalate_to_supervisor tool sets a structured
+                # marker in the deep agent's state.  Detect it here
+                # and translate into a re-classification cycle:
+                #   pop current agent → status=pending → classify_request
+                escalation = child_dict.get("escalation_request")
+                if not escalation:
+                    # Fallback: Extract from the messages array because deepagents
+                    # drops unmapped state fields like escalation_request
+                    messages = child_dict.get("messages", [])
+                    for i in range(len(messages) - 1, -1, -1):
+                        msg = messages[i]
+                        if getattr(msg, "type", None) == "ai" and hasattr(msg, "tool_calls"):
+                            for tc in msg.tool_calls:
+                                if tc.get("name") == "escalate_to_supervisor":
+                                    args = tc.get("args", {})
+                                    escalation = {
+                                        "user_request": args.get("user_request", ""),
+                                        "reason": args.get("reason", "")
+                                    }
+                                    break
+                            if escalation:
+                                break
+                if escalation and isinstance(escalation, dict):
+                    esc_user_req = str(escalation.get("user_request") or task or "")
+                    esc_reason = str(escalation.get("reason") or "Out of scope")
+
+                    logger.info(
+                        f"{node_name} escalation via tool — re-routing",
+                        extra={
+                            "user_request": esc_user_req[:200],
+                            "reason": esc_reason[:200],
+                        },
                     )
 
-                # Fetch structured output payload from coordinator
-                payload = coordinator.output_transform(child_state_dict)
+                    return {
+                        output_key: {
+                            "final_message": esc_reason,
+                            "status": "escalated",
+                        },
+                        "user_query": esc_user_req,
+                        "dialog_state": "pop",
+                        "active_agent": "",
+                        "status": "pending",
+                        "messages": [HumanMessage(content=esc_user_req)],
+                    }
 
-                # Update workflow state
-                wf = k8sAutopilotSupervisorAgent._coerce_workflow_state(
-                    dict(runtime.state),
-                )
+                # ── Cross-domain handoff? ─────────────────────────
+                if "handoff_request" in payload_out:
+                    hr = payload_out["handoff_request"]
+                    logger.info(
+                        f"{node_name} cross-domain handoff detected natively",
+                        extra={
+                            "target": hr.get("target_agent"),
+                            "intent": hr.get("intent", "")[:100],
+                        },
+                    )
+                    return {
+                        output_key: payload_out,
+                        "handoff_request": hr,
+                        # Don't pop — stay on stack for call-and-return
+                        "status": "handoff",
+                    }
+
+                # ── Cross-domain RETURN (callee completing delegated task) ─
+                callee_return_to = state.get("return_to", "")
+                callee_corr_id = state.get("correlation_id", "")
+                if callee_return_to and callee_corr_id:
+                    # This coordinator was invoked as a callee for another
+                    # coordinator.  Produce a HandoffResult so the caller
+                    # gets structured cross-domain results.
+                    from k8s_autopilot.core.state.handoff_contracts import (  # noqa: PLC0415
+                        HandoffResult,
+                    )
+
+                    result_payload = {
+                        k: v for k, v in payload_out.items()
+                        if k not in ("final_message", "handoff_request")
+                    }
+                    handoff_result = HandoffResult(
+                        source_agent=tool_name,
+                        target_agent=callee_return_to,
+                        correlation_id=callee_corr_id,
+                        status=payload_out.get("status", "completed"),
+                        summary=final_msg[:500],
+                        payload=result_payload,
+                    )
+                    logger.info(
+                        f"{node_name} cross-domain return → {callee_return_to}",
+                        extra={
+                            "correlation_id": callee_corr_id,
+                            "summary_preview": final_msg[:100],
+                        },
+                    )
+                    return {
+                        output_key: payload_out,
+                        "handoff_result": handoff_result,
+                        "dialog_state": "pop",  # pop callee off stack
+                        "active_agent": callee_return_to,
+                        "status": "handoff_return",
+                        # Clear consumed handoff tracking fields
+                        "return_to": "",
+                        "resume_cursor": "",
+                        "correlation_id": "",
+                    }
+
+                # ── Normal completion ─────────────────────────────
+                wf = k8sAutopilotSupervisorAgent._coerce_workflow_state(state)
                 wf.set_phase_complete(phase_name)
                 wf.last_agent = tool_name
                 wf.next_agent = None
 
-                # Build tool message for the coordinator
-                final_msg_content = (
-                    payload.get("final_message") or f"{tool_name} completed."
-                )
-                tool_msg = ToolMessage(
-                    content=final_msg_content,
-                    tool_call_id=tool_call_id,
-                    name=tool_name,
-                )
+                update: dict[str, Any] = {
+                    output_key: payload_out,
+                    "dialog_state": "pop",
+                    "active_agent": "",
+                    "status": "completed",
+                    "workflow_state": wf,
+                    "workflow_complete": wf.workflow_complete,
+                    "messages": [HumanMessage(content=final_msg)],
+                }
+                if "domain_summary" in payload_out:
+                    update["domain_summaries"] = [payload_out["domain_summary"]]
+                return update
 
-                # Detect cross-domain handoff signals
-                is_handoff = _detect_cross_domain_handoff(final_msg_content)
-                effective_status = "handoff" if is_handoff else "completed"
-
-                # ── Cross-domain context extraction ────────────────────
-                # When a coordinator says "outside my scope", extract
-                # structured context so the supervisor can inject it
-                # into the next coordinator's task description.
-                update_dict: dict[str, Any] = {
-                    "workflow_state": wf.model_dump(),
-                    output_key: payload,
-                    "messages": [tool_msg],
-                    "status": effective_status,
-                    "workflow_complete": (
-                        False if is_handoff else wf.workflow_complete
-                    ),
+            except Exception as exc:
+                import traceback as tb
+                logger.error(
+                    f"{node_name} post-processing failed",
+                    extra={"error": str(exc), "traceback": tb.format_exc()},
+                )
+                return {
+                    "status": "error",
+                    "error_state": {
+                        "type": "post_process_error",
+                        "agent": node_name,
+                        "message": str(exc),
+                    },
+                    "dialog_state": "pop",
                 }
 
-                if "domain_summary" in payload:
-                    update_dict["domain_summaries"] = [payload["domain_summary"]]
+        _coordinator_node.__name__ = node_name
+        _coordinator_node.__qualname__ = f"k8sAutopilotSupervisorAgent.{node_name}"
+        return _coordinator_node
 
-                if is_handoff:
-                    handoff_ctx = _extract_handoff_context(
-                        message=final_msg_content,
-                        source_tool=tool_name,
-                        payload=payload,
-                    )
-                    update_dict["cross_domain_context"] = handoff_ctx
-                    logger.info(
-                        f"{tool_name} cross-domain handoff detected",  # noqa: G004
-                        extra={
-                            "source_domain": handoff_ctx.get("source_domain"),
-                            "user_request": (
-                                handoff_ctx.get("user_request", "")[:100]
-                            ),
-                        },
-                    )
+    async def _error_handler_node(
+        self, state: dict[str, Any], config: RunnableConfig,
+    ) -> dict[str, Any]:
+        """Handle errors: loop detection, execution failures, etc."""
+        error = state.get("error_state", {})
+        error_type = error.get("type", "unknown")
+        error_msg = error.get("message", "An error occurred")
 
-                return Command(update=update_dict)
+        logger.error(
+            "Error handler invoked",
+            extra={"error_type": error_type, "error_msg": error_msg},
+        )
 
-            except Exception as exc:  # noqa: BLE001
-                # Post-invoke processing failed (output_transform, state
-                # coercion, etc.).  Return error as ToolMessage so the
-                # supervisor LLM can report gracefully.
-                logger.error(
-                    f"{tool_name} post-processing failed",  # noqa: G004
-                    extra={"error": str(exc)},
-                )
-                return Command(
-                    update={
-                        "messages": [
-                            ToolMessage(
-                                content=(
-                                    f"{tool_name} completed but result "
-                                    f"processing failed: {exc}"
-                                ),
-                                tool_call_id=tool_call_id,
-                            )
-                        ],
-                        "status": "error",
-                    }
-                )
-
-        _coordinator_tool.__doc__ = tool_doc
-        return _coordinator_tool
-
-    def _create_agent_tools(self, primary_coordinator: BaseDeepAgent) -> list:
-        """Create tool wrappers for each coordinator.
-
-        4 tools — one per domain coordinator:
-        - transfer_to_helm_operator: Helm chart generation/update
-        - transfer_to_k8s_operator: K8s cluster operations
-        - transfer_to_app_operator: App onboarding (ArgoCD, Argo Rollouts, Traefik)
-        - transfer_to_observability_operator: Prometheus monitoring, Alertmanager alerting
-
-        Reference: aws-orchestrator SupervisorAgent._create_agent_tools
-        """
-        tools: list[Any] = []
-
-        # ── 1. Helm Operator (chart generation & updates) ─────────────────
-        tools.append(self._make_coordinator_tool(
-            coordinator=primary_coordinator,
-            tool_name="transfer_to_helm_operator",
-            tool_doc=(
-                "Delegate Helm chart generation/update to Helm Operator.\n\n"
-                "Use for:\n"
-                "- Creating new Helm charts from scratch\n"
-                "- Updating existing chart templates\n"
-                "- Committing chart files to GitHub\n"
-                "- Any chart creation or modification operation"
-            ),
-            output_key="helm_operator_output",
-            phase_name="helm_operator",
-        ))
-
-        # ── 2. K8s Operator (cluster operations) ──────────────────────────
-        k8s_op = self.agents.get("k8s-operator-coordinator")
-        if k8s_op:
-            tools.append(self._make_coordinator_tool(
-                coordinator=k8s_op,
-                tool_name="transfer_to_k8s_operator",
-                tool_doc=(
-                    "Delegate K8s cluster operations.\n\n"
-                    "Use for:\n"
-                    "- List/get/create/update/delete K8s resources\n"
-                    "- Pod debugging: logs, exec, top, debug pods\n"
-                    "- Scaling deployments and replica sets\n"
-                    "- Events, node diagnostics, health checks\n"
-                    "- Kubeconfig contexts (multi-cluster)"
-                ),
-                output_key="k8s_operator_output",
-                phase_name="k8s_operator",
-            ))
-
-        # ── 3. App Operator (ArgoCD + Argo Rollouts + Traefik) ────────────
-        app_op = self.agents.get("app-operator-coordinator")
-        if app_op:
-            tools.append(self._make_coordinator_tool(
-                coordinator=app_op,
-                tool_name="transfer_to_app_operator",
-                tool_doc=(
-                    "Delegate application lifecycle operations.\n\n"
-                    "Use for:\n"
-                    "- ArgoCD: projects, repositories, applications, sync, debug\n"
-                    "- Argo Rollouts: canary, blue-green, analysis runs\n"
-                    "- Traefik: weighted routing, middleware, traffic mirroring"
-                ),
-                output_key="app_operator_output",
-                phase_name="app_operator",
-            ))
-
-        # ── 4. Observability Operator (Prometheus + Alertmanager) ─────────
-        obs_op = self.agents.get("observability-coordinator")
-        if obs_op:
-            tools.append(self._make_coordinator_tool(
-                coordinator=obs_op,
-                tool_name="transfer_to_observability_operator",
-                tool_doc=(
-                    "Delegate observability and monitoring operations.\n\n"
-                    "Use for:\n"
-                    "- Prometheus: PromQL queries, metric exploration, exporter lifecycle\n"
-                    "- Prometheus: alerting/recording rules, ServiceMonitors, TSDB cardinality\n"
-                    "- Alertmanager: alert triage, on-call summary, silence lifecycle\n"
-                    "- Alertmanager: routing audit, governance review, integration testing"
-                ),
-                output_key="observability_output",
-                phase_name="observability_operator",
-            ))
-
-        return tools
-
-
-
-
-    @staticmethod
-    def _make_request_human_feedback_tool():
-        """Create the HITL tool for greetings/out-of-scope/clarification."""
-
-        @tool
-        def request_human_feedback(
-            question: str,
-            context: str | None = None,
-            tool_call_id: Annotated[str, InjectedToolCallId] = "",
-        ) -> Command:
-            """Request human feedback during workflow execution.
-
-            Use when:
-            - User sends greetings — create friendly, contextual greeting
-            - Request is out-of-scope — guide user to Helm/ArgoCD tasks
-            - Need clarification on ambiguous requirements
-
-            Args:
-                question: Dynamic, contextual message for the human
-                context: Optional context about why feedback is needed
-            """
-            if not tool_call_id:
-                tool_call_id = "unknown"
-
-            logger.info(
-                "Requesting human feedback",
-                extra={
-                    "question_preview": question[:200],
-                    "tool_call_id": tool_call_id,
-                },
-            )
-
+        # Loop detection → interrupt for human review
+        if error_type == "loop_detected":
             payload = {
                 "pending_feedback_requests": {
                     "status": "input_required",
-                    "question": question,
-                    "context": context or "No additional context provided",
-                    "tool_name": "request_human_feedback",
+                    "question": (
+                        f"A routing loop was detected: {error_msg}. "
+                        "Would you like to retry with a different approach, "
+                        "or provide more specific instructions?"
+                    ),
+                    "context": f"Error type: {error_type}",
+                    "tool_name": "error_handler",
                 },
             }
+            resume_val = interrupt(payload)
+            resume_str = str(resume_val) if resume_val is not None else ""
+            clear_stack = []
+            for _ in state.get("dialog_state", []):
+                clear_stack.append("pop")
+            return {
+                "error_state": {},
+                "pending_feedback_requests": {},
+                "dialog_state": clear_stack[0] if clear_stack else [],
+                "messages": [HumanMessage(content=resume_str)],
+                "user_query": resume_str,
+                "status": "pending",
+            }
 
-            response = interrupt(payload)
-            response_str = str(response) if response is not None else ""
+        # General error → inform user
+        payload = {
+            "pending_feedback_requests": {
+                "status": "input_required",
+                "question": (
+                    f"An error occurred during processing: {error_msg}. "
+                    "Would you like to retry or try a different request?"
+                ),
+                "context": f"Error type: {error_type}",
+                "tool_name": "error_handler",
+            },
+        }
+        resume_val = interrupt(payload)
+        resume_str = str(resume_val) if resume_val is not None else ""
+        return {
+            "error_state": {},
+            "pending_feedback_requests": {},
+            "messages": [HumanMessage(content=resume_str)],
+            "user_query": resume_str,
+            "status": "pending",
+        }
 
-            tool_msg = ToolMessage(
-                content=f"Human input received: {response_str}",
-                tool_call_id=tool_call_id,
-            )
+    async def _finalize_response_node(
+        self, state: dict[str, Any], config: RunnableConfig,
+    ) -> dict[str, Any]:
+        """Terminal node — marks workflow complete."""
+        return {
+            "status": "completed",
+            "workflow_complete": True,
+            "active_agent": "",
+        }
 
-            return Command(
-                update={
-                    "pending_feedback_requests": {},
-                    "messages": [tool_msg],
-                    "user_query": response_str,
-                    "status": "working",
-                },
-            )
-
-        return request_human_feedback
+    # ── Legacy tools removed ─────────────────────────────────────────
 
     # ── Streaming ─────────────────────────────────────────────────────
 
@@ -892,126 +1209,81 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         task_id: str,
         use_ui: bool = False,  # noqa: ARG002, FBT001, FBT002
     ) -> AsyncGenerator[AgentResponse, None]:
-        """Stream graph execution, yielding AgentResponse objects.
-
-        Uses v2 streaming with ["updates", "messages"].
-        Handles new queries (str) and resume-after-interrupt (Command).
-        """
+        """Stream graph execution, yielding AgentResponse objects."""
         if not self._graph:
             msg = "Supervisor graph not constructed"
             raise RuntimeError(msg)
 
         is_resume = isinstance(query, Command)
 
-        # Build input
         if isinstance(query, Command):
-            # Intercept raw Command payload passed from A2AExecutor
-            resume_val = query.resume
-            if isinstance(resume_val, str):
-                try:
-                    resume_val = json.loads(resume_val)
-                except json.JSONDecodeError:
-                    pass
-
-            # Determine if this is a simple approve/reject that needs
-            # expansion for batch HumanInTheLoopMiddleware interrupts.
-            # The middleware expects one decision per action_request.
-            #
-            # IMPORTANT: Only apply batch expansion when the pending
-            # interrupt is actually from HumanInTheLoopMiddleware
-            # (i.e., the checkpoint contains action_requests).  Direct
-            # interrupt() calls (request_user_input, request_chat_continue)
-            # use their own payload format and must pass through unchanged
-            # — otherwise form fields like repository/branch get stripped.
-            decision_type: str | None = None
-            if isinstance(resume_val, str) and resume_val in (
-                "approve", "reject",
-            ):
-                decision_type = resume_val
-            elif isinstance(resume_val, dict) and "decision" in resume_val:
-                decision_type = resume_val["decision"]
-
-            if decision_type:
-                # Query the graph's pending interrupt to check whether
-                # it's a genuine HumanInTheLoopMiddleware interrupt
-                # (has action_requests) vs. a direct interrupt() call
-                # (request_user_input, request_chat_continue).
-                state_config = cast(
-                    "RunnableConfig",
-                    {"configurable": {"thread_id": context_id}},
-                )
-                action_count = await self._get_pending_action_count(
-                    state_config,
-                )
-
-                if action_count > 0:
-                    # Genuine HITL middleware interrupt — expand single
-                    # decision into one-per-action_request.
-                    logger.info(
-                        "Expanding single decision for batch HITL resume",
-                        extra={
-                            "decision_type": decision_type,
-                            "action_count": action_count,
-                        },
-                    )
-                    mapped_decision = {
-                        "decisions": [
-                            {"type": decision_type}
-                            for _ in range(action_count)
-                        ]
-                    }
-                    stream_input = Command(resume=mapped_decision)
-                else:
-                    # Direct interrupt() call (request_user_input, etc.)
-                    # — pass the full user response through unchanged
-                    # so form fields (repository, branch, etc.) are
-                    # preserved for the coordinator/tool.
-                    logger.info(
-                        "Non-HITL-middleware interrupt — passing "
-                        "resume value through unchanged",
-                        extra={
-                            "decision_type": decision_type,
-                            "resume_keys": (
-                                list(resume_val.keys())
-                                if isinstance(resume_val, dict)
-                                else type(resume_val).__name__
-                            ),
-                        },
-                    )
-                    stream_input = Command(resume=resume_val)
-            else:
-                stream_input = Command(resume=resume_val)
+            stream_input = await self._resolve_resume_input(query, context_id)
         else:
-            # All valid resumes are wrapped as Command by A2AExecutor's `_wrap_resume` hook.
-            # If we reach here, either the task is not paused, or it's a new conversational prompt.
             stream_input = self._build_initial_input(str(query), context_id, task_id)
 
         logger.info(
             "Starting supervisor stream",
-            extra={
-                "task_id": task_id,
-                "context_id": context_id,
-                "is_resume": is_resume,
-            },
+            extra={"task_id": task_id, "context_id": context_id, "is_resume": is_resume},
         )
 
-        rec_limit = getattr(
-            self.config_instance, "recursion_limit", 50,
-        )
+        rec_limit = getattr(self.config_instance, "recursion_limit", 50)
         config = cast(
             "RunnableConfig",
-            {
-                "configurable": {
-                    "thread_id": context_id,
-                    "recursion_limit": rec_limit,
-                },
-            },
+            {"configurable": {"thread_id": context_id, "recursion_limit": rec_limit}},
         )
 
-        async for response in self._run_stream(
-            stream_input, config, context_id, task_id,
-        ):
+        async for response in self._run_stream(stream_input, config, context_id, task_id):
             yield response
+
+    async def _resolve_resume_input(self, query: Command, context_id: str) -> Command:
+        """Parse a resume Command, expanding HITL decisions if needed."""
+        resume_val = query.resume
+        if isinstance(resume_val, str):
+            try:
+                resume_val = json.loads(resume_val)
+            except json.JSONDecodeError:
+                pass
+
+        # Check for simple approve/reject that needs HITL batch expansion
+        decision_type: str | None = None
+        decision_message: str | None = None
+        
+        if isinstance(resume_val, str):
+            if resume_val.startswith("reject:"):
+                decision_type = "reject"
+                decision_message = resume_val[7:].strip()
+            elif resume_val in ("approve", "reject"):
+                decision_type = resume_val
+        elif isinstance(resume_val, dict):
+            if "decision" in resume_val:
+                decision_type = resume_val["decision"]
+                decision_message = resume_val.get("message")
+            elif "decisions" in resume_val:
+                # If it's already properly formatted for HITL, pass it through
+                return Command(resume=resume_val)
+
+        if not decision_type:
+            return Command(resume=resume_val)
+
+        # Check if pending interrupt is from HumanInTheLoopMiddleware
+        state_config = cast("RunnableConfig", {"configurable": {"thread_id": context_id}})
+        action_count = await self._get_pending_action_count(state_config)
+
+        if action_count > 0:
+            logger.info(
+                "Expanding single decision for batch HITL resume",
+                extra={"decision_type": decision_type, "action_count": action_count},
+            )
+            decision_obj = {"type": decision_type}
+            if decision_message:
+                decision_obj["message"] = decision_message
+                
+            return Command(resume={"decisions": [decision_obj for _ in range(action_count)]})
+
+        # Direct interrupt() — pass through unchanged
+        if decision_message:
+            return Command(resume=f"{decision_type}: {decision_message}")
+        return Command(resume=decision_type)
 
     # ── Core v2 streaming loop ────────────────────────────────────────
 
@@ -1022,385 +1294,276 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         context_id: str,
         task_id: str,
     ) -> AsyncGenerator[AgentResponse, None]:
-        """Core streaming loop — processes v2 chunks from the supervisor graph."""
-        assert self._graph is not None
+        """Core streaming loop using LangGraph v2 StreamPart format.
 
-        pending_interrupt: tuple | None = None
-        completed = False
+        Uses ``astream(stream_mode=["messages", "updates"], subgraphs=True,
+        version="v2")`` instead of ``astream_events(version="v3")``.
+
+        **Why**: ``astream_events(v3)`` injects a ``StreamEventsHandler`` into
+        the async callback context via ``contextvars``.  This handler
+        propagates into coordinator nodes → deep agent subgraphs → the
+        Gemini LLM provider, where it triggers a legacy V2 streaming
+        path in ``langchain_google_genai`` that corrupts the reasoning
+        payload ("Thought signature is not valid" 400 error).
+
+        ``astream(version="v2")`` uses internal channel-based streaming
+        and does NOT inject callback handlers, so the Gemini reasoning
+        engine operates normally.
+
+        Each chunk is a ``StreamPart`` dict with ``type``, ``ns``, ``data``:
+        - ``type="messages"`` → ``data`` is ``(message_chunk, metadata)``
+        - ``type="updates"``  → ``data`` is ``{node_name: state_update}``
+        """
+        assert self._graph is not None  # noqa: S101
+
+        def _make_working(content: Any, **meta_extra: Any) -> AgentResponse:
+            """Factory for working-state AgentResponse objects."""
+            return AgentResponse(
+                content=content,
+                response_type="token",
+                is_task_complete=False,
+                require_user_input=False,
+                metadata={"context_id": context_id, "task_id": task_id, "status": "working", **meta_extra},
+            )
+
+        # Track current agent for delegation labels
+        _current_agent: str = ""
+        _seen_delegations: set[str] = set()
+        _interrupt_payload: list[Any] = []
+        _final_output: dict[str, Any] = {}
 
         try:
             async for chunk in self._graph.astream(
                 stream_input,
                 config=config,
-                stream_mode=cast(Any, ["updates", "messages"]),
+                stream_mode=cast("list[StreamMode]", ["updates", "custom"]),
                 subgraphs=True,
                 version="v2",
             ):
-                if not isinstance(chunk, dict):
-                    continue
+                chunk_type = chunk.get("type", "")
+                chunk_ns = chunk.get("ns", ())
+                chunk_data = chunk.get("data")
 
-                chunk_type = chunk.get("type")
-                ns: tuple = chunk.get("ns", ())
-                data = chunk.get("data")
-                if data is None:
-                    continue
+                # ── Identify source from namespace ────────────────
+                # ns=() → supervisor level
+                # ns=("helm_agent:xxx",) → coordinator subgraph
+                # ns=("helm_agent:xxx", "tools:yyy") → deep agent tool
+                is_subgraph = bool(chunk_ns)
+                source = "supervisor"
+                if chunk_ns:
+                    # Use the first namespace segment as source
+                    first_ns = chunk_ns[0] if chunk_ns else ""
+                    # Extract the node name from "node_name:run_id" format
+                    source = first_ns.split(":")[0] if ":" in first_ns else first_ns
 
-                # ── updates: detect interrupts, completion, progress ──
-                if chunk_type == "updates" and isinstance(data, dict):
-                    update_data = cast("dict[str, Any]", data)
+                # NOTE: 'messages' stream mode removed from parent — the supervisor
+                # is a deterministic router with no LLM. All deep-agent LLM tokens
+                # are relayed via StreamWriter → 'custom' channel below.
 
-                    interrupt_payload = self._extract_interrupt(update_data)
-                    if interrupt_payload:
-                        pending_interrupt = interrupt_payload
+                # ── Custom stream: forwarded deep agent tokens ─────
+                if chunk_type == "custom" and isinstance(chunk_data, dict):
+                    kind = chunk_data.get("kind", "")
+                    if kind == "deep_agent_message":
+                        fwd_data = chunk_data.get("data")
+                        fwd_node = chunk_data.get("node", "agent")
+                        fwd_ns = chunk_data.get("ns", ())
+                        if fwd_data is not None:
+                            if isinstance(fwd_data, (tuple, list)) and len(fwd_data) == 2:
+                                fwd_msg, fwd_meta = fwd_data
+                                fwd_source = fwd_node
+                                if isinstance(fwd_ns, (list, tuple)) and fwd_ns:
+                                    first_seg = str(fwd_ns[0])
+                                    fwd_source = first_seg.split(":")[0] if ":" in first_seg else first_seg
+
+                                fwd_agent = fwd_meta.get("lc_agent_name", "") if isinstance(fwd_meta, dict) else ""
+                                fwd_display = str(fwd_agent or fwd_source or fwd_node)
+
+                                # Delegation label
+                                if fwd_display and fwd_display != _current_agent and fwd_display != "supervisor":
+                                    _current_agent = fwd_display
+                                    if fwd_display not in _seen_delegations:
+                                        _seen_delegations.add(fwd_display)
+                                        friendly = _humanize_tool_name(fwd_display)
+                                        yield _make_working(
+                                            f"🤖 **Delegated to {friendly}**\n\n",
+                                            source=fwd_display,
+                                            message_type="delegation",
+                                        )
+
+                                if isinstance(fwd_msg, (AIMessage, AIMessageChunk)):
+                                    # Reasoning tokens (provider-agnostic)
+                                    reasoning = _extract_reasoning_text(fwd_msg)
+                                    if reasoning:
+                                        yield _make_working(
+                                            str(reasoning),
+                                            node=fwd_node,
+                                            source=fwd_display,
+                                            message_type="reasoning",
+                                        )
+                                    # Text content
+                                    text = _extract_content_text(getattr(fwd_msg, "content", ""))
+                                    if text:
+                                        yield _make_working(
+                                            text,
+                                            node=fwd_node,
+                                            source=fwd_display,
+                                        )
+                                    # Tool call chunks
+                                    tc_chunks_fwd: list[dict[str, Any]] = getattr(fwd_msg, "tool_call_chunks", []) or []
+                                    for tc in tc_chunks_fwd:
+                                        tc_n = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+                                        if tc_n:
+                                            yield _make_working(
+                                                f"> 🔧 **{_humanize_tool_name(tc_n)}**  \n\n",
+                                                node=fwd_node,
+                                                source=fwd_display,
+                                                message_type="tool_call",
+                                                tool_name=tc_n,
+                                            )
+                                elif isinstance(fwd_msg, ToolMessage):
+                                    t_name = getattr(fwd_msg, "name", "tool")
+                                    raw_content = getattr(fwd_msg, "content", "")
+                                    snippet = _sanitize_result_snippet(raw_content)
+                                    status = getattr(fwd_msg, "status", "success")
+                                    emoji = "❌" if status == "error" else "✅"
+                                    yield _make_working(
+                                        f"> {emoji} **{_humanize_tool_name(t_name)}** — {snippet or 'completed.'}\n\n",
+                                        source=fwd_display,
+                                        message_type="tool_result",
+                                        tool_name=t_name,
+                                        raw_tool_result=raw_content,
+                                    )
+
+                # ── Updates stream: node completions + interrupts ──
+                elif chunk_type == "updates" and isinstance(chunk_data, dict):
+                    # Check for interrupts
+                    interrupt_data = chunk_data.get("__interrupt__")
+                    if interrupt_data:
+                        if isinstance(interrupt_data, (list, tuple)):
+                            _interrupt_payload.extend(interrupt_data)
+                        else:
+                            _interrupt_payload.append(interrupt_data)
                         continue
 
-                    completion = self._extract_completion(
-                        ns, update_data, task_id, context_id,
+                    # Track final output from finalize_response or last node
+                    for node_name, update in chunk_data.items():
+                        if isinstance(update, dict):
+                            _final_output.update(update)
+
+            # ── Post-stream: interrupt detection ──────────────────
+            if _interrupt_payload:
+                interrupts = tuple(_interrupt_payload)
+                tool_name = _extract_interrupt_tool_name(interrupts)
+                if tool_name:
+                    yield AgentResponse(
+                        content=f"> **Result** · `{tool_name}` — completed, awaiting user input.\n\n",
+                        response_type="token",
+                        is_task_complete=False,
+                        require_user_input=False,
+                        metadata={
+                            "context_id": context_id, "task_id": task_id,
+                            "status": "working", "message_type": "tool_result", "tool_name": tool_name,
+                        },
                     )
-                    if completion:
-                        yield completion
-                        completed = True
-                        continue
 
-                    for progress in self._extract_progress(
-                        ns, update_data, context_id, task_id,
-                    ):
-                        yield progress
-
-                # ── messages: stream LLM tokens ──
-                elif chunk_type == "messages":
-                    token_response = self._extract_token(
-                        ns, data, context_id, task_id,
-                    )
-                    if token_response:
-                        yield token_response
-
-            # After stream exhausts — handle pending interrupt
-            if pending_interrupt:
-                yield self._build_interrupt_response(
-                    pending_interrupt, context_id, task_id,
-                )
+                yield self._build_interrupt_response(interrupts, context_id, task_id)
                 return
 
-            # Generic completion if no explicit one was yielded
-            if not completed:
+            # ── Completion ────────────────────────────────────────
+            if _final_output:
+                yield self._build_v3_completion(_final_output, context_id, task_id)
+            else:
                 yield AgentResponse(
                     content="Workflow completed.",
                     response_type="text",
                     is_task_complete=True,
                     require_user_input=False,
-                    metadata={
-                        "context_id": context_id,
-                        "task_id": task_id,
-                        "status": "completed",
-                    },
+                    metadata={"context_id": context_id, "task_id": task_id, "status": "completed"},
                 )
 
         except Exception:  # noqa: BLE001
-            logger.exception(
-                "Stream execution failed",
-                extra={
-                    "task_id": task_id,
-                    "context_id": context_id,
-                },
-            )
+            import traceback; traceback.print_exc()
+            logger.exception("Stream execution failed", extra={"task_id": task_id, "context_id": context_id})
             yield AgentResponse(
                 response_type="error",
                 is_task_complete=True,
                 require_user_input=False,
                 content="Error during streaming",
                 error="stream_error",
-                metadata={
-                    "context_id": context_id,
-                    "task_id": task_id,
-                    "status": "error",
-                },
+                metadata={"context_id": context_id, "task_id": task_id, "status": "error"},
             )
         finally:
             try:
-                from langchain_core.tracers.langchain import (  # noqa: PLC0415
-                    wait_for_all_tracers,
-                )
+                from langchain_core.tracers.langchain import wait_for_all_tracers  # noqa: PLC0415
                 wait_for_all_tracers()
             except (ImportError, Exception):  # noqa: BLE001, S110
                 pass
 
-    # ── v2 Chunk processors ───────────────────────────────────────────
+    # ── v3 completion handler ──────────────────────────────────────────
 
-    @staticmethod
-    def _extract_interrupt(data: dict[str, Any]) -> tuple | None:
-        """Detect __interrupt__ in an updates chunk."""
-        if "__interrupt__" in data:
-            return data["__interrupt__"]
-        for v in data.values():
-            if isinstance(v, dict) and "__interrupt__" in v:
-                return v["__interrupt__"]
-        return None
-
-    # Tools that handle HITL flows — their ToolMessages are NOT subagent completions.
-    _HITL_TOOL_NAMES: frozenset = frozenset({"request_human_feedback", "request_human_input"})
-
-    def _extract_completion(
+    def _build_v3_completion(
         self,
-        ns: tuple,
-        data: dict[str, Any],
-        task_id: str,
+        output: dict[str, Any],
         context_id: str,
-    ) -> AgentResponse | None:
-        """Detect subagent completion in the tools node.
+        task_id: str,
+    ) -> AgentResponse:
+        """Build completion response from v3 run.output (final state dict).
 
-        Guards:
-        - Only top-level updates (ns must be empty).
-        - Skip in_progress status (e.g. after HITL resume).
-        - Skip HITL tool ToolMessages.
-        - Skip cross-domain handoff signals — let the LLM re-route.
+        NOTE: ``output`` is ``_final_output`` — a dict built by merging raw
+        node return values via ``dict.update()``.  It does NOT pass through
+        LangGraph's reducer, so ``dialog_state`` may contain the raw string
+        ``"pop"`` instead of the actual reduced stack.  We normalize here.
         """
-        if ns:
-            return None
+        # Normalize dialog_state from raw node output
+        raw_stack = output.get("dialog_state", [])
+        if isinstance(raw_stack, str):
+            # "pop" → stack was being emptied; any other string is a push
+            # that should have been followed by more nodes (shouldn't appear
+            # here as the last update in practice).
+            stack: list[str] = [] if raw_stack == "pop" else [raw_stack]
+        else:
+            stack = list(raw_stack) if raw_stack else []
 
-        tools_data = data.get("tools")
-        if not tools_data or not isinstance(tools_data, dict):
-            return None
+        # Also check status — "completed" is a reliable completion signal
+        # that overrides a stale/malformed stack
+        status = output.get("status", "")
+        is_complete = (not stack) or status == "completed"
 
-        if tools_data.get("status") == "in_progress":
-            return None
-
-        # Cross-domain handoff: the coordinator indicated another domain
-        # should handle the request.  Let the LLM model node see the
-        # ToolMessage so it can call the correct coordinator next.
-        if tools_data.get("status") == "handoff":
+        if not is_complete:
             logger.info(
-                "Cross-domain handoff detected — letting supervisor LLM re-route",
-            )
-            return None
-
-        # Coordinator error: the deep agent crashed (e.g. MCP server
-        # unreachable).  The error is packaged as a ToolMessage by
-        # _coordinator_tool.  Let the LLM see it and respond gracefully.
-        if tools_data.get("status") == "error":
-            logger.info(
-                "Coordinator error — letting supervisor LLM handle gracefully",
-            )
-            return None
-
-        messages = tools_data.get("messages", [])
-        for msg in messages:
-            if getattr(msg, "type", None) != "tool":
-                continue
-
-            name = getattr(msg, "name", "subagent")
-            if name in self._HITL_TOOL_NAMES:
-                continue
-
-            content = _extract_content_text(getattr(msg, "content", ""))
-
-            # If the coordinator deferred to another domain, don't short-circuit.
-            # Let the supervisor LLM reason about the message and call the
-            # correct coordinator.
-            if _detect_cross_domain_handoff(content):
-                logger.info(
-                    "Cross-domain handoff detected in message — "
-                    "letting supervisor LLM re-route",
-                    extra={"subagent": name, "preview": content[:200]},
-                )
-                return None
-
-            logger.info(
-                "Subagent completed",
-                extra={"subagent": name, "preview": content[:200]},
+                "v3 completion — dialog_state non-empty, treating as in-progress",
+                extra={"stack": stack, "status": status},
             )
             return AgentResponse(
-                content=content,
-                response_type="text",
-                is_task_complete=True,
+                content="Processing continues...",
+                response_type="token",
+                is_task_complete=False,
                 require_user_input=False,
-                metadata={
-                    "context_id": context_id,
-                    "task_id": task_id,
-                    "status": "completed",
-                    "subagent": name,
-                },
+                metadata={"context_id": context_id, "task_id": task_id, "status": "working"},
             )
-        return None
 
-    # ── Formatting constants ──────────────────────────────────────────
-    _TOOL_CALL_FMT_SHORT = "> ⚙️ **Tool Call** (`{name}`)  "
-    _TOOL_RESULT_FMT = "> {icon} **Result** (`{name}`): {snippet}...\n\n"
-    _TOOL_RESULT_FMT_DONE = "> {icon} **Result** (`{name}`) completed.\n\n"
-    _AI_TEXT_FIELDS = ("question", "task_description", "description", "message", "query", "content")
+        messages = output.get("messages", [])
+        content = ""
+        for msg in reversed(messages):
+            msg_content = _extract_content_text(getattr(msg, "content", ""))
+            if msg_content:
+                content = msg_content
+                break
 
-    @staticmethod
-    def _extract_progress(
-        ns: tuple,
-        data: dict[str, Any],
-        context_id: str,
-        task_id: str,
-    ) -> list[AgentResponse]:
-        """Extract intermediate progress updates from updates chunks."""
-        source = _source_label(ns)
-        responses: list[AgentResponse] = []
-
-        for node_name, node_data in data.items():
-            if not isinstance(node_data, dict):
-                continue
-            for msg in _iter_messages(node_data):
-                msg_type = getattr(msg, "type", None)
-                resp = None
-
-                if msg_type == "ai":
-                    resp = k8sAutopilotSupervisorAgent._progress_from_ai(
-                        msg, source, node_name, context_id, task_id,
-                    )
-                elif msg_type == "tool" and ns:
-                    resp = k8sAutopilotSupervisorAgent._progress_from_tool(
-                        msg, source, node_name, context_id, task_id,
-                    )
-
-                if resp is not None:
-                    responses.append(resp)
-
-        return responses
-
-    @staticmethod
-    def _progress_from_ai(
-        msg: Any, source: str, node: str, context_id: str, task_id: str,
-    ) -> AgentResponse | None:
-        """Build a tool-call progress response from an AIMessage."""
-        tool_calls = getattr(msg, "tool_calls", None) or []
-        if not tool_calls:
-            return None
-
-        lines: list[str] = []
-        for tc in tool_calls:
-            name = (
-                tc.get("name") if isinstance(tc, dict)
-                else getattr(tc, "name", "tool")
-            )
-            fmt = k8sAutopilotSupervisorAgent._TOOL_CALL_FMT_SHORT
-            lines.append(fmt.format(name=name))
+        # Strip internal cross-domain routing metadata — show only
+        # the summary text to the end user.
+        if content.startswith("[Cross-domain result]"):
+            # Extract the text after "Summary: " prefix
+            summary_idx = content.find("Summary: ")
+            if summary_idx != -1:
+                content = content[summary_idx + len("Summary: "):]
 
         return AgentResponse(
-            content="\n".join(lines) + "\n\n",
-            response_type="token",
-            is_task_complete=False,
+            content=content or "Workflow completed.",
+            response_type="text",
+            is_task_complete=True,
             require_user_input=False,
-            metadata={
-                "context_id": context_id, "task_id": task_id,
-                "status": "working", "message_type": "tool_call",
-                "source": source, "node": node,
-            },
-        )
-
-    @staticmethod
-    def _progress_from_tool(
-        msg: Any, source: str, node: str, context_id: str, task_id: str,
-    ) -> AgentResponse:
-        """Build a tool-result progress response from a ToolMessage."""
-        tool_name = getattr(msg, "name", "")
-        snippet = (
-            _extract_content_text(getattr(msg, "content", ""))
-            .strip()
-            .replace("\n", " ")[:200]
-        )
-
-        is_error = getattr(msg, "status", "success") == "error" or any(
-            err in snippet.lower()
-            for err in ("error", "exception", "failed", "could not")
-        )
-        icon = "❌" if is_error else "✅"
-
-        cls = k8sAutopilotSupervisorAgent
-        if snippet:
-            display = cls._TOOL_RESULT_FMT.format(
-                icon=icon, name=tool_name, snippet=snippet,
-            )
-        else:
-            display = cls._TOOL_RESULT_FMT_DONE.format(
-                icon=icon, name=tool_name,
-            )
-
-        return AgentResponse(
-            content=display,
-            response_type="token",
-            is_task_complete=False,
-            require_user_input=False,
-            metadata={
-                "context_id": context_id, "task_id": task_id,
-                "status": "working", "message_type": "tool_result",
-                "tool_name": tool_name, "source": source, "node": node,
-            },
-        )
-
-    @staticmethod
-    def _extract_token(
-        ns: tuple,
-        data: Any,
-        context_id: str,
-        task_id: str,
-    ) -> AgentResponse | None:
-        """Extract streaming AI text tokens from a messages chunk.
-
-        Two paths:
-        1. Standard (OpenAI/Anthropic) — token.content has text.
-        2. Gemini — content is [], reasoning is in tool_call_chunks args.
-        """
-        if not isinstance(data, (list, tuple)) or len(data) < 1:
-            return None
-
-        token = data[0]
-        chunk_meta = data[1] if len(data) > 1 and isinstance(data[1], dict) else {}
-        source = _source_label(ns)
-        agent_name = (
-            chunk_meta.get("lc_agent_name")
-            or chunk_meta.get("langgraph_node")
-            or ""
-        )
-
-        if getattr(token, "type", None) not in ("ai", "AIMessageChunk"):
-            return None
-
-        if getattr(token, "chunk_position", None) == "last":
-            return None
-
-        # Path 1: text in content
-        text = _extract_content_text(getattr(token, "content", ""))
-        if text:
-            return k8sAutopilotSupervisorAgent._token_response(
-                text, context_id, task_id, source, agent_name,
-            )
-
-        # Path 2: Gemini — text in tool_call_chunks
-        text = _extract_text_from_tool_chunks(
-            getattr(token, "tool_call_chunks", None),
-            k8sAutopilotSupervisorAgent._AI_TEXT_FIELDS,
-        )
-        if text:
-            return k8sAutopilotSupervisorAgent._token_response(
-                text + "\n\n", context_id, task_id, source, agent_name,
-                message_type="tool_call",
-            )
-
-        return None
-
-    @staticmethod
-    def _token_response(
-        text: str, context_id: str, task_id: str, source: str, agent_name: str,
-        message_type: str | None = None,
-    ) -> AgentResponse:
-        """Build a streaming AI-text token response."""
-        meta: dict[str, Any] = {
-            "context_id": context_id, "task_id": task_id,
-            "status": "working", "stream_mode": "messages",
-            "source": source, "agent_name": agent_name,
-        }
-        if message_type:
-            meta["message_type"] = message_type
-        return AgentResponse(
-            content=text,
-            response_type="token",
-            is_task_complete=False,
-            require_user_input=False,
-            metadata=meta,
+            metadata={"context_id": context_id, "task_id": task_id, "status": "completed"},
         )
 
     # ── HITL interrupt handling ────────────────────────────────────────
@@ -1411,21 +1574,14 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         context_id: str,
         task_id: str,
     ) -> AgentResponse:
-        """Convert a LangGraph interrupt payload into an AgentResponse.
-
-        Handles three interrupt shapes:
-        1. pending_feedback_requests — request_human_feedback tool pattern
-        2. Custom interrupt types — tools that call interrupt() directly
-        3. action_requests — HumanInTheLoopMiddleware pattern
-        4. phase+summary — HITL gate interrupts
-        """
+        """Convert a LangGraph interrupt payload into an AgentResponse."""
         first = interrupt_payload[0] if interrupt_payload else {}
         value = getattr(first, "value", first)
 
         if not isinstance(value, dict):
             value = {"type": "generic", "data": str(value)}
 
-        # Branch 1: pending_feedback_requests
+        # pending_feedback_requests
         feedback_raw = value.get("pending_feedback_requests", {})
         if feedback_raw and isinstance(feedback_raw, dict):
             return AgentResponse(
@@ -1439,32 +1595,15 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 is_task_complete=False,
                 require_user_input=True,
                 metadata={
-                    "context_id": context_id,
-                    "task_id": task_id,
-                    "interrupt_type": "human_feedback",
-                    "pending_feedback_requests": feedback_raw,
+                    "context_id": context_id, "task_id": task_id,
+                    "interrupt_type": "human_feedback", "pending_feedback_requests": feedback_raw,
                 },
             )
 
-        # Branch 2: action_requests (HITL middleware — approve/edit/reject)
-        action_requests: list[dict] = cast(
-            list[dict], value.get("action_requests", []),
-        )
+        # action_requests (HITL middleware)
+        action_requests: list[dict] = cast(list[dict], value.get("action_requests", []))
         if action_requests:
-            summary = k8sAutopilotSupervisorAgent._format_action_requests_summary(
-                action_requests,
-            )
-            action_count = len(action_requests)
-
-            logger.info(
-                "HITL interrupt detected",
-                extra={
-                    "task_id": task_id,
-                    "action_count": action_count,
-                    "summary_preview": summary[:200],
-                },
-            )
-
+            summary = k8sAutopilotSupervisorAgent._format_action_requests_summary(action_requests)
             return AgentResponse(
                 content={
                     "type": "hitl_approval",
@@ -1476,54 +1615,20 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 is_task_complete=False,
                 require_user_input=True,
                 metadata={
-                    "context_id": context_id,
-                    "task_id": task_id,
-                    "interrupt_type": "hitl_approval",
-                    "action_request_count": action_count,
+                    "context_id": context_id, "task_id": task_id,
+                    "interrupt_type": "hitl_approval", "action_request_count": len(action_requests),
                 },
             )
 
-        # Branch 5: Custom interrupt types
+        # Custom interrupt types
         custom_type = value.get("type", "")
-        if custom_type and custom_type not in ("generic",):
+        if custom_type and custom_type != "generic":
             return AgentResponse(
                 content=value,
                 response_type="human_input",
                 is_task_complete=False,
                 require_user_input=True,
-                metadata={
-                    "context_id": context_id,
-                    "task_id": task_id,
-                    "interrupt_type": custom_type,
-                },
-            )
-
-        # Branch 6: action_requests (HITL middleware — fallback/duplicate)
-        action_requests = cast(
-            list[dict], value.get("action_requests", []),
-        )
-        if action_requests:
-            summary = (
-                k8sAutopilotSupervisorAgent._format_action_requests_summary(
-                    action_requests,
-                )
-            )
-            return AgentResponse(
-                content={
-                    "type": "hitl_approval",
-                    "summary": summary,
-                    "question": "Do you approve this action?",
-                    "action_requests": action_requests,
-                },
-                response_type="human_input",
-                is_task_complete=False,
-                require_user_input=True,
-                metadata={
-                    "context_id": context_id,
-                    "task_id": task_id,
-                    "interrupt_type": "hitl_approval",
-                    "action_request_count": len(action_requests),
-                },
+                metadata={"context_id": context_id, "task_id": task_id, "interrupt_type": custom_type},
             )
 
         # Fallback: generic interrupt
@@ -1531,43 +1636,21 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
             content={
                 "type": "generic_interrupt",
                 "message": (
-                    value.get("message")
-                    or value.get("summary")
-                    or (value.get("question") if isinstance(value, dict) else None)
-                    or "Human input required"
+                    value.get("message") or value.get("summary")
+                    or value.get("question") or "Human input required"
                 ),
                 "data": value,
             },
             response_type="human_input",
             is_task_complete=False,
             require_user_input=True,
-            metadata={
-                "context_id": context_id,
-                "task_id": task_id,
-                "interrupt_type": "generic",
-            },
+            metadata={"context_id": context_id, "task_id": task_id, "interrupt_type": "generic"},
         )
 
     # ── Batch HITL helpers ─────────────────────────────────────────────
 
-    async def _get_pending_action_count(
-        self,
-        config: RunnableConfig,
-    ) -> int:
-        """Inspect graph checkpoint to count pending HITL action_requests.
-
-        When ``HumanInTheLoopMiddleware`` batches multiple tool calls into
-        a single interrupt, the resume must include one decision per
-        action_request.  This method inspects the saved interrupt to
-        determine the correct count.
-
-        Returns:
-            Number of pending action_requests.  Returns 0 when the
-            pending interrupt is NOT from HumanInTheLoopMiddleware
-            (e.g., it's a direct ``interrupt()`` call from
-            ``request_user_input`` or ``request_chat_continue``).
-            Callers use this to distinguish interrupt types.
-        """
+    async def _get_pending_action_count(self, config: RunnableConfig) -> int:
+        """Count pending HITL action_requests in the graph checkpoint."""
         try:
             assert self._graph is not None
             state = await self._graph.aget_state(config)
@@ -1575,27 +1658,17 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 for intr in (task.interrupts or ()):
                     value = getattr(intr, "value", None)
                     if isinstance(value, dict):
-                        action_requests = value.get(
-                            "action_requests", [],
-                        )
+                        action_requests = value.get("action_requests", [])
                         if action_requests:
                             count = len(action_requests)
-                            logger.info(
-                                "Detected pending action_requests "
-                                "from graph checkpoint",
-                                extra={"count": count},
-                            )
+                            logger.info("Detected pending action_requests", extra={"count": count})
                             return max(count, 1)
         except Exception:  # noqa: BLE001
-            logger.warning(
-                "Could not inspect graph state for "
-                "pending action count — defaulting to 0",
-            )
+            logger.warning("Could not inspect graph state for pending action count — defaulting to 0")
         return 0
 
     # ── Human-readable HITL summaries ─────────────────────────────────
 
-    # Mapping of tool names to (emoji, human label)
     _TOOL_LABELS: dict[str, tuple[str, str]] = {
         # Helm
         "helm_install_chart": ("🚀", "Install"),
@@ -1639,164 +1712,142 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         "resources_scale": ("⚖️", "Scale Resource"),
         "pods_exec": ("🔐", "Pod Exec"),
         "pods_run": ("🚀", "Run Pod"),
+        # Observability — Prometheus
+        "prom_apply_servicemonitor": ("📡", "Apply ServiceMonitor"),
+        "prom_apply_probe": ("🩺", "Apply Probe"),
+        "prom_install_exporter": ("📦", "Install Exporter"),
+        "prom_uninstall_exporter": ("🗑️", "Uninstall Exporter"),
+        "prom_upsert_rule_group": ("📐", "Upsert Rule Group"),
+        "prom_delete_rule_group": ("🗑️", "Delete Rule Group"),
+        "prom_manage_file_sd": ("📝", "Manage File SD"),
+        "prom_configure_remote_write": ("🔄", "Configure Remote Write"),
+        # Observability — Alertmanager
+        "am_push_test_alert": ("🚨", "Push Test Alert"),
+        "am_create_silence": ("🔇", "Create Silence"),
+        "am_update_silence": ("⏱️", "Update Silence"),
+        "am_expire_silence": ("🔊", "Expire Silence"),
+        "am_silence_alert": ("🔇", "Silence Alert"),
+        # Observability — OpenTelemetry
+        "otel_provision_collector": ("📦", "Provision Collector"),
+        "otel_patch_collector": ("🔧", "Patch Collector"),
+        "otel_patch_instrumentation": ("🔌", "Patch Instrumentation"),
+        "otel_annotate_deployment": ("🚀", "Annotate Deployment"),
+        "otel_toggle_sampling_strategy": ("📊", "Toggle Sampling"),
+        "otel_enable_spanmetrics_for_service": ("📈", "Enable SpanMetrics"),
+        # Observability — Tempo
+        "tempo_create_operator_cr": ("➕", "Create Tempo CR"),
+        "tempo_patch_operator_cr": ("🔧", "Patch Tempo CR"),
+    }
+
+    # Entity extraction lookup: keyword → lambda(args) → entity string
+    _ENTITY_EXTRACTORS: dict[str, Any] = {
+        "repository": lambda a: a.get("repo_url", a.get("name", "unknown")),
+        "project": lambda a: a.get("project_name", a.get("name", "unknown")),
+        "traefik": lambda a: a.get("route_name") or a.get("middleware_name") or a.get("service_name") or a.get("name", "unknown"),
+        "rollout": lambda a: a.get("name") or a.get("rollout_name") or a.get("deployment_name", "unknown"),
+        "deployment": lambda a: a.get("name") or a.get("rollout_name") or a.get("deployment_name", "unknown"),
+    }
+
+    # Item label lookup: keyword → display label
+    _ITEM_LABELS: dict[str, str] = {
+        "repository": "repo",
+        "project": "project",
+        "application": "app",
+        "sync": "app",
+        "rollout": "rollout",
+        "experiment": "rollout",
+        "traefik": "route",
+        "helm": "release",
+    }
+
+    # K8s cluster ops tools (need Kind/Name formatting)
+    _K8S_OPS_TOOLS = {
+        "resources_delete", "resources_create_or_update", "resources_scale",
+        "pods_delete", "pods_exec", "pods_run",
     }
 
     @staticmethod
-    def _format_action_requests_summary(
-        action_requests: list[dict],
-    ) -> str:
-        """Build a human-readable Markdown summary for batched HITL actions.
-
-        Groups actions by tool name and formats each with release name
-        and namespace instead of raw JSON dumps.
-
-        Example output::
-
-            🗑️ **Uninstall** (3 releases):
-              • **argo-cd** → namespace: ``argocd``
-              • **ingress-nginx** → namespace: ``mgmt``
-              • **traefik** → namespace: ``traefik``
-        """
+    def _format_action_requests_summary(action_requests: list[dict]) -> str:
+        """Build a human-readable Markdown summary for batched HITL actions."""
         labels = k8sAutopilotSupervisorAgent._TOOL_LABELS
+        extractors = k8sAutopilotSupervisorAgent._ENTITY_EXTRACTORS
+        item_labels = k8sAutopilotSupervisorAgent._ITEM_LABELS
+        k8s_ops = k8sAutopilotSupervisorAgent._K8S_OPS_TOOLS
 
-        # Group by tool name, preserving insertion order
+        # Group by tool name
         groups: dict[str, list[dict]] = {}
         for req in action_requests:
-            if not isinstance(req, dict):
-                continue
-            name = req.get("name", "unknown")
-            args = req.get("args", {})
-            groups.setdefault(name, []).append(args)
+            if isinstance(req, dict):
+                groups.setdefault(req.get("name", "unknown"), []).append(req.get("args", {}))
 
         lines: list[str] = []
         for tool_name, arg_list in groups.items():
-            emoji, label = labels.get(
-                tool_name,
-                ("⚙️", tool_name.replace("_", " ").title()),
-            )
+            emoji, label = labels.get(tool_name, ("⚙️", tool_name.replace("_", " ").title()))
             count = len(arg_list)
 
-            # Determine dynamic resource label per domain
-            if "repository" in tool_name:
-                item_label = "repo"
-            elif "project" in tool_name:
-                item_label = "project"
-            elif (
-                "application" in tool_name
-                or "sync" in tool_name
-            ):
-                item_label = "app"
-            elif (
-                "rollout" in tool_name
-                or "experiment" in tool_name
-            ):
-                item_label = "rollout"
-            elif "traefik" in tool_name:
-                item_label = "route"
-            elif "helm" in tool_name:
-                item_label = "release"
-            elif tool_name in (
-                "resources_delete", "resources_create_or_update",
-                "resources_scale",
-            ):
-                item_label = "resource"
-            elif tool_name in ("pods_delete", "pods_exec", "pods_run"):
-                item_label = "pod"
-            else:
-                item_label = "action"
+            # Determine item label
+            item_label = "action"
+            for keyword, lbl in item_labels.items():
+                if keyword in tool_name:
+                    item_label = lbl
+                    break
+            if tool_name in k8s_ops:
+                item_label = "pod" if "pods" in tool_name else "resource"
 
             plural = "s" if count != 1 else ""
-            lines.append(
-                f"{emoji} **{label}** ({count} {item_label}{plural}):",
-            )
+            lines.append(f"{emoji} **{label}** ({count} {item_label}{plural}):")
+
             for args in arg_list:
-                # Multi-domain entity resolution
-                if "repository" in tool_name:
-                    entity = args.get(
-                        "repo_url", args.get("name", "unknown"),
-                    )
-                elif "project" in tool_name:
-                    entity = args.get(
-                        "project_name", args.get("name", "unknown"),
-                    )
-                elif "traefik" in tool_name:
-                    entity = (
-                        args.get("route_name")
-                        or args.get("middleware_name")
-                        or args.get("service_name")
-                        or args.get("name", "unknown")
-                    )
-                elif (
-                    "rollout" in tool_name
-                    or "deployment" in tool_name
-                ):
-                    entity = (
-                        args.get("name")
-                        or args.get("rollout_name")
-                        or args.get("deployment_name", "unknown")
-                    )
-                elif tool_name in (
-                    "resources_delete", "resources_create_or_update",
-                    "resources_scale", "pods_delete", "pods_exec",
-                    "pods_run",
-                ):
-                    # K8s cluster ops: Kind/Name format
+                # Entity resolution
+                entity = None
+                for keyword, extractor in extractors.items():
+                    if keyword in tool_name:
+                        entity = extractor(args)
+                        break
+
+                if entity is None and tool_name in k8s_ops:
                     k8s_kind = args.get("kind", "Pod" if "pods" in tool_name else "")
                     k8s_name = args.get("name", "unknown")
                     entity = f"{k8s_kind}/{k8s_name}" if k8s_kind else k8s_name
-                else:
+                elif entity is None:
                     entity = (
-                        args.get("release_name")
-                        or args.get("chart_name")
-                        or args.get("name")
-                        or args.get("app_name", "unknown")
+                        args.get("release_name") or args.get("chart_name")
+                        or args.get("name") or args.get("app_name", "unknown")
                     )
 
-                # Multi-domain namespace resolution
-                ns = (
-                    args.get("destination_namespace")
-                    or args.get("dest_namespace")
-                    or args.get("namespace", "default")
-                )
+                ns = args.get("destination_namespace") or args.get("dest_namespace") or args.get("namespace", "default")
 
                 extras: list[str] = []
-                if "version" in args:
-                    extras.append(f"v{args['version']}")
-                if "revision" in args:
-                    extras.append(f"rev {args['revision']}")
-                if "target_revision" in args:
-                    extras.append(f"rev {args['target_revision']}")
+                for key in ("version", "revision", "target_revision"):
+                    if key in args:
+                        prefix = "v" if key == "version" else "rev "
+                        extras.append(f"{prefix}{args[key]}")
                 suffix = f" ({', '.join(extras)})" if extras else ""
 
-                # Repos show URL only (no namespace)
                 if "repository" in tool_name:
                     lines.append(f"  • **{entity}**{suffix}")
                 else:
-                    lines.append(
-                        f"  • **{entity}** → namespace: `{ns}`{suffix}",
-                    )
-            lines.append("")  # blank line between groups
+                    lines.append(f"  • **{entity}** → namespace: `{ns}`{suffix}")
+            lines.append("")
 
         return "\n".join(lines).strip() or "Action requires approval."
 
     # ── Helpers ────────────────────────────────────────────────────────
 
     @staticmethod
-    def _build_initial_input(
-        query: str,
-        context_id: str,
-        task_id: str,
-    ) -> dict[str, Any]:
+    def _build_initial_input(query: str, context_id: str, task_id: str) -> dict[str, Any]:
         """Build the initial input dict for a new conversation."""
         return {
             "messages": [HumanMessage(content=query)],
             "user_query": query,
             "session_id": context_id,
             "task_id": task_id,
-            "workflow_state": SupervisorWorkflowState(
-                current_phase="requirements",
-            ),
+            "workflow_state": SupervisorWorkflowState(current_phase="requirements"),
             "status": "pending",
+            "dialog_state": [],
+            "active_agent": "",
+            "handoff_request": {},
+            "handoff_result": {},
         }
 
     @staticmethod
@@ -1821,6 +1872,87 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
 
 
 # ---------------------------------------------------------------------------
+# Delta dispatch handlers
+# ---------------------------------------------------------------------------
+
+async def _handle_token_delta(
+    delta: dict, source: str, name: str,
+    queue: asyncio.Queue, make_response: Any,
+) -> None:
+    text = delta.get("text", "")
+    if not text:
+        return
+    meta: dict[str, Any] = {"node": delta.get("node", "subagent"), "source": source}
+    if delta.get("delta_type") == "reasoning-delta":
+        meta["message_type"] = "reasoning"
+    await queue.put(make_response(text, **meta))
+
+
+async def _handle_tool_call_delta(
+    delta: dict, source: str, name: str,
+    queue: asyncio.Queue, make_response: Any,
+) -> None:
+    tc_name = delta.get("tool_name", "tool")
+    tc_display = _humanize_tool_name(tc_name)
+    tc_input = delta.get("tool_input")
+    args_display = _format_tool_args(tc_input)
+    content = f"> **Tool Call** · `{tc_display}`  \n"
+    if args_display:
+        content += f"> **Input:** {args_display}  \n"
+    content += "\n"
+    await queue.put(make_response(
+        content,
+        node=delta.get("node", "subagent"), source=source,
+        message_type="tool_call", tool_name=tc_name, tool_display_name=tc_display,
+    ))
+
+
+async def _handle_tool_started_delta(
+    delta: dict, source: str, name: str,
+    queue: asyncio.Queue, make_response: Any,
+) -> None:
+    tc_name = delta.get("tool_name", "tool")
+    tc_display = _humanize_tool_name(tc_name)
+    tc_input = delta.get("tool_input")
+    args_display = _format_tool_args(tc_input)
+    content = f"> 🔧 **{tc_display}**  \n"
+    if args_display:
+        content += f"> Input: {args_display}  \n"
+    content += "\n"
+    await queue.put(make_response(
+        content,
+        source=source, message_type="tool_started",
+        tool_name=tc_name, tool_display_name=tc_display,
+    ))
+
+
+async def _handle_tool_finished_delta(
+    delta: dict, source: str, name: str,
+    queue: asyncio.Queue, make_response: Any,
+) -> None:
+    tc_name = delta.get("tool_name", "tool")
+    tc_display = _humanize_tool_name(tc_name)
+    tc_error = delta.get("error")
+    tc_output = delta.get("output", "")
+    emoji = "❌" if tc_error else "✅"
+    snippet = _sanitize_result_snippet(tc_output)
+    display = f"> {emoji} **{tc_display}** — {snippet or 'completed.'}\n\n"
+    await queue.put(make_response(
+        display,
+        source=source, message_type="tool_result",
+        tool_name=tc_name, tool_display_name=tc_display,
+    ))
+
+
+_DELTA_HANDLERS: dict[str, Any] = {
+    "token": _handle_token_delta,
+    "tool_call": _handle_tool_call_delta,
+    "tool_started": _handle_tool_started_delta,
+    "tool_finished": _handle_tool_finished_delta,
+}
+
+
+# ---------------------------------------------------------------------------
 # Factory function
 # ---------------------------------------------------------------------------
 
@@ -1834,49 +1966,7 @@ def create_k8sAutopilotSupervisorAgent(  # noqa: N802
     coordinator: BaseDeepAgent | None = None,
     coordinators: list[BaseDeepAgent] | None = None,
 ) -> k8sAutopilotSupervisorAgent:
-    """Create a supervisor agent with centralized configuration.
-
-    Args:
-        agents: Legacy list of BaseSubgraphAgent (deprecated).
-        coordinator: Single primary coordinator (backward compat).
-        coordinators: All domain coordinators (preferred).
-        config: Configuration object.
-        custom_config: Custom configuration dict.
-        prompt_template: Optional custom system prompt.
-        name: Agent name.
-
-    Usage (multi-coordinator, preferred)::
-
-        from ...helm_operator.coordinator import (
-            create_helm_coordinator,
-        )
-        from ...k8s_operator.coordinator import (
-            create_k8s_operator_coordinator,
-        )
-        from ...app_operator.coordinator import (
-            create_app_operator_coordinator,
-        )
-        from ...observability.coordinator import (
-            create_observability_coordinator,
-        )
-
-        supervisor = create_k8sAutopilotSupervisorAgent(
-            coordinators=[
-                create_helm_coordinator(config),
-                create_k8s_operator_coordinator(config),
-                create_app_operator_coordinator(config),
-                create_observability_coordinator(config),
-            ],
-            config=config,
-        )
-
-    Usage (single coordinator)::
-
-        supervisor = create_k8sAutopilotSupervisorAgent(
-            coordinator=create_helm_coordinator(config),
-        )
-    """
-
+    """Create a supervisor agent with centralized configuration."""
     return k8sAutopilotSupervisorAgent(
         agents=agents,
         config=config,

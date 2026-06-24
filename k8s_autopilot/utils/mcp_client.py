@@ -24,6 +24,8 @@ Usage::
 
 import os
 import asyncio
+import json
+import yaml
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, AsyncExitStack
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
@@ -177,7 +179,45 @@ def _sanitize_schema(schema: Any) -> Any:
             cleaned[key] = _sanitize_schema(value)
         else:
             cleaned[key] = value
+
     return cleaned
+
+
+def coerce_tool_arguments(arguments: dict[str, Any] | None) -> dict[str, Any] | None:
+    """
+    Coerces stringified JSON/YAML arguments into native Python objects.
+    This prevents Pydantic validation errors when the LLM accidentally
+    returns a string instead of a nested dictionary or list.
+    """
+    if not arguments:
+        return arguments
+        
+    for key, value in list(arguments.items()):
+        if isinstance(value, str):
+            stripped = value.strip()
+            
+            # Fast check: does it look like JSON/YAML structured data?
+            if (stripped.startswith('{') and stripped.endswith('}')) or \
+               (stripped.startswith('[') and stripped.endswith(']')):
+                
+                # Attempt JSON first (faster, stricter)
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, (dict, list)):
+                        arguments[key] = parsed
+                        continue
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                
+                # Fallback to YAML (slower, but LLMs often output YAML strings)
+                try:
+                    parsed = yaml.safe_load(stripped)
+                    if isinstance(parsed, (dict, list)):
+                        arguments[key] = parsed
+                except yaml.YAMLError:
+                    pass
+                    
+    return arguments
 
 
 def _wrap_tool(
@@ -405,8 +445,10 @@ class MCPClient:
 
         logger.debug(
             "Executing MCP tool",
-            extra={"server": server_name, "tool": tool_name},
+            extra={"server": server_name, "tool": tool_name, "raw_args": arguments},
         )
+        
+        arguments = coerce_tool_arguments(arguments) or {}
 
         try:
             result = await asyncio.wait_for(

@@ -1,0 +1,82 @@
+[
+  {
+    "id": "root",
+    "component": {
+      "Column": {
+        "children": {"explicitList": ["header-row", "divider", "details-col"]}
+      }
+    }
+  },
+  {
+    "id": "header-row",
+    "component": {
+      "Row": {
+        "children": {"explicitList": ["chart-icon", "release-name"]},
+        "alignment": "center"
+      }
+    }
+  },
+  {
+    "id": "chart-icon",
+    "component": {
+      "Text": {
+        "text": {"literalString": "⎈"},
+        "usageHint": "h3"
+      }
+    }
+  },
+  {
+    "id": "release-name",
+    "component": {
+      "Text": {
+        "text": {"path": "releaseName"},
+        "usageHint": "h3"
+      }
+    }
+  },
+  {"id": "divider", "component": {"Divider": {}}},
+  {
+    "id": "details-col",
+    "component": {
+      "Column": {
+        "children": {"explicitList": ["chart-row", "namespace-row", "status-row", "revision-row"]}
+      }
+    }
+  },
+  {
+    "id": "chart-row",
+    "component": {
+      "Text": {
+        "text": {"path": "chartInfo"},
+        "usageHint": "body"
+      }
+    }
+  },
+  {
+    "id": "namespace-row",
+    "component": {
+      "Text": {
+        "text": {"path": "namespace"},
+        "usageHint": "body"
+      }
+    }
+  },
+  {
+    "id": "status-row",
+    "component": {
+      "Text": {
+        "text": {"path": "status"},
+        "usageHint": "body"
+      }
+    }
+  },
+  {
+    "id": "revision-row",
+    "component": {
+      "Text": {
+        "text": {"path": "revision"},
+        "usageHint": "caption"
+      }
+    }
+  }
+]

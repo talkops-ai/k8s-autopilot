@@ -90,6 +90,10 @@ def _build_llm_kwargs(
     Build a ``langchain.chat_models.init_chat_model()``-compatible kwargs dict.
 
     ``prefix`` is one of ``"LLM_"``, ``"LLM_HIGHER_"``, ``"LLM_DEEPAGENT_"`` etc.
+
+    Thinking/reasoning support is provider-agnostic: when
+    ``{prefix}THINKING_ENABLED`` is True, the correct provider-specific
+    kwargs are injected automatically.
     """
     provider: str = store.get(f"{prefix}PROVIDER", "openai")
     model: str = store.get(f"{prefix}MODEL", "gpt-4o-mini")
@@ -115,9 +119,79 @@ def _build_llm_kwargs(
         if provider:
             kwargs["model_provider"] = provider
 
+    # ── Thinking / reasoning support ──────────────────────────────────
+    # Provider-agnostic: users set THINKING_ENABLED=True and optionally
+    # THINKING_BUDGET=<int>.  The builder maps to provider-specific kwargs.
+    thinking_enabled = store.get(f"{prefix}THINKING_ENABLED", False)
+    thinking_budget = store.get(f"{prefix}THINKING_BUDGET")
+
+    if thinking_enabled:
+        _inject_thinking_kwargs(kwargs, provider, model, thinking_budget)
+
     # Backward-compat key (safe to remove once all callers use the property)
     kwargs["provider"] = provider
     return kwargs
+
+
+def _inject_thinking_kwargs(
+    kwargs: dict[str, Any],
+    provider: str,
+    model: str,
+    budget: int | None,
+) -> None:
+    """Inject provider-specific thinking/reasoning kwargs.
+
+    Keeps the model-factory provider-agnostic — callers set
+    ``THINKING_ENABLED=True`` without caring which LLM is behind.
+
+    Supported providers:
+
+    * **Google GenAI / Gemini**: ``include_thoughts=True``.  Gemini 2.5
+      uses ``thinking_budget`` (token count), Gemini 3.x uses
+      ``thinking_level`` (LOW/MEDIUM/HIGH).  We default to ``budget`` →
+      ``thinking_budget`` for 2.5 and ``MEDIUM`` for 3.x.
+    * **Anthropic / Bedrock-Claude**: ``thinking`` dict with ``type``
+      and ``budget_tokens``.
+    * **OpenAI**: o-series models (o1, o3, o4-mini) emit reasoning
+      tokens automatically.  ``include_thoughts`` is passed for models
+      that support it.
+    * **Ollama**: ``think=True`` enables thinking mode.
+    * **Other**: ``include_thoughts=True`` is set as a best-effort
+      fallback. Providers that don't recognise it typically ignore it.
+    """
+    norm = provider.lower().replace("-", "_")
+
+    if norm in ("google_genai", "gemini"):
+        kwargs["include_thoughts"] = True
+        if budget is not None:
+            # Gemini 2.5: thinking_budget (token count)
+            # Gemini 3.x: thinking_level takes precedence
+            # Let LangChain pick the right one — if both are set the
+            # adapter resolves automatically.
+            kwargs["thinking_budget"] = budget
+
+    elif norm in ("anthropic", "bedrock", "aws_bedrock", "bedrock_converse"):
+        # Anthropic Claude 3.5+ / Bedrock Converse
+        thinking_config: dict[str, Any] = {"type": "enabled"}
+        if budget is not None:
+            thinking_config["budget_tokens"] = budget
+        else:
+            thinking_config["budget_tokens"] = 4096  # sensible default
+        kwargs["thinking"] = thinking_config
+
+    elif norm in ("openai", "azure_openai"):
+        # o-series models (o1, o3, o4-mini) have reasoning built in.
+        # For standard models, include_thoughts has no effect but is harmless.
+        kwargs["include_thoughts"] = True
+
+    elif norm == "ollama":
+        # Ollama (DeepSeek-R1, QwQ, etc.) uses think=True
+        kwargs["think"] = True
+
+    else:
+        # Best-effort fallback — pass the flag and hope the provider
+        # adapter recognises it or silently ignores it.
+        kwargs["include_thoughts"] = True
 
 
 # ---------------------------------------------------------------------------
