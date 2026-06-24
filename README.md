@@ -6,7 +6,9 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-0.2.x-green.svg)](https://github.com/langchain-ai/langgraph)
+[![LangGraph](https://img.shields.io/badge/LangGraph-1.2.x-green.svg)](https://github.com/langchain-ai/langgraph)
+[![A2A Protocol](https://img.shields.io/badge/A2A_Protocol-1.1.x-blueviolet.svg)](https://a2a-protocol.org/latest/)
+[![A2UI](https://img.shields.io/badge/A2UI-latest-blueviolet.svg)](https://a2ui.org/)
 [![Discord](https://img.shields.io/badge/Discord-Community-7289DA?logo=discord)](https://discord.gg/3nz5MQAA7)
 [![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=flat&logo=docker&logoColor=white)](https://hub.docker.com/)
 
