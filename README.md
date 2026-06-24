@@ -333,7 +333,7 @@ For the full list of configuration options—including your active MCP servers�
 
 No cloning required. You just need two files: `docker-compose.yml` and `.env`.
 
-> **Note:** All MCP servers (Helm, ArgoCD, Traefik, Argo Rollouts, Prometheus, Alertmanager) run **in-process via stdio transport** — no sidecar containers needed. The only external dependency is the Kubernetes MCP server (`npx`).
+> **Note:** All MCP servers (Helm, ArgoCD, Traefik, Argo Rollouts, Prometheus, Alertmanager, Kubernetes) run **in-process via stdio transport** — no sidecar containers or external dependencies needed.
 
 **1. Create a `docker-compose.yml`** — copy from this repo's [`docker-compose.yml`](docker-compose.yml), or use:
 
@@ -369,16 +369,18 @@ services:
         {"name": "opentelemetry-mcp-server", "command": "opentelemetry-mcp-server", "transport": "stdio", "args": [], "env": {}},
         {"name": "loki-mcp-server", "command": "loki-mcp-server", "transport": "stdio", "args": [], "env": {}},
         {"name": "tempo-mcp-server", "command": "tempo-mcp-server", "transport": "stdio", "args": [], "env": {}},
-        {"name": "kubernetes_mcp_server", "command": "npx", "transport": "stdio", "args": ["-y", "kubernetes-mcp-server@latest"]}
+        {"name": "kubernetes_mcp_server", "command": "kubernetes-mcp-server", "transport": "stdio", "args": []}
         ]
 
       # LLM Configuration
       - LLM_PROVIDER=${LLM_PROVIDER}
       - LLM_MODEL=${LLM_MODEL}
+      - LLM_THINKING_ENABLED=${LLM_THINKING_ENABLED}
       - LLM_HIGHER_PROVIDER=${LLM_HIGHER_PROVIDER}
       - LLM_HIGHER_MODEL=${LLM_HIGHER_MODEL}
       - LLM_DEEPAGENT_PROVIDER=${LLM_DEEPAGENT_PROVIDER}
       - LLM_DEEPAGENT_MODEL=${LLM_DEEPAGENT_MODEL}
+      - LLM_DEEPAGENT_THINKING_ENABLED=${LLM_DEEPAGENT_THINKING_ENABLED}
 
       # Logging & Kubeconfig
       - LOG_LEVEL=${LOG_LEVEL}
@@ -398,6 +400,47 @@ services:
       - ALERTMANAGER_BACKEND_ID=${ALERTMANAGER_BACKEND_ID:-default}
       - AM_MAX_SILENCE_MINUTES=${AM_MAX_SILENCE_MINUTES:-1440}
       - AM_SILENCE_WARNING_THRESHOLD=${AM_SILENCE_WARNING_THRESHOLD:-50}
+
+      # Observability: Loki MCP server env vars
+      - LOKI_URL=${LOKI_URL:-http://localhost:3100}
+      - LOKI_TIMEOUT=${LOKI_TIMEOUT:-30}
+      - LOKI_VERIFY_SSL=${LOKI_VERIFY_SSL:-true}
+      - LOKI_AUTH_TOKEN=${LOKI_AUTH_TOKEN}
+      - LOKI_BASIC_AUTH_USER=${LOKI_BASIC_AUTH_USER}
+      - LOKI_BASIC_AUTH_PASSWORD=${LOKI_BASIC_AUTH_PASSWORD}
+      - LOKI_ORG_ID=${LOKI_ORG_ID:-talkops}
+      - LOKI_MAX_QUERY_BYTES=${LOKI_MAX_QUERY_BYTES:-5000000000}
+      - LOKI_MAX_TIME_WINDOW_HOURS=${LOKI_MAX_TIME_WINDOW_HOURS:-336}
+      - LOKI_MAX_LOG_LIMIT=${LOKI_MAX_LOG_LIMIT:-5000}
+      - LOKI_HIGH_CARDINALITY_THRESHOLD=${LOKI_HIGH_CARDINALITY_THRESHOLD:-10000}
+
+      # Observability: Tempo MCP server env vars
+      - TEMPO_BASE_URL=${TEMPO_BASE_URL:-http://localhost:3200}
+      - TEMPO_BACKEND_ID=${TEMPO_BACKEND_ID:-default}
+      - TEMPO_DISPLAY_NAME=${TEMPO_DISPLAY_NAME:-Local Tempo}
+      - TEMPO_TYPE=${TEMPO_TYPE:-tempo}
+      - TEMPO_DEPLOYMENT_MODE=${TEMPO_DEPLOYMENT_MODE:-microservices}
+      - TEMPO_AUTH_HEADER=${TEMPO_AUTH_HEADER}
+      - TEMPO_VERIFY_SSL=${TEMPO_VERIFY_SSL:-true}
+      - TEMPO_TIMEOUT=${TEMPO_TIMEOUT:-30}
+      - TEMPO_MULTI_TENANT=${TEMPO_MULTI_TENANT:-false}
+      - TEMPO_DEFAULT_TENANT=${TEMPO_DEFAULT_TENANT}
+      - TEMPO_MAX_LOOKBACK=${TEMPO_MAX_LOOKBACK:-168h}
+      - TEMPO_DEFAULT_SEARCH_LIMIT=${TEMPO_DEFAULT_SEARCH_LIMIT:-20}
+      - TEMPO_MAX_SEARCH_LIMIT=${TEMPO_MAX_SEARCH_LIMIT:-100}
+      - TEMPO_DEFAULT_SPSS=${TEMPO_DEFAULT_SPSS:-3}
+      - TEMPO_MAX_SPSS=${TEMPO_MAX_SPSS:-10}
+      - TEMPO_REQUIRE_TIME_RANGE=${TEMPO_REQUIRE_TIME_RANGE:-true}
+      - TEMPO_REQUIRE_FILTER_OR_QUERY=${TEMPO_REQUIRE_FILTER_OR_QUERY:-true}
+
+      # Observability: OpenTelemetry MCP server env vars
+      - OTEL_CRD_GROUP=${OTEL_CRD_GROUP:-opentelemetry.io}
+      - OTEL_CRD_API_VERSION=${OTEL_CRD_API_VERSION:-v1beta1}
+      - OTEL_INSTRUMENTATION_API_VERSION=${OTEL_INSTRUMENTATION_API_VERSION:-v1alpha1}
+      - OTEL_COLLECTOR_PLURAL=${OTEL_COLLECTOR_PLURAL:-opentelemetrycollectors}
+      - OTEL_INSTRUMENTATION_PLURAL=${OTEL_INSTRUMENTATION_PLURAL:-instrumentations}
+      - OTEL_TA_SERVICE_DISCOVERY=${OTEL_TA_SERVICE_DISCOVERY:-true}
+      - OTEL_TA_DEFAULT_PORT=${OTEL_TA_DEFAULT_PORT:-8080}
 
       # ArgoCD: env vars inherited by the argocd-mcp-server stdio subprocess
       - ARGOCD_SERVER_URL=${ARGOCD_SERVER_URL:-https://argocd-server.argocd.svc:443}
