@@ -21,9 +21,8 @@
 
 See **k8s-autopilot** in action using the **Observability Operator** to dynamically generate Prometheus dashboards, analyze CPU utilization across namespaces, and interactively troubleshoot cluster performance:
 
-<p align="center">
-  <video src="https://raw.githubusercontent.com/talkops-ai/k8s-autopilot/main/demo/observability-demo.mp4" width="100%" autoplay loop muted playsinline controls></video>
-</p>
+<video src="https://raw.githubusercontent.com/talkops-ai/k8s-autopilot/main/demo/observability-demo.mp4" autoplay loop muted controls></video>
+
 > *The Observability Operator Coordinator analyzing Prometheus metrics and rendering an interactive CPU utilization dashboard directly in the conversation.*
 
 ---
