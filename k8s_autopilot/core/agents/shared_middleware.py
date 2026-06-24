@@ -284,7 +284,6 @@ ALERTMANAGER_PTC_ALLOWLIST: List[str] = [
 OPENTELEMETRY_PTC_ALLOWLIST: List[str] = [
     # Discovery (read-only)
     "otel_list_collectors",
-    "otel_query_a2ui",
     "otel_get_collector",
     "otel_list_instrumented_services",
     "otel_verify_pipeline_health",
@@ -324,7 +323,6 @@ LOKI_PTC_ALLOWLIST: List[str] = [
     # Execution
     "execute_logql_instant",
     "execute_logql_query",
-    "loki_query_a2ui",
     # Safety / cost
     "get_query_stats",
     # MCP resource + filesystem
@@ -340,7 +338,6 @@ TEMPO_PTC_ALLOWLIST: List[str] = [
     "tempo_summarize_trace",
     "tempo_find_related_traces",
     "tempo_compare_traces",
-    "tempo_query_a2ui",
     # Schema / attributes (read-only)
     "tempo_get_attribute_names",
     "tempo_get_attribute_values",

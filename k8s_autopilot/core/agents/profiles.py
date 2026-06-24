@@ -63,47 +63,14 @@ logger.debug(
 #   2. System prompt suffix — reminds the model of its operational domain.
 #      Per-coordinator suffixes are applied via register_domain_profiles().
 
-# Per-coordinator domain suffixes — each coordinator gets a suffix that
-# accurately describes its scope.  This prevents cross-domain confusion
-# when the agent's context is summarized (which strips the system prompt
-# but preserves suffix-injected context from HarnessProfile).
-DOMAIN_SUFFIXES = {
-    "observability": (
-        "\n\nYou are a production Kubernetes observability automation agent. "
-        "All operations MUST be scoped to the user's configured cluster. "
-        "NEVER hallucinate metric names, label values, or alert rules — "
-        "always verify against live data via your MCP tools first."
-    ),
-    "helm": (
-        "\n\nYou are a production Kubernetes Helm chart and release management agent. "
-        "All operations MUST be scoped to the user's configured cluster. "
-        "NEVER hallucinate chart names, release names, or repository URLs — "
-        "always verify against live data via your MCP tools first."
-    ),
-    "app": (
-        "\n\nYou are a production Kubernetes application lifecycle agent "
-        "managing ArgoCD, Argo Rollouts, and Traefik edge routing. "
-        "All operations MUST be scoped to the user's configured cluster. "
-        "NEVER hallucinate application names, rollout parameters, or routing rules — "
-        "always verify against live data via your MCP tools first."
-    ),
-    "k8s": (
-        "\n\nYou are a production Kubernetes cluster operations agent. "
-        "All operations MUST be scoped to the user's configured cluster and context. "
-        "NEVER hallucinate resource names, namespaces, or cluster contexts — "
-        "always verify against live data via your MCP tools first."
-    ),
-}
+# Per-coordinator domain suffixes have been removed to prevent cross-contamination
+# since identity is strongly defined in the coordinator's prompt registry XML blocks.
 
-# Default suffix used when no domain is specified (backward-compatible).
-_DEFAULT_OPS_SUFFIX = DOMAIN_SUFFIXES["observability"]
-
-
-def _build_harness_profiles(suffix: str) -> dict:
-    """Build provider→HarnessProfile mapping with the given suffix."""
+def _build_harness_profiles() -> dict:
+    """Build provider→HarnessProfile mapping."""
     return {
         provider: HarnessProfile(
-            system_prompt_suffix=suffix,
+            system_prompt_suffix="",
             general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
         )
         for provider in _PROVIDER_DEFAULTS
@@ -113,16 +80,15 @@ def _build_harness_profiles(suffix: str) -> dict:
 def register_domain_profiles(domain: str) -> None:
     """Register harness profiles for a specific coordinator domain.
 
-    This overwrites the provider-level harness profile with a domain-specific
-    suffix.  Should be called at coordinator startup (side-effect import).
+    This overwrites the provider-level harness profile. Should be called
+    at coordinator startup (side-effect import).
 
     Args:
         domain: One of 'observability', 'helm', 'app', 'k8s'.
 
     Ref: https://docs.langchain.com/oss/python/deepagents/profiles#harness-profiles
     """
-    suffix = DOMAIN_SUFFIXES.get(domain, _DEFAULT_OPS_SUFFIX)
-    profiles = _build_harness_profiles(suffix)
+    profiles = _build_harness_profiles()
     for provider_key, profile in profiles.items():
         register_harness_profile(provider_key, profile)
     logger.debug(
@@ -132,12 +98,11 @@ def register_domain_profiles(domain: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Default registration (backward-compatible) — uses the observability suffix
-# since it was the original default.  Each coordinator's __init__ or startup
-# should call register_domain_profiles() with their own domain to override.
+# Default registration (backward-compatible)
+# Each coordinator's __init__ or startup should call register_domain_profiles().
 # ---------------------------------------------------------------------------
 
-_HARNESS_DEFAULTS = _build_harness_profiles(_DEFAULT_OPS_SUFFIX)
+_HARNESS_DEFAULTS = _build_harness_profiles()
 
 for provider_key, profile in _HARNESS_DEFAULTS.items():
     register_harness_profile(provider_key, profile)

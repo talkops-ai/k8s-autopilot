@@ -80,6 +80,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 # Install runtime dependencies and create application user
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl nodejs npm && \
+    npm install -g kubernetes-mcp-server@latest && \
     rm -rf /var/lib/apt/lists/* && \
     update-ca-certificates && \
     curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \

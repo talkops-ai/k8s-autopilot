@@ -182,7 +182,10 @@ def get_obs_subagent_specs(
             server_filter=["prometheus-mcp-server"],
             mcp_resource_server_name="prometheus-mcp-server",
             include_filesystem=True,
-            skill_paths=["/skills/observability/prometheus/"],
+            skill_paths=[
+                "/skills/observability/prometheus/",
+                "/skills/observability/response-formats/",
+            ],
             hitl_builder=build_prometheus_hitl_middleware,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(
@@ -198,7 +201,10 @@ def get_obs_subagent_specs(
             server_filter=["alertmanager-mcp-server"],
             mcp_resource_server_name="alertmanager-mcp-server",
             include_filesystem=True,
-            skill_paths=["/skills/observability/alertmanager/"],
+            skill_paths=[
+                "/skills/observability/alertmanager/",
+                "/skills/observability/response-formats/",
+            ],
             hitl_builder=build_alertmanager_hitl_middleware,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(
@@ -214,7 +220,10 @@ def get_obs_subagent_specs(
             server_filter=["opentelemetry-mcp-server"],
             mcp_resource_server_name="opentelemetry-mcp-server",
             include_filesystem=True,
-            skill_paths=["/skills/observability/opentelemetry/"],
+            skill_paths=[
+                "/skills/observability/opentelemetry/",
+                "/skills/observability/response-formats/",
+            ],
             hitl_builder=build_opentelemetry_hitl_middleware,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(
@@ -230,7 +239,10 @@ def get_obs_subagent_specs(
             server_filter=["loki-mcp-server"],
             mcp_resource_server_name="loki-mcp-server",
             include_filesystem=True,
-            skill_paths=["/skills/observability/loki/"],
+            skill_paths=[
+                "/skills/observability/loki/",
+                "/skills/observability/response-formats/",
+            ],
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(
                     ptc_allowlist=LOKI_PTC_ALLOWLIST,
@@ -245,7 +257,10 @@ def get_obs_subagent_specs(
             server_filter=["tempo-mcp-server"],
             mcp_resource_server_name="tempo-mcp-server",
             include_filesystem=True,
-            skill_paths=["/skills/observability/tempo/"],
+            skill_paths=[
+                "/skills/observability/tempo/",
+                "/skills/observability/response-formats/",
+            ],
             hitl_builder=build_tempo_hitl_middleware,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(

@@ -124,3 +124,58 @@ Always state derived defaults in the plan preview so the user can override.
 - Lead with severity breakdown for alert triage (🔴 Critical, 🟡 Warning, ⚪ Info).
 - Use tables for multi-alert or multi-silence results.
 - For errors: provide root cause + immediate fixes + preventive measures.
+
+## State-Modifying Workflow Details
+
+Silence Lifecycle — MANDATORY SEQUENCE:
+For ANY silence creation, follow this exact sequence:
+1. am_preview_silence — check blast radius (MANDATORY, NEVER SKIP)
+2. am_validate_silence_policy — check policy compliance
+3. Only THEN → am_create_silence
+
+If blast radius warning is raised or policy violation detected → narrow matchers or get explicit approval.
+
+Idempotency — Check Before Creating:
+| Before creating... | First check with... | If exists... |
+|---|---|---|
+| Silence | am://silences/active or am_list_silences | Skip — duplicate detection built-in |
+| Test alert | am://alerts/active | Verify no existing test alert |
+
+Phase 1: Discovery
+1. Task description has context? → proceed.
+2. Else check /memories/observability/operations-log.md.
+3. Unknown + list request → enumerate via resource/tool, return.
+4. Unknown + targeted op → return "INCOMPLETE: missing [params]".
+5. NEVER guess alert names, silence IDs, or matchers.
+
+Phase 2: Planning — call request_human_input
+| Operation | question | context fields |
+|---|---|---|
+| Create Silence | "Create silence. Approve?" | 🔇 Matchers, Duration, Blast radius, Creator |
+| Expire Silence | "Expire silence. Approve?" | 🔔 Silence ID, Affected alerts |
+| Push Test Alert | "Fire test alert. Approve?" | 🧪 Alert labels, Target receiver |
+| Update Silence | "Extend silence. Approve?" | 🔄 Silence ID, Extension duration |
+
+WAIT for approval before proceeding.
+
+Phase 3: Execution
+Tools gated by HumanInTheLoopMiddleware. Execute with exact approved parameters.
+
+Phase 4: Verification & Failure Diagnosis (MANDATORY)
+Never declare success based on tool stdout. Always run the verification query and return
+a structured health status (✅ Verified or ❌ Failed).
+
+| After... | Verify with... | If Failed |
+|---|---|---|
+| Silence create | am_list_silences(state="active") | Check am_list_recent_changes to see if immediately expired. |
+| Silence expire | am_list_silences (check expired) | Check if another active silence matches. |
+| Test alert push | am_list_alerts | Check am_explain_routing to see where it was routed. |
+| Silence update | am_list_silences(state="active") | Check if max duration was exceeded. |
+
+Governance Operations:
+For governance/audit tasks:
+1. am://system/config — export current config for Git diffing
+2. am_list_recent_changes — audit silence create/expire activity
+3. am://system/audit-log — review MCP operation history
+4. am_validate_silence_policy — check policy compliance of existing silences
+5. am_audit_default_route — find misrouted alerts hitting fallback receiver

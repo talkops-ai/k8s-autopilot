@@ -16,12 +16,7 @@ from langgraph.store.memory import InMemoryStore
 from deepagents import create_deep_agent
 from deepagents.backends.utils import create_file_data
 
-# Side-effect import: registers ProviderProfile + HarnessProfile for all
-# supported providers BEFORE create_deep_agent constructs the model.
-# Ref: https://docs.langchain.com/oss/python/deepagents/profiles
-import k8s_autopilot.core.agents.profiles  # noqa: F401
-from k8s_autopilot.core.agents.profiles import register_domain_profiles
-register_domain_profiles("observability")
+
 
 from k8s_autopilot.core.agents.types import BaseDeepAgent
 from k8s_autopilot.core.state.observability_state import ObservabilityContext
@@ -126,12 +121,7 @@ class ObservabilityCoordinator(BaseDeepAgent):
 
     def get_skill_paths(self) -> List[str]:
         return [
-            "/skills/observability/prometheus",
-            "/skills/observability/alertmanager",
-            "/skills/observability/opentelemetry",
-            "/skills/observability/loki",
-            "/skills/observability/tempo",
-            "/skills/observability/response-formats",
+            "/skills/observability/coordinator",
         ]
 
     def get_memory_paths(self) -> List[str]:

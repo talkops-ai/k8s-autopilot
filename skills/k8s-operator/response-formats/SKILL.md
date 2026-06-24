@@ -1,5 +1,5 @@
 ---
-name: k8s-response-formats
+name: response-formats
 description: >-
   Response formatting templates for K8s Operator coordinator results.
   Load when you need to present Kubernetes resource lists, pod logs,

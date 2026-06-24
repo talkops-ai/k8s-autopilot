@@ -19,10 +19,12 @@
 
 ## ⚡ Quick Overview
 
-See **k8s-autopilot** in action generating a Helm chart, validating it against best practices, and initiating a GitHub push via HITL approval:
+See **k8s-autopilot** in action using the **Observability Operator** to dynamically generate Prometheus dashboards, analyze CPU utilization across namespaces, and interactively troubleshoot cluster performance:
 
-![k8s-autopilot Demo](demo/helm_generation_demo.gif)
-> *The Helm Operator Coordinator automatically generating a chart, validating it with the Helm MCP server, and pausing for human approval before committing to GitHub.*
+<p align="center">
+  <video src="https://raw.githubusercontent.com/talkops-ai/k8s-autopilot/main/demo/observability-demo.mp4" width="100%" autoplay loop muted playsinline controls></video>
+</p>
+> *The Observability Operator Coordinator analyzing Prometheus metrics and rendering an interactive CPU utilization dashboard directly in the conversation.*
 
 ---
 

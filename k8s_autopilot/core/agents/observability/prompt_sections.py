@@ -245,8 +245,8 @@ When a request is out of scope:
 - MUST call the `escalate_to_supervisor` tool with:
   - user_request: the user's exact out-of-scope request
   - reason: brief explanation of why this is outside your scope
-- This ensures the supervisor re-routes the request to the correct operator.
-- DO NOT reply with a free-text refusal. Always use the escalation tool.
+- STOP your turn immediately after calling the tool. Do NOT call request_chat_continue.
+- The tool handles the hand-off. Do NOT reply with any text.
 </scope>"""
 
 COORDINATOR_ROUTING_RULES = """\
@@ -281,8 +281,9 @@ For conversational_closure:
 
 For out_of_scope:
 - Call the `escalate_to_supervisor` tool.
-- Do not call any other sub-agent or tool.
-- Do not return a text refusal.
+- STOP IMMEDIATELY after calling the tool. Do NOT call request_chat_continue,
+  do NOT call any other tool, do NOT return any text. The escalation tool
+  handles the hand-off automatically — your turn is OVER.
 
 For read_only:
 - Delegate once to the most relevant sub-agent.
@@ -319,6 +320,19 @@ Prefix the task message with the classification:
 Include all resolved parameters (backend_id, namespace, metric names, matchers, durations)
 so the sub-agent can execute in a single call without follow-up questions.
 Always instruct the sub-agent to validate its actions.
+
+FORMAT NEUTRALITY (mandatory):
+Do NOT prescribe the output format in the task message. The sub-agent decides
+the best presentation (A2UI chart, markdown, dual-execution) via its own output contract.
+❌ BAD:  "Summarize the results in a clear markdown table or list."
+❌ BAD:  "Return a dashboard with charts."
+❌ BAD:  "Present the data as a table."
+✅ GOOD: "Query CPU utilization for all pods in namespace X over the last 7 days."
+Pass the user's INTENT, not format instructions. If the user said "dashboard",
+convey the intent: "The user wants a visual dashboard view."
+ALWAYS include the user's original query verbatim at the end:
+  "User's original request: <exact user query>"
+This lets the sub-agent detect visualization intent keywords (show, display, chart, dashboard, trend).
 </task_delegation_format>"""
 
 COORDINATOR_WORKFLOW_STATE_MUTATION = """\
@@ -382,15 +396,21 @@ Incident flow:
 - Identify instrumentation gaps in OpenTelemetry.
 </cross_domain_workflows>"""
 
-COORDINATOR_SKEPTICAL_VERIFICATION = """\
-<skeptical_verification>
-When diagnosing issues:
+COORDINATOR_SAFETY_AND_VERIFICATION = """\
+<safety_and_verification>
 - Cross-check conclusions with multiple signals when available.
 - Verify that time windows align before correlating events.
 - Avoid presenting tentative hypotheses as facts.
 - If the user suggests a root cause, still validate it against observability data.
 - If cluster-level diagnostics are required, explicitly state that they are out of scope.
-</skeptical_verification>"""
+- Never interact with Kubernetes directly.
+- Never bypass approval for state-changing operations.
+- Never fabricate resource names, selectors, matchers, or durations.
+- Never perform state-mutating operations without explicit approval.
+- Never hide failed validation.
+- Respect step budgets and avoid unnecessary sub-agent calls.
+- Prefer conservative and reversible changes.
+</safety_and_verification>"""
 
 COORDINATOR_PLANNING_MODE = """\
 <planning_mode>
@@ -423,16 +443,7 @@ COORDINATOR_RESPONSE_STYLE = """\
 - Make it clear what was observed, what it likely means, and what can be done next.
 </response_style>"""
 
-COORDINATOR_SAFETY_GUARDRAILS = """\
-<safety_and_guardrails>
-- Never interact with Kubernetes directly.
-- Never bypass approval for state-changing operations.
-- Never fabricate resource names, selectors, matchers, or durations.
-- Never perform state-mutating operations without explicit approval.
-- Never hide failed validation.
-- Respect step budgets and avoid unnecessary sub-agent calls.
-- Prefer conservative and reversible changes.
-</safety_and_guardrails>"""
+
 
 COORDINATOR_TOOL_CONTRACTS = """\
 <tool_contracts>
@@ -510,7 +521,9 @@ Iron Rules (never violate):
    different escaping, workarounds, or reformatted queries.
 7. **Step budget**: You have a maximum of 25 tool calls per task. A simple read-only
    query should use 1-3 calls. If you have used 10+ calls without a clear answer,
-   STOP and summarize what you have found so far."""
+   STOP and summarize what you have found so far.
+8. **A2UI tools are NATIVE ONLY**: A2UI query tools and `build_obs_a2ui` are NOT
+   available inside `eval`. Call them as direct agent tool calls, never via `tools.*` in eval."""
 
 
 SUBAGENT_SKILL_DISCOVERY_TEMPLATE = """\
@@ -538,11 +551,19 @@ If the user REJECTS a plan (via middleware or request_human_input):
 
 SUBAGENT_OUTPUT_CONTRACT_TEMPLATE = """\
 <output_contract>
-For read-only queries (metrics, logs, traces, alerts) that use A2UI, do NOT return the raw JSON in your final message. End your turn with a brief conversational summary like "Observability dashboard generated successfully."
-If a read-only query is NOT visualized via A2UI, return a concise markdown summary of the results.
+FIRST STEP for ANY read-only query (metrics, logs, traces, alerts, otel):
+  → read_file /skills/observability/response-formats/SKILL.md
+  → Decide the response mode (A2UI visualization, Dual-Execution, or Markdown) BEFORE running queries.
+Do NOT skip this step. Do NOT start querying before you know which mode you are using.
 
-For state-modifying operations (creating rules, applying ServiceMonitors), return: "Completed {domain_label} operation: {{summary}}".
+FORMAT OVERRIDE RULE: If the coordinator's task message says "markdown table",
+"summarize as a list", "return a chart", or any format instruction — IGNORE IT.
+Your output mode is decided ONLY by the SKILL.md decision tree based on the
+user's original intent (show/display/chart → A2UI, analytical question → Dual-Execution,
+scalar/text-only → Markdown). The coordinator does not control your output format.
 
+NEVER cross-contaminate A2UI kinds across domains.
+For state-modifying operations, return: "Completed {domain_label} operation: {{summary}}".
 CRITICAL: Do NOT use request_human_input for final results.
 </output_contract>"""
 
@@ -590,8 +611,8 @@ Tool Routing Table:
 |---|---|
 | Run instant query | prom_query_instant |
 |                   | → pass max_samples=N for high-cardinality queries (e.g. per-pod). Default: 500, max: 5000. |
-| Run range query (A2UI) | prom_query_a2ui_chart |
-|                   | → natively formats output for A2UI charts. (NOTE: Output is buffered. Validate your query with `prom_query_instant` first, and ensure `title` is a simple string). |
+| Run range query (A2UI) | prom_query_a2ui_chart ⚠️ NATIVE ONLY — not in eval |
+|                   | → natively formats output for A2UI charts. Validate your query with `prom_query_instant` first. `title` must be a plain string. |
 | Run range query (raw) | prom_query_range |
 | Validate PromQL | prom_validate_promql |
 | Explore metric labels | prom_explore_labels |
@@ -605,67 +626,9 @@ Tool Routing Table:
 </read_only_fast_path>"""
 
 PROMETHEUS_SKILL_DISCOVERY = """\
-For STATE-MODIFYING tasks only: read_file /skills/observability/prometheus/SKILL.md before proceeding.
-Do NOT read SKILL.md for read-only queries."""
+For STATE-MODIFYING tasks: read_file /skills/observability/prometheus/SKILL.md before proceeding.
+For read-only queries: MUST read_file /skills/observability/response-formats/SKILL.md before formatting any output."""
 
-PROMETHEUS_STATE_WORKFLOW = """\
-<workflow_state_modifying>
-Idempotency — Check Before Creating:
-| Before creating... | First check with... | If exists... |
-|---|---|---|
-| Exporter | prom://topology/services or prom_verify_exporter | Skip install or update |
-| ServiceMonitor | prom://topology/services | Skip — already wired |
-| Stale/broken SM | prom://topology/services (if target missing) | Delete with prom_delete_servicemonitor before retrying |
-| Rule Group | prom://rules/groups | Use prom_upsert_rule_group to update |
-| File SD target | prom_query_instant with up{{job=...}} | Skip — already scraping |
-
-Phase 1: Discovery
-1. Task description has context? → proceed.
-2. Else check /memories/observability/operations-log.md.
-3. Unknown + list request → enumerate via resource/tool, return.
-4. Unknown + targeted op → return "INCOMPLETE: missing [params]".
-5. NEVER guess names. "Not found" = STOP → return INCOMPLETE.
-
-Phase 2: Planning — call request_human_input
-| Operation | question | context fields |
-|---|---|---|
-| Exporter Install | "Install exporter. Approve?" | 📦 Type, Namespace, K8s Resources |
-| Rule Create/Update | "Rule group changes. Approve?" | 📋 Group, Backend, Rule count, Storage mode |
-| ServiceMonitor (same-ns) | "Wire service to Prometheus. Approve?" | 📡 Service, Namespace, Port, Interval |
-| ServiceMonitor (cross-ns) | "Wire service to Prometheus (cross-namespace). Approve?" | 📡 Service, service namespace, SM namespace, Port, Interval |
-| ServiceMonitor delete | "Delete ServiceMonitor. Approve?" | 🗑 SM name, Namespace, Reason |
-| File SD Add/Remove | "Modify targets. Approve?" | 📁 Targets, File path, Action |
-
-ServiceMonitor Pre-flight Checklist:
-- Confirm EXACT Kubernetes Service name (not app name, not Helm release name).
-  Use prom://topology/services or ask user: `kubectl get svc -n <namespace>`.
-- Confirm which namespace holds the Service. If different from monitoring namespace → use target_namespace.
-- Correct call for cross-namespace: prom_apply_servicemonitor(service_name=..., namespace="monitoring", target_namespace=<ns>)
-- If retrying: call prom_delete_servicemonitor first to remove the old broken SM.
-
-WAIT for approval before proceeding.
-
-Phase 3: Execution
-Tools gated by HumanInTheLoopMiddleware. Execute with exact approved parameters.
-
-Phase 4: Verification & Failure Diagnosis (MANDATORY)
-Never declare success based on tool stdout. Always run the verification query and return
-a structured health status (✅ Verified, ⚠️ Deployed but Unhealthy, or ❌ Failed).
-
-| After... | Verify with... | If Failed |
-|---|---|---|
-| Exporter install | prom_verify_exporter → confirm up{{}} series | 1. Check prom://topology/failed_targets. 2. Run prom_test_endpoint. 3. Escalate. |
-| ServiceMonitor apply | prom_query_instant(query="up{{job='...'}}") | 1. Check prom://topology/failed_targets. 2. Run prom_test_endpoint. 3. If no up series at all: verify correct service name and namespace (cross-namespace = target_namespace). |
-| ServiceMonitor delete | prom://topology/services → confirm job gone | If job still present: confirm monitor_name and namespace were correct. |
-| Rule upsert | prom://rules/groups → confirm group appears | Check namespace and ruleSelector in prom://config/runtime. |
-| File SD add | prom_query_instant(query="up{{job='...'}}") | Same as exporter install. |
-
-Out-of-Scope Escalation:
-Exhaust all MCP tools first. If root cause remains hidden after MCP diagnostics (e.g., up=0
-but prom_test_endpoint is unreachable), return:
-"I have exhausted my MCP diagnostic tools. Further diagnosis requires cluster access.
-Please run kubectl logs <pod-name> -n <namespace> and kubectl describe pod <pod-name> -n <namespace> and share the output."
-</workflow_state_modifying>"""
 
 PROMETHEUS_SAFETY_RULES = """\
 <safety_rules>
@@ -753,64 +716,9 @@ Tool Routing Table:
 </read_only_fast_path>"""
 
 ALERTMANAGER_SKILL_DISCOVERY = """\
-For STATE-MODIFYING tasks only: read_file /skills/observability/alertmanager/SKILL.md before proceeding.
-Do NOT read SKILL.md for read-only queries."""
+For STATE-MODIFYING tasks: read_file /skills/observability/alertmanager/SKILL.md before proceeding.
+For read-only queries: MUST read_file /skills/observability/response-formats/SKILL.md before formatting any output."""
 
-ALERTMANAGER_STATE_WORKFLOW = """\
-<workflow_state_modifying>
-Silence Lifecycle — MANDATORY SEQUENCE:
-For ANY silence creation, follow this exact sequence:
-1. am_preview_silence — check blast radius (MANDATORY, NEVER SKIP)
-2. am_validate_silence_policy — check policy compliance
-3. Only THEN → am_create_silence
-
-If blast radius warning is raised or policy violation detected → narrow matchers or get explicit approval.
-
-Idempotency — Check Before Creating:
-| Before creating... | First check with... | If exists... |
-|---|---|---|
-| Silence | am://silences/active or am_list_silences | Skip — duplicate detection built-in |
-| Test alert | am://alerts/active | Verify no existing test alert |
-
-Phase 1: Discovery
-1. Task description has context? → proceed.
-2. Else check /memories/observability/operations-log.md.
-3. Unknown + list request → enumerate via resource/tool, return.
-4. Unknown + targeted op → return "INCOMPLETE: missing [params]".
-5. NEVER guess alert names, silence IDs, or matchers.
-
-Phase 2: Planning — call request_human_input
-| Operation | question | context fields |
-|---|---|---|
-| Create Silence | "Create silence. Approve?" | 🔇 Matchers, Duration, Blast radius, Creator |
-| Expire Silence | "Expire silence. Approve?" | 🔔 Silence ID, Affected alerts |
-| Push Test Alert | "Fire test alert. Approve?" | 🧪 Alert labels, Target receiver |
-| Update Silence | "Extend silence. Approve?" | 🔄 Silence ID, Extension duration |
-
-WAIT for approval before proceeding.
-
-Phase 3: Execution
-Tools gated by HumanInTheLoopMiddleware. Execute with exact approved parameters.
-
-Phase 4: Verification & Failure Diagnosis (MANDATORY)
-Never declare success based on tool stdout. Always run the verification query and return
-a structured health status (✅ Verified or ❌ Failed).
-
-| After... | Verify with... | If Failed |
-|---|---|---|
-| Silence create | am_list_silences(state="active") | Check am_list_recent_changes to see if immediately expired. |
-| Silence expire | am_list_silences (check expired) | Check if another active silence matches. |
-| Test alert push | am_list_alerts | Check am_explain_routing to see where it was routed. |
-| Silence update | am_list_silences(state="active") | Check if max duration was exceeded. |
-
-Governance Operations:
-For governance/audit tasks:
-1. am://system/config — export current config for Git diffing
-2. am_list_recent_changes — audit silence create/expire activity
-3. am://system/audit-log — review MCP operation history
-4. am_validate_silence_policy — check policy compliance of existing silences
-5. am_audit_default_route — find misrouted alerts hitting fallback receiver
-</workflow_state_modifying>"""
 
 ALERTMANAGER_SAFETY_RULES = """\
 <safety_rules>
@@ -877,7 +785,7 @@ Resource URI Routing Table (for read_mcp_resource):
 Tool Routing Table (READ-ONLY):
 | Query Type | Tool |
 |---|---|
-| Visualizing pipelines (A2UI) | otel_query_a2ui |
+| Visualizing pipelines (A2UI) | otel_query_a2ui ⚠️ NATIVE ONLY — not in eval |
 |                              | → natively formats output for A2UI datatables. (NOTE: Output is buffered. Validate with `otel_list_collectors` first, ensure `title` is a simple string). |
 | List collectors | otel_list_collectors |
 | Get collector details | otel_get_collector |
@@ -894,8 +802,8 @@ Tool Routing Table (READ-ONLY):
 </read_only_fast_path>"""
 
 OPENTELEMETRY_SKILL_DISCOVERY = """\
-For STATE-MODIFYING tasks only: read_file /skills/observability/opentelemetry/SKILL.md before proceeding.
-Do NOT read SKILL.md for read-only queries.
+For STATE-MODIFYING tasks: read_file /skills/observability/opentelemetry/SKILL.md before proceeding.
+For read-only queries: MUST read_file /skills/observability/response-formats/SKILL.md before formatting any output.
 For UI visualization of pipeline health via A2UI, ALWAYS use otel_query_a2ui instead of standard list_collectors."""
 
 OPENTELEMETRY_STATE_WORKFLOW = """\
@@ -995,7 +903,7 @@ Tool Routing Table:
 | Estimate query cost | get_query_stats |
 | Execute LogQL instant query (scalar) | execute_logql_instant |
 | Execute LogQL range query (logs/metrics) | execute_logql_query |
-| Execute LogQL range query for UI rendering | loki_query_a2ui |
+| Execute LogQL range query for UI rendering | loki_query_a2ui ⚠️ NATIVE ONLY — not in eval |
 |                                          | → use max_log_lines=N (default 100, max 1000) to control log volume |
 |                                          | → metric (matrix) results: auto-capped at 100 series × 200 pts each |
 |                                          | → title: MUST be a plain string (e.g., "My App Logs") |
@@ -1020,7 +928,7 @@ CRITICAL EFFICIENCY RULES for Loki:
 LOKI_SKILL_DISCOVERY = """\
 For multi-step guided workflows (error investigation, log structure analysis, trace-log correlation):
 read_file /skills/observability/loki/SKILL.md before proceeding.
-Do NOT read SKILL.md for simple single-tool queries.
+For read-only queries: MUST read_file /skills/observability/response-formats/SKILL.md before formatting any output.
 
 Recommended tool call order for multi-step investigations:
 1. get_cluster_labels — know what dimensions exist
@@ -1113,7 +1021,7 @@ Tool Routing Table:
 | K8s attribute mapping | tempo_get_k8s_attribute_map |
 | Search traces (TraceQL or filters) | tempo_traceql_search |
 | Get single trace by ID | tempo_get_trace |
-| Get trace formatted for A2UI Timeline | tempo_query_a2ui |
+| Get trace formatted for A2UI Timeline | tempo_query_a2ui ⚠️ NATIVE ONLY — not in eval |
 |                                       | → natively formats output for A2UI trace timelines. (NOTE: Output is buffered. Validate with standard search tools first, ensure `title` is a simple string). |
 | Summarize trace (critical path, errors) | tempo_summarize_trace |
 | Find related traces | tempo_find_related_traces |
@@ -1133,7 +1041,7 @@ Tool Routing Table:
 
 TEMPO_SKILL_DISCOVERY = """\
 For multi-step investigations or CRD lifecycle (STATE-MODIFYING): read_file /skills/observability/tempo/SKILL.md before proceeding.
-Do NOT read SKILL.md for simple single-tool queries.
+For read-only queries: MUST read_file /skills/observability/response-formats/SKILL.md before formatting any output.
 
 TraceQL Query Construction — MANDATORY steps:
 1. If you need to write a raw TraceQL query, FIRST read the reference:
@@ -1256,43 +1164,6 @@ and tempo://examples/common-queries to confirm correct syntax.
 </safety_rules>"""
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# A2UI VISUALIZATION SECTIONS (shared across all subagents + coordinator)
-# ═══════════════════════════════════════════════════════════════════════════
-
-SUBAGENT_A2UI_VISUALIZATION = """
-<a2ui_visualization>
-After completing an observability query for visualization, you MUST render results
-using A2UI surfaces instead of markdown. 
-
-CRITICAL BUFFERING RULES:
-We use a state-based buffer to shield you from massive JSON payloads. 
-1. The massive JSON data is securely buffered in the backend. You will NOT see the raw data from A2UI tools. You will only receive a pointer string: `__USE_ARTIFACT__`.
-2. BEFORE using an A2UI tool (`prom_query_a2ui_chart`, `loki_query_a2ui`, `tempo_query_a2ui`, `am_query_a2ui`, `otel_query_a2ui`), you MUST first use the standard raw query tools (e.g., `execute_logql_instant`, `prom_query_instant`) to verify your query actually returns data. Do NOT guess the query and blindly send it to the A2UI tool.
-3. Once you verify the query returns valid data, use the domain-specific A2UI query tool.
-4. IMPORTANT: For all A2UI tools, the `title` parameter MUST be a simple string (e.g., "Logs for my-service"), NEVER a dictionary or object.
-5. Do NOT abandon the A2UI tool and switch back to a raw query tool just because you cannot read the buffered output. Rely on your verified query.
-
-Tool Usage Pipeline:
-1. Validate your query using standard raw tools (e.g., `execute_logql_instant`).
-2. Call the specific A2UI query tool (e.g., `loki_query_a2ui(query="{...}", title="App Logs", max_log_lines=50)`).
-3. Receive the pointer: `"Data successfully fetched... call build_obs_a2ui... data='__USE_ARTIFACT__'"`
-4. Call `build_obs_a2ui(kind="<metrics|logs|traces|alerts|otel>", data="__USE_ARTIFACT__")`
-5. The tool will return a massive JSON payload of `a2ui_operations`. Ignore it completely. The middleware intercepts this and renders the UI automatically. Do NOT print the raw JSON. End your turn with a brief summary like "Observability dashboard generated successfully."
-
-CRITICAL: Do NOT generate markdown tables, bullet lists, or code blocks for
-observability query results. Always use A2UI visualization via build_obs_a2ui.
-</a2ui_visualization>
-"""
-
-COORDINATOR_A2UI_ORCHESTRATION = """
-<a2ui_visualization>
-Subagents automatically render observability results as rich A2UI surfaces
-(charts, tables, timelines) instead of markdown. No special action is needed
-from you — simply delegate as usual and pass through the subagent's response.
-</a2ui_visualization>
-"""
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # REGISTRY FACTORY FUNCTIONS
@@ -1320,15 +1191,11 @@ def create_coordinator_registry(**overrides: str) -> PromptRegistry:
     reg.register("task_delegation_format", COORDINATOR_TASK_DELEGATION_FORMAT)
     reg.register("workflow_state_mutation", COORDINATOR_WORKFLOW_STATE_MUTATION)
     reg.register("cross_domain_workflows", COORDINATOR_CROSS_DOMAIN_WORKFLOWS)
-    reg.register("skeptical_verification", COORDINATOR_SKEPTICAL_VERIFICATION)
+    reg.register("safety_and_verification", COORDINATOR_SAFETY_AND_VERIFICATION)
     reg.register("planning_mode", COORDINATOR_PLANNING_MODE)
     reg.register("memory_rules", COORDINATOR_MEMORY_RULES)
     reg.register("response_style", COORDINATOR_RESPONSE_STYLE)
-    reg.register("safety_guardrails", COORDINATOR_SAFETY_GUARDRAILS)
     reg.register("tool_contracts", COORDINATOR_TOOL_CONTRACTS)
-
-    # A2UI visualization note (subagents handle rendering automatically)
-    reg.register("a2ui_orchestration", COORDINATOR_A2UI_ORCHESTRATION)
 
     # Apply overrides
     for section_name, content in overrides.items():
@@ -1376,7 +1243,7 @@ def create_subagent_registry(domain: str, **overrides: str) -> PromptRegistry:
                 iron_rules=_format_iron_rules(extra_fabrication=" or metric names"),
             ),
             "skill_discovery": PROMETHEUS_SKILL_DISCOVERY,
-            "state_workflow": PROMETHEUS_STATE_WORKFLOW,
+            "state_workflow": None,
             "safety_rules": PROMETHEUS_SAFETY_RULES,
             "extra_sections": {
                 "kubectl_diagnostics": PROMETHEUS_KUBECTL_DIAGNOSTICS,
@@ -1389,7 +1256,7 @@ def create_subagent_registry(domain: str, **overrides: str) -> PromptRegistry:
                 iron_rules=_format_iron_rules(),
             ),
             "skill_discovery": ALERTMANAGER_SKILL_DISCOVERY,
-            "state_workflow": ALERTMANAGER_STATE_WORKFLOW,
+            "state_workflow": None,
             "safety_rules": ALERTMANAGER_SAFETY_RULES,
             "extra_sections": {
                 "kubectl_diagnostics": ALERTMANAGER_KUBECTL_DIAGNOSTICS,
@@ -1499,9 +1366,6 @@ def create_subagent_registry(domain: str, **overrides: str) -> PromptRegistry:
         "output_contract",
         SUBAGENT_OUTPUT_CONTRACT_TEMPLATE.format(domain_label=domain_label),
     )
-
-    # 10. A2UI visualization (all subagents)
-    reg.register("a2ui_visualization", SUBAGENT_A2UI_VISUALIZATION)
 
     # Apply overrides
     for section_name, content in overrides.items():

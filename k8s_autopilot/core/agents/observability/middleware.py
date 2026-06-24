@@ -794,12 +794,12 @@ def build_obs_operator_middleware(
             )
         )
 
-    # 4b. Shared coordinator middleware (CodeInterpreter + Summarization)
+    # 4b. Shared coordinator middleware (Summarization only, eval removed for safety)
     from k8s_autopilot.core.agents.shared_middleware import (
-        build_shared_coordinator_middleware,
+        build_summarization_middleware,
     )
     middleware.extend(
-        build_shared_coordinator_middleware(
+        build_summarization_middleware(
             model=model,
             backend=backend,
             config=config,
