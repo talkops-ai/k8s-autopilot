@@ -93,6 +93,24 @@ def sync_workspace_to_disk(
     return written
 
 
+def get_memories_namespace(_rt: Any = None) -> tuple[str, ...]:
+    """Retrieve a thread-scoped memories namespace tuple.
+    
+    Checks the active runnable configuration's thread ID and returns
+    (org, thread_id) if present; otherwise falls back to (org,).
+    """
+    from langgraph.config import get_config
+    _org = os.getenv("ORG_NAME", "default_org")
+    try:
+        cfg = get_config()
+        tid = cfg.get("configurable", {}).get("thread_id")
+        if tid:
+            return (_org, tid)
+    except Exception:  # noqa: BLE001
+        pass
+    return (_org,)
+
+
 # ---------------------------------------------------------------------------
 # Backend factory mixin
 # ---------------------------------------------------------------------------
@@ -144,13 +162,11 @@ class K8sBackendMixin:
             inherit_env=True,
         )
 
-        _org = os.getenv("ORG_NAME", "default_org")
-
         return CompositeBackend(
             default=default,
             routes={
                 "/memories/": StoreBackend(
-                    namespace=lambda _rt: (_org,),
+                    namespace=get_memories_namespace,
                 ),
                 "/shared/": StoreBackend(
                     namespace=lambda _rt: ("shared",),

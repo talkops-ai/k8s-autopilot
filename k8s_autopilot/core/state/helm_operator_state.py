@@ -1,7 +1,13 @@
-from typing import Optional
+from typing import Optional, Annotated, Sequence, Dict, Any
 from typing_extensions import NotRequired, TypedDict
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
 
 class HelmOperatorContext(TypedDict, total=False):
+    messages: Annotated[Sequence[AnyMessage], add_messages]
+    agent_messages: Annotated[Sequence[AnyMessage], add_messages]
+    pending_interrupt: Optional[Dict[str, Any]]
+    collected_inputs: Dict[str, Any]
     github_repo: NotRequired[str]
     github_branch: NotRequired[str]
     github_commit_author: NotRequired[str]

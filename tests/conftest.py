@@ -98,6 +98,32 @@ def mock_config():
 def in_memory_store():
     return InMemoryStore()
 
+from langgraph.graph.state import CompiledStateGraph
+
+original_ainvoke = CompiledStateGraph.ainvoke
+original_invoke = CompiledStateGraph.invoke
+
+async def patched_ainvoke(self, input, config=None, **kwargs):
+    if config is None:
+        config = {"configurable": {"thread_id": "test-thread-id"}}
+    elif "configurable" not in config:
+        config["configurable"] = {"thread_id": "test-thread-id"}
+    elif "thread_id" not in config.get("configurable", {}):
+        config["configurable"]["thread_id"] = "test-thread-id"
+    return await original_ainvoke(self, input, config, **kwargs)
+
+def patched_invoke(self, input, config=None, **kwargs):
+    if config is None:
+        config = {"configurable": {"thread_id": "test-thread-id"}}
+    elif "configurable" not in config:
+        config["configurable"] = {"thread_id": "test-thread-id"}
+    elif "thread_id" not in config.get("configurable", {}):
+        config["configurable"]["thread_id"] = "test-thread-id"
+    return original_invoke(self, input, config, **kwargs)
+
+CompiledStateGraph.ainvoke = patched_ainvoke
+CompiledStateGraph.invoke = patched_invoke
+
 @pytest.fixture
 def memory_saver():
     return MemorySaver()
@@ -121,3 +147,31 @@ def fake_model_conversational():
     return FakeMessagesListChatModel(
         responses=[AIMessage(content="You're welcome! Let me know if you need anything else.")]
     )
+
+@pytest.fixture(autouse=True)
+def mock_llm_creator_fallback():
+    """
+    Autouse fixture that intercepts utils.llm.init_chat_model call.
+    If the requested model is a Google/Gemini model and no GOOGLE_API_KEY / GEMINI_API_KEY
+    is set in the environment, it returns a FakeMessagesListChatModel to prevent validation errors.
+    """
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.messages import AIMessage
+    from unittest.mock import patch
+    import os
+    import k8s_autopilot.utils.llm as llm_module
+
+    original_init = llm_module.init_chat_model
+
+    def fallback_init(model, **kwargs):
+        provider = kwargs.get("provider") or (model.split(":")[0] if ":" in model else "")
+        if provider == "google_genai" or "gemini" in model.lower():
+            if not os.environ.get("GOOGLE_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
+                class BindableFakeModel(FakeMessagesListChatModel):
+                    def bind_tools(self, tools, **kwargs):
+                        return self
+                return BindableFakeModel(responses=[AIMessage(content="Mocked response")])
+        return original_init(model, **kwargs)
+
+    with patch("k8s_autopilot.utils.llm.init_chat_model", side_effect=fallback_init):
+        yield

@@ -19,6 +19,7 @@ dependencies = [
     "langchain-openai>=1.2.2",
     "langgraph>=1.2.2",
     "langgraph-checkpoint-postgres>=3.1.0",
+    "psycopg[binary,pool]>=3.1.0",
     "loguru>=0.7.3",
     "pydantic>=2.12.5",
     "uvicorn>=0.42.0",
@@ -52,6 +53,10 @@ mcp-servers = [
 ]
 interpreter = [
     "langchain-quickjs>=0.1.0",
+]
+slack = [
+    "slack-bolt>=1.22.0",
+    "slack-sdk>=3.35.0",
 ]
 
 [project.urls]

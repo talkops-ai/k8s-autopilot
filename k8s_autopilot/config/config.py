@@ -98,10 +98,21 @@ def _build_llm_kwargs(
     provider: str = store.get(f"{prefix}PROVIDER", "openai")
     model: str = store.get(f"{prefix}MODEL", "gpt-4o-mini")
 
-    kwargs: dict[str, Any] = {
-        "temperature": store.get(f"{prefix}TEMPERATURE", 0.0),
-        "max_tokens": store.get(f"{prefix}MAX_TOKENS", 15000),
-    }
+    kwargs: dict[str, Any] = {}
+
+    temp_val = store.get(f"{prefix}TEMPERATURE")
+    if temp_val is not None and temp_val != "":
+        try:
+            kwargs["temperature"] = float(temp_val)
+        except (ValueError, TypeError):
+            pass
+
+    max_tokens_val = store.get(f"{prefix}MAX_TOKENS")
+    if max_tokens_val is not None and max_tokens_val != "":
+        try:
+            kwargs["max_tokens"] = int(max_tokens_val)
+        except (ValueError, TypeError):
+            pass
 
     # Provider-specific model string for init_chat_model
     if provider == "azure_openai":
@@ -122,8 +133,20 @@ def _build_llm_kwargs(
     # ── Thinking / reasoning support ──────────────────────────────────
     # Provider-agnostic: users set THINKING_ENABLED=True and optionally
     # THINKING_BUDGET=<int>.  The builder maps to provider-specific kwargs.
-    thinking_enabled = store.get(f"{prefix}THINKING_ENABLED", False)
-    thinking_budget = store.get(f"{prefix}THINKING_BUDGET")
+    thinking_enabled_val = store.get(f"{prefix}THINKING_ENABLED", False)
+    if isinstance(thinking_enabled_val, str):
+        thinking_enabled = thinking_enabled_val.lower() in ("true", "1", "yes", "on")
+    else:
+        thinking_enabled = bool(thinking_enabled_val)
+
+    thinking_budget_val = store.get(f"{prefix}THINKING_BUDGET")
+    if thinking_budget_val is None or thinking_budget_val == "":
+        thinking_budget = None
+    else:
+        try:
+            thinking_budget = int(thinking_budget_val)
+        except (ValueError, TypeError):
+            thinking_budget = None
 
     if thinking_enabled:
         _inject_thinking_kwargs(kwargs, provider, model, thinking_budget)
@@ -207,9 +230,10 @@ class Config:
     override at runtime via env-vars or the ``config`` dict.
 
     Precedence (highest → lowest):
-        1. ``config`` dict passed to ``__init__``
-        2. Environment variables (``.env`` or system)
-        3. ``DefaultConfig`` values in ``default.py``
+        1. PostgreSQL database overrides (dynamic cache)
+        2. ``config`` dict passed to ``__init__``
+        3. Environment variables (``.env`` or system)
+        4. ``DefaultConfig`` values in ``default.py``
 
     Access style::
 
@@ -221,6 +245,11 @@ class Config:
     # ── construction ──────────────────────────────────────────────────────
 
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
+        import threading
+        self._lock = threading.Lock()
+        self._db_overrides: dict[str, Any] = {}
+        self._db_mcp_server_ids: dict[str, str] = {}
+
         overrides = config or {}
         defaults, annotations = _collect_defaults()
 
@@ -247,6 +276,65 @@ class Config:
         # Freeze the internal dict
         self._store: dict[str, Any] = store
 
+        # Sync key env vars to os.environ so third-party libraries (e.g. LangChain, Google SDK) pick them up
+        for k, v in self._store.items():
+            if k.startswith(("LANGCHAIN_", "LANGGRAPH_", "GOOGLE_", "OPENAI_", "ANTHROPIC_", "AZURE_", "AWS_")):
+                if v is not None and v != "":
+                    if isinstance(v, bool):
+                        os.environ[k] = "true" if v else "false"
+                    else:
+                        os.environ[k] = str(v)
+
+    async def reload(self) -> None:
+        """Fetch all settings from the database and refresh the overrides cache."""
+        from k8s_autopilot.core.hitl.checkpointer import get_database_uri
+        db_uri = get_database_uri(self)
+        if not db_uri:
+            return
+
+        try:
+            from k8s_autopilot.config.db_config import deserialize_value
+            import psycopg
+
+            new_overrides = {}
+            new_mcp_server_ids = {}
+            # Open temporary connection to read settings
+            async with await psycopg.AsyncConnection.connect(db_uri) as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT key, value, type, mcp_server_id FROM k8s_autopilot_settings;")
+                    rows = await cur.fetchall()
+                    for key, val_str, type_str, mcp_server_id in rows:
+                        try:
+                            # Skip database URI itself to avoid circular overrides
+                            if key == "POSTGRES_URI":
+                                continue
+                            new_overrides[key] = deserialize_value(val_str, type_str)
+                            if mcp_server_id:
+                                new_mcp_server_ids[key] = mcp_server_id
+                        except Exception:
+                            continue
+
+            with self._lock:
+                self._db_overrides = new_overrides
+                self._db_mcp_server_ids = new_mcp_server_ids
+                # Sync key env vars to os.environ so third-party libraries (e.g. LangChain, Google SDK) pick them up
+                for k, v in self._db_overrides.items():
+                    if k.startswith(("LANGCHAIN_", "LANGGRAPH_", "GOOGLE_", "OPENAI_", "ANTHROPIC_", "AZURE_", "AWS_")):
+                        if v is not None and v != "":
+                            if isinstance(v, bool):
+                                os.environ[k] = "true" if v else "false"
+                            else:
+                                os.environ[k] = str(v)
+        except Exception:
+            # Silently degrade if DB is not ready/reachable yet
+            pass
+
+    def _get_merged_store(self) -> Dict[str, Any]:
+        with self._lock:
+            merged = dict(self._store)
+            merged.update(self._db_overrides)
+            return merged
+
     # ── attribute access (single path, no divergence) ─────────────────────
 
     def __getattr__(self, name: str) -> Any:
@@ -254,17 +342,32 @@ class Config:
         store = self.__dict__.get("_store")
         if store is None:
             raise AttributeError(name)
+        
+        db_overrides = self.__dict__.get("_db_overrides", {})
+        if name in db_overrides:
+            return db_overrides[name]
+        upper = name.upper()
+        if upper in db_overrides:
+            return db_overrides[upper]
+
         if name in store:
             return store[name]
-        upper = name.upper()
         if upper in store:
             return store[upper]
         raise AttributeError(f"Config has no key '{name}'")
 
     def __getitem__(self, key: str) -> Any:
+        with self._lock:
+            if key in self._db_overrides:
+                return self._db_overrides[key]
+            if key.upper() in self._db_overrides:
+                return self._db_overrides[key.upper()]
         return self._store[key]
 
     def __contains__(self, key: str) -> bool:
+        with self._lock:
+            if key in self._db_overrides or key.upper() in self._db_overrides:
+                return True
         return key in self._store or key.upper() in self._store
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -279,17 +382,17 @@ class Config:
     @property
     def llm_config(self) -> Dict[str, Any]:
         """Standard LLM config kwargs for ``init_chat_model()``."""
-        return _build_llm_kwargs(self._store, "LLM_")
+        return _build_llm_kwargs(self._get_merged_store(), "LLM_")
 
     @property
     def llm_higher_config(self) -> Dict[str, Any]:
         """Higher-tier LLM config kwargs for ``init_chat_model()``."""
-        return _build_llm_kwargs(self._store, "LLM_HIGHER_")
+        return _build_llm_kwargs(self._get_merged_store(), "LLM_HIGHER_")
 
     @property
     def llm_deepagent_config(self) -> Dict[str, Any]:
         """DeepAgent LLM config kwargs for ``init_chat_model()``."""
-        return _build_llm_kwargs(self._store, "LLM_DEEPAGENT_")
+        return _build_llm_kwargs(self._get_merged_store(), "LLM_DEEPAGENT_")
 
     # Convenience aliases (some call-sites use method style)
     def get_llm_config(self) -> Dict[str, Any]:
@@ -306,7 +409,7 @@ class Config:
     @property
     def mcp_config(self) -> Dict[str, Any]:
         """Return MCP server configuration for ``MCPClient``."""
-        raw = self._store.get("MCP_SERVERS", [])
+        raw = self._get_merged_store().get("MCP_SERVERS", [])
 
         if isinstance(raw, str):
             try:
@@ -316,14 +419,79 @@ class Config:
         else:
             servers = list(raw)  # defensive copy
 
+        # Inject DB overrides into specific stdio MCP server environments
+        merged_store = self._get_merged_store()
+        updated_servers = []
+        for s in servers:
+            s_copy = dict(s)
+            if "env" in s_copy:
+                s_copy["env"] = dict(s_copy["env"])
+            else:
+                s_copy["env"] = {}
+
+            name = s_copy.get("name")
+            if name == "prometheus-mcp-server":
+                prom_url = merged_store.get("PROMETHEUS_BASE_URL")
+                if prom_url:
+                    s_copy["env"]["PROMETHEUS_BASE_URL"] = prom_url
+            elif name == "loki-mcp-server":
+                loki_url = merged_store.get("LOKI_URL")
+                if loki_url:
+                    s_copy["env"]["LOKI_URL"] = loki_url
+            elif name == "tempo-mcp-server":
+                tempo_url = merged_store.get("TEMPO_BASE_URL")
+                if tempo_url:
+                    s_copy["env"]["TEMPO_BASE_URL"] = tempo_url
+            elif name == "alertmanager-mcp-server":
+                am_url = merged_store.get("ALERTMANAGER_BASE_URL")
+                if am_url:
+                    s_copy["env"]["ALERTMANAGER_BASE_URL"] = am_url
+            elif name == "argocd_mcp_server":
+                argocd_url = merged_store.get("ARGOCD_SERVER_URL")
+                argocd_token = merged_store.get("ARGOCD_AUTH_TOKEN")
+                argocd_insecure = merged_store.get("ARGOCD_INSECURE")
+                if argocd_url:
+                    s_copy["env"]["ARGOCD_SERVER_URL"] = argocd_url
+                if argocd_token:
+                    s_copy["env"]["ARGOCD_AUTH_TOKEN"] = argocd_token
+                if argocd_insecure is not None:
+                    s_copy["env"]["ARGOCD_INSECURE"] = "true" if argocd_insecure else "false"
+            elif name == "helm_mcp_server":
+                helm_ws = merged_store.get("HELM_WORKSPACE")
+                if helm_ws:
+                    s_copy["env"]["HELM_WORKSPACE"] = helm_ws
+
+            # Inject dynamic custom settings associated with this server card
+            card_id = None
+            if name:
+                if name == "opentelemetry-mcp-server":
+                    card_id = "otel"
+                elif name.endswith("_mcp_server"):
+                    card_id = name[:-11]
+                elif name.endswith("-mcp-server"):
+                    card_id = name[:-11]
+                elif name == "github_mcp":
+                    card_id = "github"
+            
+            if card_id:
+                for k, v in merged_store.items():
+                    if self._db_mcp_server_ids.get(k) == card_id:
+                        if v is not None and v != "":
+                            if isinstance(v, bool):
+                                s_copy["env"][k] = "true" if v else "false"
+                            else:
+                                s_copy["env"][k] = str(v)
+
+            updated_servers.append(s_copy)
+
         return {
-            "servers": servers,
+            "servers": updated_servers,
             "timeout": {
-                "total": self._store.get("MCP_TIMEOUT_TOTAL", 600.0),
-                "connect": self._store.get("MCP_TIMEOUT_CONNECT", 300.0),
+                "total": merged_store.get("MCP_TIMEOUT_TOTAL", 600.0),
+                "connect": merged_store.get("MCP_TIMEOUT_CONNECT", 300.0),
             },
-            "default_host": self._store.get("MCP_DEFAULT_HOST", "localhost"),
-            "default_transport": self._store.get("MCP_DEFAULT_TRANSPORT", "sse"),
+            "default_host": merged_store.get("MCP_DEFAULT_HOST", "localhost"),
+            "default_transport": merged_store.get("MCP_DEFAULT_TRANSPORT", "sse"),
         }
 
     def get_mcp_config(self) -> Dict[str, Any]:
@@ -334,6 +502,14 @@ class Config:
     def set(self, key: str, value: Any) -> None:
         """Set a config key at runtime (highest priority)."""
         self._store[key] = value
+        if key.startswith(("LANGCHAIN_", "LANGGRAPH_", "GOOGLE_", "OPENAI_", "ANTHROPIC_", "AZURE_", "AWS_")):
+            if value is not None and value != "":
+                if isinstance(value, bool):
+                    os.environ[key] = "true" if value else "false"
+                else:
+                    os.environ[key] = str(value)
+            else:
+                os.environ.pop(key, None)
 
     def set_llm_config(self, values: Dict[str, Any]) -> None:
         """Convenience: set standard LLM fields from a dict."""
@@ -390,7 +566,7 @@ class Config:
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a shallow copy of all resolved config values."""
-        return dict(self._store)
+        return self._get_merged_store()
 
     @classmethod
     def load_config(cls, config_path: str) -> "Config":

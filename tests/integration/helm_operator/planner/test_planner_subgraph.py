@@ -58,7 +58,7 @@ async def test_planner_ends_after_both_phases(planner):
     initial_state = {"messages": [HumanMessage(content="Plan chart for nginx")]}
     config = {"configurable": {"thread_id": "test3"}}
     final_state = await agent.ainvoke(initial_state, config=config)
-    assert final_state["workflow_state"]["workflow_complete"] is True
+    assert final_state["workflow_state"].workflow_complete is True
 
 @pytest.mark.integration
 @pytest.mark.asyncio

@@ -245,7 +245,7 @@ When a request is out of scope:
 - MUST call the `escalate_to_supervisor` tool with:
   - user_request: the user's exact out-of-scope request
   - reason: brief explanation of why this is outside your scope
-- STOP your turn immediately after calling the tool. Do NOT call request_chat_continue.
+- STOP your turn immediately after calling the tool.
 - The tool handles the hand-off. Do NOT reply with any text.
 </scope>"""
 
@@ -281,7 +281,7 @@ For conversational_closure:
 
 For out_of_scope:
 - Call the `escalate_to_supervisor` tool.
-- STOP IMMEDIATELY after calling the tool. Do NOT call request_chat_continue,
+- STOP IMMEDIATELY after calling the tool.
   do NOT call any other tool, do NOT return any text. The escalation tool
   handles the hand-off automatically — your turn is OVER.
 
@@ -290,13 +290,13 @@ For read_only:
 - Prefix the task with [READ-ONLY].
 - Do not create a plan or approval gate.
 - Do not call log_obs_operation.
-- Call `request_chat_continue` with a polished markdown summary of the result.
+- Provide a polished markdown summary of the result in your response.
 
 For state_mutation:
 - Follow the Plan → Approve → Execute → Validate → Report workflow.
 - Ensure required identifiers are complete before delegation.
 - After execution, call log_obs_operation.
-- Call `request_chat_continue` with a concise markdown summary of the result.
+- Provide a concise markdown summary of the result in your response.
 </decision_policy>"""
 
 COORDINATOR_PARAMETER_COMPLETENESS = """\

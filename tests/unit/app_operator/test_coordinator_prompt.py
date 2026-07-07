@@ -15,21 +15,21 @@ def test_prompt_lists_all_three_subagents(coordinator):
 @pytest.mark.unit
 def test_prompt_contains_intent_translation_table(coordinator):
     prompt = coordinator.system_prompt
-    assert "Deploy my app" in prompt
-    assert "Zero downtime" in prompt
+    assert "deploy my app" in prompt
+    assert "split traffic 80/20" in prompt
 
 @pytest.mark.unit
 def test_prompt_contains_query_classification(coordinator):
     prompt = coordinator.system_prompt
-    assert "CONVERSATIONAL" in prompt
-    assert "OUT-OF-SCOPE" in prompt
-    assert "READ-ONLY" in prompt
-    assert "STATE-MODIFYING" in prompt
+    assert "conversational_closure" in prompt
+    assert "out_of_scope" in prompt
+    assert "read_only" in prompt
+    assert "state_mutation" in prompt
 
 @pytest.mark.unit
 def test_prompt_contains_formatting_section(coordinator):
     prompt = coordinator.system_prompt
-    assert "request_chat_continue" in prompt
+    assert "markdown summary" in prompt
 
 @pytest.mark.unit
 def test_prompt_contains_step_budget(coordinator):
@@ -39,4 +39,4 @@ def test_prompt_contains_step_budget(coordinator):
 @pytest.mark.unit
 def test_prompt_contains_plan_locked_protocol(coordinator):
     prompt = coordinator.system_prompt
-    assert "PLAN-LOCKED" in prompt
+    assert "[PLAN-APPROVED]" in prompt

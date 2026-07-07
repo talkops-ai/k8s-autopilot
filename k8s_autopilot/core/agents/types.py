@@ -132,6 +132,16 @@ class BaseAgent(ABC):
         """Clean up resources used by the agent. Override for teardown."""
         pass
 
+    @property
+    def graph(self) -> Any:
+        """Return the compiled LangGraph graph, if available.
+
+        Override in subclasses that use LangGraph to expose their
+        compiled ``CompiledStateGraph`` for state operations like
+        ``aget_state()`` and ``aupdate_state()``.
+        """
+        return None
+
 
 # ---------------------------------------------------------------------------
 # BaseSubgraphAgent — Send()/Command subgraph pattern
@@ -360,30 +370,78 @@ class BaseDeepAgent(ABC):
         Transform deep agent final state → supervisor-mergeable payload.
 
         Called by the supervisor's ``_make_coordinator_node`` after the deep
-        agent completes. Returns a dict suitable for payload extraction.
+        agent completes. Returns a dict conforming to the ``CoordinatorResult``
+        contract (see ``core/state/coordinator_result.py``).
 
         Args:
             agent_state: The dict returned by ``deep_agent.ainvoke()``.
             **kwargs: Any additional arguments.
 
         Default: extracts final message, returns
-        ``{final_message: ..., status: "completed"}``.
+        ``{summary_text: ..., status: "completed"}``.
+
+        Reference: deep-agent-architecture-review.md §CoordinatorResult
         """
         state: Dict[str, Any] = agent_state
         if not isinstance(agent_state, dict) and hasattr(agent_state, "model_dump"):
             state = agent_state.model_dump()
 
-        final_message: Optional[str] = None
         messages = state.get("messages", [])
-        if messages:
-            last_msg = messages[-1]
-            final_message = getattr(last_msg, "content", None) or (
-                last_msg.get("content") if isinstance(last_msg, dict) else None
+        content = self._extract_final_ai_text(messages) or "Deep agent completed."
+        result: Dict[str, Any] = {"status": "completed", "summary_text": content}
+        return result
+
+    @staticmethod
+    def _extract_final_ai_text(messages: list) -> Optional[str]:
+        """Extract the last user-facing AI text from a deep agent's messages.
+
+        In the Deep Agent / sub-agent architecture, the messages array
+        contains a mix of message types::
+
+            HumanMessage   — the task input
+            AIMessage      — coordinator's own responses & tool_calls
+            ToolMessage    — sub-agent execution results (internal)
+
+        Sub-agent ToolMessages carry raw execution output that the
+        coordinator then reformulates into a user-facing response via
+        a direct AI reply.  Only the final message is returned to the user.
+
+        This method walks the messages array **backwards** and returns
+        the text content of the first AI message that has a non-empty
+        string ``content`` field (skipping ToolMessages and AI messages
+        that contain only ``tool_calls``).
+        """
+        for msg in reversed(messages):
+            # Support both LangChain message objects and dicts
+            msg_type = getattr(msg, "type", None) or (
+                msg.get("type") if isinstance(msg, dict) else None
+            )
+            if msg_type != "ai":
+                continue
+
+            content = getattr(msg, "content", None) or (
+                msg.get("content") if isinstance(msg, dict) else None
             )
 
-        content = final_message or "Deep agent completed."
-        result: Dict[str, Any] = {"status": "completed", "final_message": content}
-        return result
+            # Skip AI messages with only tool_calls and no text
+            if not content or (isinstance(content, str) and not content.strip()):
+                continue
+
+            # Handle content that is a list of parts (e.g. thinking + text)
+            if isinstance(content, list):
+                text_parts = [
+                    p.get("text", "") if isinstance(p, dict) else str(p)
+                    for p in content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                ]
+                text = "\n".join(t for t in text_parts if t.strip())
+                if text:
+                    return text
+                continue
+
+            return content
+
+        return None
 
     # ── Abstract — MUST override (implementation-specific) ────────────────
 
@@ -485,7 +543,7 @@ PATH A — Planned Execution (complex, multi-step, or destructive operations):
    a binding constraint before every model call, surviving context summarization.
 4. Execute — delegate each step with [PLAN-APPROVED] prefix; update TODO status via `write_todos`.
 5. Verify — run a read-only follow-up to confirm resulting state.
-6. Report — summarize via `request_chat_continue`; call domain log tool.
+6. Report — provide a conversational, helpful, and natural summary of what was accomplished in your response; call domain log tool.
 
 Task categories for this domain:
 {task_categories}
@@ -493,7 +551,7 @@ Task categories for this domain:
 PATH B — Direct Execution (single-step, all parameters known, read-only):
 1. State intent in one line.
 2. Delegate with [PLAN-APPROVED] prefix — sub-agent skips its own plan gate.
-3. Report result via `request_chat_continue`; call domain log tool if state was changed.
+3. Report result in your response using a conversational, helpful, and natural tone (do not just dump structured markdown); call domain log tool if state was changed.
 
 The [PLAN-APPROVED] prefix is REQUIRED even for PATH B — it prevents the sub-agent from
 creating a duplicate approval gate. The HITL middleware on the actual tool still fires.

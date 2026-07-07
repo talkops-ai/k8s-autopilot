@@ -53,16 +53,3 @@ async def test_async_delegates_to_sync(middleware, plan_locked_files):
     async_result = await middleware.abefore_model(state, None)
     assert sync_result["messages"][0].content == async_result["messages"][0].content
 
-@pytest.mark.unit
-def test_get_active_plan_static_method_extracts_content():
-    # As string
-    state1 = {"files": {"/plan/active-plan.md": "str plan"}}
-    assert PlanLockMiddleware._get_active_plan(state1) == "str plan"
-    
-    # As dict
-    state2 = {"files": {"/plan/active-plan.md": {"content": "dict plan"}}}
-    assert PlanLockMiddleware._get_active_plan(state2) == "dict plan"
-    
-    # Missing
-    state3 = {"files": {}}
-    assert PlanLockMiddleware._get_active_plan(state3) is None

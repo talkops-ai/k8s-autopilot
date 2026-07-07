@@ -56,12 +56,17 @@ _DEFAULT_TOOL_TIMEOUT: float = 300.0
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _resolve_auth_headers(server_def: dict[str, Any]) -> dict[str, str]:
+def _resolve_auth_headers(server_def: dict[str, Any], config: Any = None) -> dict[str, str]:
     """Build HTTP headers including Bearer token from env-var if configured."""
     headers: dict[str, str] = dict(server_def.get("headers") or {})
     env_var: str | None = server_def.get("auth_token_env_var")
     if env_var:
-        token = os.getenv(env_var)
+        token = None
+        if config and hasattr(config, env_var):
+            token = getattr(config, env_var)
+        if not token:
+            token = os.getenv(env_var)
+            
         if token:
             headers["Authorization"] = f"Bearer {token}"
         else:
@@ -105,7 +110,7 @@ def _build_server_configs(
                 logger.warning(f"{transport} transport requires 'url'", extra={"server": name})
                 continue
             entry: dict[str, Any] = {"url": url, "transport": transport}
-            headers = _resolve_auth_headers(sdef)
+            headers = _resolve_auth_headers(sdef, config)
             if headers:
                 entry["headers"] = headers
             servers[name] = entry

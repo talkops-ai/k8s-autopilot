@@ -40,7 +40,7 @@
                     "metadata": {
                         "githubRepo": "https://github.com/talkops-ai/k8s-autopilot",
                         "discordUrl": "https://discord.gg/RzqRy6uKAm",
-                        "placeholder": "Manage Kubernetes clusters, deploy Helm charts, monitor with Prometheus, and configure ArgoCD..."
+                        "placeholder": "Ask me about Helm, K8s, ArgoCD, or Prometheus..."
                     },
                     "capabilityDescription": {
                         "title": "What K8s Autopilot Does",

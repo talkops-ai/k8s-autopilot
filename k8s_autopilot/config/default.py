@@ -41,6 +41,9 @@ class DefaultConfig:
     LLM_DEEPAGENT_THINKING_ENABLED: bool = False
     LLM_DEEPAGENT_THINKING_BUDGET: Optional[int] = None
 
+    # ── PostgreSQL (LangGraph session persistence) ─────────────────────
+    POSTGRES_URI: Optional[str] = None
+
     # ── Logging ───────────────────────────────────────────────────────────
     LOG_LEVEL: str = "INFO"
     LOG_FILE: str = "k8s_autopilot_agent.log"
@@ -165,3 +168,60 @@ class DefaultConfig:
     MCP_DEFAULT_TRANSPORT: str = "sse"
     MCP_TIMEOUT_TOTAL: float = 600.0    # 10 min
     MCP_TIMEOUT_CONNECT: float = 300.0   # 5 min
+
+    # ── Autopilot Run Mode ────────────────────────────────────────────────
+    # Controls which servers are started by the main `k8s-autopilot` entrypoint:
+    #   "a2a"   — only start the A2A HTTP/JSONRPC server (default)
+    #   "slack" — only start the Slack integration server
+    #   "dual"  — start both the A2A server and Slack integration server on the same port
+    AUTOPILOT_MODE: str = "a2a"
+
+    # ── Slack Integration ─────────────────────────────────────────────
+    SLACK_BOT_TOKEN: Optional[str] = None          # xoxb-...
+    SLACK_SIGNING_SECRET: Optional[str] = None     # HMAC signing secret
+    SLACK_ENABLED: bool = False                     # Master toggle
+    SLACK_STREAM_BUFFER_SIZE: int = 256             # Token buffer before flush to Slack
+
+    # ── Slack Operation Gate ──────────────────────────────────────────
+    # Controls which operations are allowed via Slack.
+    #   "read"      — only read/observe operations; writes are blocked
+    #   "readwrite" — all operations allowed (gate bypassed)
+    SLACK_OPERATION_MODE: str = "read"
+
+    # Agent-level write whitelist.  When SLACK_OPERATION_MODE="read",
+    # write operations targeting agents in this list are still allowed.
+    # Valid entries: "helm_operator", "k8s_operator", "app_operator",
+    #               "observability_operator", or "*" for all agents.
+    # Example: ["observability_operator"] to enable only observability writes.
+    SLACK_WRITE_WHITELIST: List[str] = []
+
+    # ── MCP Server Settings ───────────────────────────────────────────
+    PROMETHEUS_BASE_URL: str = "http://prometheus-operated.monitoring.svc:9090"
+    LOKI_URL: str = "http://host.docker.internal:3100"
+    TEMPO_BASE_URL: str = "http://localhost:3200"
+    ALERTMANAGER_BASE_URL: str = "http://alertmanager-operated.monitoring.svc:9093"
+    HELM_WORKSPACE: str = "./workspace/helm-charts"
+    GITHUB_PERSONAL_ACCESS_TOKEN: Optional[str] = None
+    ARGOCD_SERVER_URL: Optional[str] = None
+    ARGOCD_USERNAME: Optional[str] = None
+    ARGOCD_PASSWORD: Optional[str] = None
+    ARGOCD_AUTH_TOKEN: Optional[str] = None
+    ARGOCD_INSECURE: bool = True
+
+    # ── Google API & LangSmith Settings ──────────────────────────────────
+    GOOGLE_API_KEY: Optional[str] = None
+    GOOGLE_GENAI_USE_VERTEXAI: bool = False
+    LANGCHAIN_API_KEY: Optional[str] = None
+    LANGCHAIN_TRACING_V2: bool = False
+    LANGCHAIN_PROJECT: str = "k8s-autopilot"
+    LANGGRAPH_STRICT_MSGPACK: bool = True
+
+    # ── Other Provider API Keys ──────────────────────────────────────────
+    OPENAI_API_KEY: Optional[str] = None
+    ANTHROPIC_API_KEY: Optional[str] = None
+    AZURE_OPENAI_API_KEY: Optional[str] = None
+    AZURE_OPENAI_ENDPOINT: Optional[str] = None
+    OPENAI_API_VERSION: Optional[str] = None
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    AWS_DEFAULT_REGION: Optional[str] = None

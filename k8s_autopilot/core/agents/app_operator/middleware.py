@@ -198,7 +198,7 @@ class PlanLockMiddleware(AgentMiddleware):
         # ── All done → no constraint needed ─────────────────────────────
         # The deep agent's built-in TodoListMiddleware handles completion
         # naturally: the agent produces a final summary AIMessage when all
-        # tasks are done.  No forced walkthrough or request_chat_continue
+        # tasks are done.  No forced walkthrough or forced pauses
         # needed — the agent loop ends when the LLM stops calling tools.
         if not non_completed:
             logger.debug(

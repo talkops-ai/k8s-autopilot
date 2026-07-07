@@ -7,7 +7,7 @@ from langchain_core.messages import HumanMessage
 @pytest.mark.unit
 def test_input_transform_preserves_messages(coordinator):
     msgs = [HumanMessage(content="Show me Prometheus alerts")]
-    result = coordinator.input_transform({"messages": msgs})
+    result = coordinator.input_transform({"user_query": "Show me Prometheus alerts", "messages": msgs})
     assert result["messages"] == msgs
 
 @pytest.mark.unit

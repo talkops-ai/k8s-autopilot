@@ -8,10 +8,14 @@ cluster operations. Wires backends, MCP tools, and subagents via the
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, cast
+from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING
+from typing import cast
+from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
 
 from langchain.tools import tool, ToolRuntime
 from langgraph.store.memory import InMemoryStore
+from k8s_autopilot.core.hitl.checkpointer import get_checkpointer
 
 from deepagents import create_deep_agent
 from deepagents.backends.utils import create_file_data
@@ -21,7 +25,6 @@ from k8s_autopilot.core.state.k8s_operator_state import K8sOperatorContext
 from k8s_autopilot.utils.llm import create_model
 from k8s_autopilot.utils.user_input_tool import (
     create_user_input_tool,
-    create_chat_continue_tool,
 )
 from k8s_autopilot.utils.operations_context import create_log_k8s_operation_tool
 from k8s_autopilot.utils.escalate_tool import create_escalate_to_supervisor_tool
@@ -116,10 +119,9 @@ class K8sOperatorCoordinator(BaseDeepAgent):
 
     async def get_tools(self) -> List[Any]:
         user_input = create_user_input_tool()
-        chat_continue = create_chat_continue_tool()
         log_operation = create_log_k8s_operation_tool()
         escalate = create_escalate_to_supervisor_tool()
-        return [user_input, chat_continue, log_operation, escalate]
+        return [user_input, log_operation, escalate]
 
     def get_skill_paths(self) -> List[str]:
         return [
@@ -175,16 +177,8 @@ class K8sOperatorCoordinator(BaseDeepAgent):
         return store
 
     def build_checkpointer(self) -> Any:
-        """Return None to inherit the parent supervisor's checkpointer.
-
-        Per-invocation mode (checkpointer=None) is the recommended pattern
-        for subagents invoked as tools.  The child inherits the parent's
-        checkpointer via the config passed to ainvoke(), enabling native
-        interrupt()/resume support without manual bridging.
-
-        Reference: LangGraph docs — Subgraph persistence / Per-invocation.
-        """
-        return None
+        """Return Postgres-backed per-thread multi-turn memory checkpointer."""
+        return get_checkpointer(self._config, prefer_postgres=True)
 
     async def build_agent(self) -> Any:
         if getattr(self, "_agent", None):
@@ -230,7 +224,35 @@ class K8sOperatorCoordinator(BaseDeepAgent):
         )
 
     def input_transform(self, send_payload: Dict[str, Any]) -> Dict[str, Any]:
-        messages = send_payload.get("messages", [])
+        # Only forward the latest query to prevent exponential message duplication
+        # since the deep agent maintains its own per-thread persistence.
+        user_query = send_payload.get("user_query", "")
+        messages: List[BaseMessage] = []
+        
+        domain_summaries = send_payload.get("domain_summaries")
+        cross_domain = send_payload.get("cross_domain_context")
+        
+        context_parts = []
+        if domain_summaries:
+            summary_lines = []
+            for s in domain_summaries:
+                if isinstance(s, dict):
+                    domain = s.get("domain", "unknown")
+                    outcome = s.get("outcome", "completed")
+                    detail = s.get("detail", "")
+                    summary_lines.append(f"- {domain}: {outcome} — {detail}")
+            if summary_lines:
+                context_parts.append("Recent tasks completed by other domains:\n" + "\n".join(summary_lines))
+                
+        if cross_domain and isinstance(cross_domain, dict):
+            context_parts.append(f"Deferred task context: {cross_domain}")
+            
+        if context_parts:
+            messages.append(SystemMessage(content="Cross-Domain Context:\n\n" + "\n\n".join(context_parts)))
+            
+        if user_query:
+            messages.append(HumanMessage(content=user_query))
+            
         files = self.seed_files()
         transformed: Dict[str, Any] = {
             "messages": messages,
@@ -294,18 +316,21 @@ class K8sOperatorCoordinator(BaseDeepAgent):
 
         final_message: Optional[str] = None
         messages = state.get("messages", [])
-        if messages:
-            last_msg = messages[-1]
-            final_message = getattr(last_msg, "content", None) or (
-                last_msg.get("content") if isinstance(last_msg, dict) else None
-            )
+        final_message = self._extract_final_ai_text(messages)
 
         output: Dict[str, Any] = {
-            "final_message": final_message or "K8s operator completed.",
+            "summary_text": final_message or "K8s operator completed.",
             "status": "completed",
-            "k8s_operator_output": {
+            "ui_payload": {
+                "type": "k8s_operation_result",
+                "content": final_message or "K8s operator completed.",
+            },
+            "artifacts": {
                 "messages": messages,
                 "structured_response": state.get("structured_response"),
+                "collected_inputs": state.get("collected_inputs", {}),
+                "workflow_state": state.get("workflow_state", {}),
+                "pending_interrupt": state.get("pending_interrupt"),
             },
             "domain_summary": extract_domain_summary(
                 domain="k8s",

@@ -71,12 +71,17 @@ class RenderContext:
     def content_str(self) -> str:
         """Return *content* as a display-friendly string."""
         if isinstance(self.content, dict):
-            return str(
-                self.content.get("summary")
-                or self.content.get("message")
-                or self.content.get("question")
-                or self.content
-            )
+            parts = []
+            if self.content.get("summary"):
+                parts.append(str(self.content["summary"]).strip())
+            if self.content.get("message"):
+                parts.append(str(self.content["message"]).strip())
+            if self.content.get("question"):
+                parts.append(str(self.content["question"]).strip())
+            
+            if parts:
+                return "\n\n".join(parts)
+            return str(self.content)
         return str(self.content) if self.content else "Processing..."
 
     @property

@@ -37,8 +37,8 @@ def test_input_transform_resets_workflow_state(planner):
     }
     result = planner.input_transform(payload)
     # Must always reset to fresh pipeline start
-    assert result["workflow_state"]["req_analyser_complete"] is False
-    assert result["workflow_state"]["architecture_planner_complete"] is False
+    assert result["workflow_state"].req_analyser_complete is False
+    assert result["workflow_state"].architecture_planner_complete is False
     assert result["active_agent"] == "requirements_analyser"
 
 

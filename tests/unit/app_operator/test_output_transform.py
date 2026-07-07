@@ -5,12 +5,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 def test_output_transform_extracts_final_message(coordinator):
     state = {"messages": [AIMessage(content="Final response")]}
     result = coordinator.output_transform(state)
-    assert result["final_message"] == "Final response"
+    assert result["summary_text"] == "Final response"
 
 @pytest.mark.unit
 def test_output_transform_defaults_final_message(coordinator):
     result = coordinator.output_transform({"messages": []})
-    assert result["final_message"] == "App operator completed."
+    assert result["summary_text"] == "App operator completed."
 
 @pytest.mark.unit
 def test_output_transform_includes_status_completed(coordinator):
@@ -24,9 +24,9 @@ def test_output_transform_includes_app_operator_output(coordinator):
         "structured_response": {"key": "value"}
     }
     result = coordinator.output_transform(state)
-    assert "messages" in result["app_operator_output"]
-    assert "structured_response" in result["app_operator_output"]
-    assert result["app_operator_output"]["structured_response"] == {"key": "value"}
+    assert "messages" in result["artifacts"]
+    assert "structured_response" in result["artifacts"]
+    assert result["artifacts"]["structured_response"] == {"key": "value"}
 
 @pytest.mark.unit
 def test_output_transform_builds_domain_summary(coordinator, monkeypatch):
@@ -47,10 +47,10 @@ def test_output_transform_handles_pydantic_model_input(coordinator):
             return {"messages": [AIMessage(content="pydantic final")]}
     
     result = coordinator.output_transform(DummyModel())
-    assert result["final_message"] == "pydantic final"
+    assert result["summary_text"] == "pydantic final"
 
 @pytest.mark.unit
 def test_output_transform_handles_dict_message(coordinator):
-    state = {"messages": [{"role": "assistant", "content": "dict content"}]}
+    state = {"messages": [{"type": "ai", "content": "dict content"}]}
     result = coordinator.output_transform(state)
-    assert result["final_message"] == "dict content"
+    assert result["summary_text"] == "dict content"

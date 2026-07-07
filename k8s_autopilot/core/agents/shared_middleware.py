@@ -106,7 +106,7 @@ def build_summarization_middleware(
     """Build a ``SummarizationToolMiddleware`` instance if model+backend available.
 
     The summarization tool lets the coordinator proactively compress its
-    message history between task delegations (after ``request_chat_continue``)
+    message history between task delegations
     rather than waiting until the automatic 85%-threshold reactive
     summarization, which can cause mid-generation token overflow crashes.
 

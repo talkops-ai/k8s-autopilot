@@ -13,7 +13,7 @@ async def test_workflow_routing_skill_exists_skips_planner(mock_config):
     
     fake = BindableFakeModel(responses=[AIMessage(content="", tool_calls=[{"name": "helm-generator", "args": {}, "id": "tc1"}])])
     
-    with patch("k8s_autopilot.core.agents.helm_operator.coordinator.create_model", return_value=fake):
+    with patch("k8s_autopilot.utils.llm.init_chat_model", return_value=fake):
         coordinator = HelmOperatorCoordinator(config=mock_config)
         async def get_mock_subagent_specs():
             return [{"name": "helm-generator", "description": "mock", "runnable": RunnableLambda(lambda x: x)}]

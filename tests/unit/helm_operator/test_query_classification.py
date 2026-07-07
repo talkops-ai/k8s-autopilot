@@ -12,7 +12,7 @@ async def test_oos_query_classification(mock_config):
     
     fake = BindableFakeModel(responses=[AIMessage(content="This is outside my scope. Please use the appropriate operator.")])
     
-    with patch("k8s_autopilot.core.agents.helm_operator.coordinator.create_model", return_value=fake):
+    with patch("k8s_autopilot.utils.llm.init_chat_model", return_value=fake):
         coordinator = HelmOperatorCoordinator(config=mock_config)
         agent = await coordinator.build_agent()
         config = {"configurable": {"thread_id": "test_oos"}}
@@ -32,7 +32,7 @@ async def test_conversational_query_classification(mock_config):
     
     fake = BindableFakeModel(responses=[AIMessage(content="You're welcome! Let me know if you need anything else.")])
     
-    with patch("k8s_autopilot.core.agents.helm_operator.coordinator.create_model", return_value=fake):
+    with patch("k8s_autopilot.utils.llm.init_chat_model", return_value=fake):
         coordinator = HelmOperatorCoordinator(config=mock_config)
         agent = await coordinator.build_agent()
         config = {"configurable": {"thread_id": "test_conv"}}

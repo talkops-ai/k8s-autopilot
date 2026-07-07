@@ -22,50 +22,48 @@ import inspect
 import json
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence, Union
+from collections.abc import Sequence
+from datetime import UTC, datetime
+from typing import Any
 
+from a2a.helpers import (
+    new_data_part,
+    new_message,
+    new_task_from_user_message,
+    new_text_message,
+    new_text_part,
+)
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 from a2a.types import (
-    Part,
     Message,
+    Part,
     Role,
     StreamResponse,
     Task,
-    TaskArtifactUpdateEvent,
     TaskState,
-    TaskStatusUpdateEvent,
-)
-from a2a.helpers import (
-    new_text_message,
-    new_message,
-    new_task_from_user_message,
-    new_text_part,
-    new_data_part,
 )
 from a2a.utils.errors import A2AError
-from langgraph.types import Command
 
 # A2UI imports
 from a2ui.a2a import (
     A2UI_EXTENSION_BASE_URI,
     create_a2ui_part,
 )
+from langgraph.types import Command
 
 A2UI_EXTENSION_URI = f"{A2UI_EXTENSION_BASE_URI}/v0.9"
 
-from k8s_autopilot.core.agents.types import AgentResponse, BaseAgent
 from k8s_autopilot.core.a2ui.surface_builder import (
-    TALKOPS_CATALOG_ID,
+    build_plan_todo_surface,
     build_thought_block_surface,
     build_tool_execution_surface,
-    build_plan_todo_surface,
     update_plan_todo_data,
     update_thought_block_data,
     update_tool_execution_data,
 )
+from k8s_autopilot.core.agents.types import AgentResponse, BaseAgent
 from k8s_autopilot.utils.logger import AgentLogger
 
 logger = AgentLogger("A2AExecutor")
@@ -117,6 +115,7 @@ class _StreamRenderer:
         self.message_id = str(uuid.uuid4())
         self._thinking_open = False
         self._current_agent: str = ""
+        self._response_buffer: list[str] = []  # Accumulates non-thinking text for persistence
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -140,12 +139,18 @@ class _StreamRenderer:
             return
 
         await self.emit(content)
+        # emit() already accumulates text, so no need to do it here.
 
     async def emit(self, text: Any) -> None:
         """Send a text chunk to the client using the stable message ID."""
         content = str(text) if text else ""
         if not content:
             return
+        
+        # Accumulate non-thinking text for checkpoint persistence
+        if not self._thinking_open and content.strip():
+            self._response_buffer.append(content)
+            
         msg = Message(
             role=Role.ROLE_AGENT,
             parts=[Part(text=content)],
@@ -167,6 +172,10 @@ class _StreamRenderer:
         if self._thinking_open:
             await self.emit(self._CLOSE_TAG)
             self._thinking_open = False
+
+    def get_accumulated_response(self) -> str:
+        """Return the accumulated non-thinking response text."""
+        return "".join(self._response_buffer).strip()
 
     @classmethod
     def _resolve_agent(cls, meta: dict) -> str:
@@ -218,18 +227,36 @@ class A2AAutoPilotExecutor(AgentExecutor):
         event_queue: EventQueue,
     ) -> None:
         """Execute the full A2A request lifecycle."""
-        logger.info(f"Executing agent {self.agent.name}", extra={"agent_name": self.agent.name},)
+        logger.info(f"Executing agent {self.agent.name}", extra={"agent_name": self.agent.name})
 
         # 1. Extract query (text or A2UI userAction)
-        query: Union[str, Command, None] = self._extract_query(context)
+        query: str | Command | None = self._extract_query(context)
 
         # 2. Resolve or create task
         task = await self._resolve_task(context, event_queue)
         ctx_id = task.context_id
 
+        # 2b. Auto-create/touch the conversation in the DB
+        try:
+            from k8s_autopilot.api.service import get_thread_service
+            service = get_thread_service()
+            if service:
+                # Extract text from the query to use as thread title
+                user_text = ""
+                if isinstance(query, str):
+                    user_text = query
+                elif hasattr(query, "resume") and isinstance(getattr(query, "resume"), str):
+                    user_text = getattr(query, "resume")
+                await service.auto_touch(
+                    ctx_id, user_id="default", agent_id=self.agent.name,
+                    user_query=user_text,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Auto-touch failed for {ctx_id}: {exc}")
+
         # 3. A2UI activation check
         use_ui = self._try_activate_a2ui(context)
-        logger.info("A2UI extension check", extra={"use_ui": use_ui, "agent_name": self.agent.name},)
+        logger.info("A2UI extension check", extra={"use_ui": use_ui, "agent_name": self.agent.name})
 
         # 4. Wrap as resume command if returning from interrupt
         query = self._wrap_resume(task, query)
@@ -241,10 +268,10 @@ class A2AAutoPilotExecutor(AgentExecutor):
         await self._stream_agent(query, task, updater, event_queue, ctx_id, use_ui)
 
     async def cancel(
-        self, context: RequestContext, event_queue: EventQueue
+        self, context: RequestContext, event_queue: EventQueue,
     ) -> None:
         """Cancel the current agent execution if possible."""
-        return None  # type: ignore[return-value]
+        return  # type: ignore[return-value]
 
     # ── Step 1: Query extraction ──────────────────────────────────────
 
@@ -256,7 +283,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         # Always activate A2UI natively in autopilot Dev-Loop execution
         return True
 
-    def _extract_query(self, context: RequestContext) -> Optional[str]:
+    def _extract_query(self, context: RequestContext) -> str | None:
         """Extract the user's query from the request context.
 
         Checks for plain text first, then falls back to parsing
@@ -264,7 +291,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         """
         query = context.get_user_input()
         if query:
-            logger.debug(f"User query: {query[:120]}", extra={"agent_name": self.agent.name},)
+            logger.debug(f"User query: {query[:120]}", extra={"agent_name": self.agent.name})
             return query
 
         # Try A2UI userAction
@@ -275,7 +302,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
         return query
 
-    def _extract_user_action(self, parts: Sequence[Part]) -> Optional[str]:
+    def _extract_user_action(self, parts: Sequence[Part]) -> str | None:
         """Parse A2UI ``userAction`` from message DataParts.
 
         Handles both standard A2UI parts and raw DataParts.
@@ -287,19 +314,24 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 continue
 
             query = self._resolve_action_to_query(user_action)
-            logger.info("Extracted A2UI userAction", extra={"action": query[:200], "agent_name": self.agent.name},)
+            logger.info("Extracted A2UI userAction", extra={"action": query[:200], "agent_name": self.agent.name})
             return query
 
         return None
 
     @staticmethod
-    def _get_user_action_from_part(part: Part) -> Optional[dict]:
+    def _get_user_action_from_part(part: Part) -> dict | None:
         """Extract ``userAction`` dict from a Part, or None."""
         if part.HasField("data"):
             from google.protobuf.json_format import MessageToDict
             data = MessageToDict(part.data)
             if isinstance(data, dict):
-                return data.get("userAction")
+                # Backwards compat: if it's nested in "userAction"
+                if "userAction" in data:
+                    return data["userAction"]
+                # New V2 frontend: data IS the user action (has "name")
+                if "name" in data:
+                    return data
         return None
 
     @staticmethod
@@ -319,7 +351,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             return json.dumps(user_action)
 
         # Parse HITL context items into a flat dict
-        ctx: Dict[str, Any] = {}
+        ctx: dict[str, Any] = {}
         for item in user_action.get("context", []):
             if not isinstance(item, dict):
                 continue
@@ -386,7 +418,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
     # ── Step 3: Resume wrapping ───────────────────────────────────────
 
     @staticmethod
-    def _wrap_resume(task: Task, query: Any) -> Union[str, Command, None]:
+    def _wrap_resume(task: Task, query: Any) -> str | Command | None:
         """Wrap ``query`` in ``Command(resume=...)`` if the task is paused."""
         if not (task and hasattr(task, "status") and hasattr(task.status, "state")):
             return query
@@ -406,7 +438,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
     async def _stream_agent(
         self,
-        query: Union[str, Command, None],
+        query: str | Command | None,
         task: Task,
         updater: TaskUpdater,
         event_queue: EventQueue,
@@ -427,18 +459,18 @@ class A2AAutoPilotExecutor(AgentExecutor):
             },
         )
 
-        renderer: Optional[_StreamRenderer] = None
+        renderer: _StreamRenderer | None = None
         # ── Trace metadata for reasoning panel ────────────────────────
         _run_id = str(uuid.uuid4())
         _step_index = 0
         # ── Active surface trackers ───────────────────────────────────
-        _active_tool_surfaces: Dict[str, Dict[str, Any]] = {}
-        _reasoning_surface_id: Optional[str] = None
+        _active_tool_surfaces: dict[str, dict[str, Any]] = {}
+        _reasoning_surface_id: str | None = None
         _reasoning_buffer: str = ""
-        _plan_todo_surface_id: Optional[str] = None
+        _plan_todo_surface_id: str | None = None
 
         try:
-            stream_query: Union[str, Command] = (
+            stream_query: str | Command = (
                 query if isinstance(query, Command) else str(query or "")
             )
             agent_stream = self.agent.stream(  # type: ignore[arg-type]
@@ -513,7 +545,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                     _reasoning_surface_id = None
                     _reasoning_buffer = ""
                     await _flush_active_tool_surfaces()
-                    await self._handle_completed(item, updater, task, context_id, use_ui, renderer.message_id)
+                    await self._handle_completed(item, updater, task, context_id, use_ui, renderer.message_id, renderer)
                     return
 
                 if needs_input:
@@ -521,7 +553,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                     _reasoning_surface_id = None
                     _reasoning_buffer = ""
                     await _flush_active_tool_surfaces()
-                    await self._handle_input_required(item, updater, task, context_id, use_ui, renderer.message_id)
+                    await self._handle_input_required(item, updater, task, context_id, use_ui, renderer.message_id, renderer)
                     break
 
                 # ── Tool progress → emit toolExecutionCard surfaces ───
@@ -847,7 +879,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             await self._safe_complete(updater, task)
             raise
         except Exception as e:
-            logger.error(f"Exception in agent stream: {e}", extra={"agent_name": self.agent.name, "task_id": task.id},)
+            logger.error(f"Exception in agent stream: {e}", extra={"agent_name": self.agent.name, "task_id": task.id})
             raise
 
     # ── Response handlers ─────────────────────────────────────────────
@@ -860,9 +892,10 @@ class A2AAutoPilotExecutor(AgentExecutor):
         context_id: str,
         use_ui: bool,
         stream_message_id: str = "",
+        renderer: "_StreamRenderer | None" = None,
     ) -> None:
         """Handle a **completed** response from the agent."""
-        logger.info("Task marked complete by agent", extra={"task_id": task.id, "agent_name": self.agent.name},)
+        logger.info("Task marked complete by agent", extra={"task_id": task.id, "agent_name": self.agent.name})
 
         if use_ui:
             if item.response_type == "token":
@@ -887,7 +920,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                     task_id=task.id,
                 )
                 await updater.add_artifact(
-                    parts, name=f"{self.agent.name}-result"
+                    parts, name=f"{self.agent.name}-result",
                 )
                 await updater.update_status(
                     TaskState.TASK_STATE_COMPLETED,
@@ -915,9 +948,10 @@ class A2AAutoPilotExecutor(AgentExecutor):
         context_id: str,
         use_ui: bool,
         stream_message_id: str = "",
+        renderer: "_StreamRenderer | None" = None,
     ) -> None:
         """Handle an **input_required** response (HITL interrupt)."""
-        logger.info("Agent requires user input", extra={"task_id": task.id, "agent_name": self.agent.name},)
+        logger.info("Agent requires user input", extra={"task_id": task.id, "agent_name": self.agent.name})
 
         if use_ui:
             if item.response_type == "token":
@@ -952,6 +986,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 self._make_stream_message_text(text, stream_message_id, context_id, task.id),
             )
 
+
+
     async def _handle_working(
         self,
         item: AgentResponse,
@@ -959,7 +995,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         task: Task,
         context_id: str,
         use_ui: bool,
-        stream_message_id: Optional[str] = None,
+        stream_message_id: str | None = None,
     ) -> None:
         """Handle an intermediate **working** update.
 
@@ -997,18 +1033,18 @@ class A2AAutoPilotExecutor(AgentExecutor):
         is_task_complete: bool = False,
         require_user_input: bool = False,
         response_type: str = "text",
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         use_ui: bool = True,
-        session_id: Optional[str] = None,
-        task_id: Optional[str] = None,
-    ) -> List[Part]:
+        session_id: str | None = None,
+        task_id: str | None = None,
+    ) -> list[Part]:
         """Build A2UI Parts using the programmatic registry."""
-        from k8s_autopilot.core.a2ui.registry import get_registry, RenderContext
-        
+        from k8s_autopilot.core.a2ui.registry import RenderContext, get_registry
+
         meta = metadata or {}
         if "status" not in meta:
             meta["status"] = status
-            
+
         ctx = RenderContext(
             content=content,
             status=meta.get("status", status),
@@ -1022,7 +1058,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             session_id=session_id,
             task_id=task_id,
         )
-        
+
         # Now properly returns List[Part] wrapped strictly via the A2UI SDK
         return get_registry().build_parts(ctx)
 
@@ -1030,12 +1066,17 @@ class A2AAutoPilotExecutor(AgentExecutor):
     def _content_to_str(content: Any) -> str:
         """Convert content to a display-friendly string."""
         if isinstance(content, dict):
-            return (
-                content.get("summary")
-                or content.get("question")
-                or content.get("message")
-                or json.dumps(content, indent=2)
-            )
+            parts = []
+            if content.get("summary"):
+                parts.append(str(content["summary"]).strip())
+            if content.get("message"):
+                parts.append(str(content["message"]).strip())
+            if content.get("question"):
+                parts.append(str(content["question"]).strip())
+            
+            if parts:
+                return "\n\n".join(parts)
+            return json.dumps(content, indent=2)
         return str(content) if content else "Processing..."
 
     def _attach_trace_metadata(
@@ -1062,7 +1103,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             "traceStepIndex": step_index,
             "agentName": self.agent.name,
             "eventType": event_type,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         })
 
     @staticmethod
@@ -1078,7 +1119,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         }.get(custom_status, TaskState.TASK_STATE_WORKING)
 
     def _make_stream_message_text(
-        self, text: str, message_id: Optional[str], context_id: str, task_id: str
+        self, text: str, message_id: str | None, context_id: str, task_id: str,
     ) -> Message:
         """Create a plain text streaming message with a stable ID."""
         if not message_id:
@@ -1092,7 +1133,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         )
 
     def _make_stream_message_parts(
-        self, parts: Sequence[Part], message_id: Optional[str], context_id: str, task_id: str
+        self, parts: Sequence[Part], message_id: str | None, context_id: str, task_id: str,
     ) -> Message:
         """Create a parts-based message with a stable ID."""
         if not message_id:
@@ -1110,7 +1151,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         """Call ``updater.complete()`` with graceful handling of terminal-state errors."""
         try:
             await updater.complete()
-            logger.info("Task completed", extra={"task_id": task.id},)
+            logger.info("Task completed", extra={"task_id": task.id})
         except RuntimeError as e:
             if "already in a terminal state" in str(e):
                 logger.info("Task already terminal, skipping complete()",

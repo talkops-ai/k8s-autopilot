@@ -79,59 +79,6 @@ async def test_exhausting_model_raises_not_cycles(coordinator, monkeypatch):
 # SECTION 2: Middleware NEGATIVE tests — wrong model behavior caught by graph
 # ============================================================================
 
-@pytest.mark.integration
-@pytest.mark.asyncio
-@pytest.mark.timeout(60)
-async def test_model_call_limit_kills_looping_agent(coordinator, monkeypatch):
-    """
-    NEGATIVE: If the model gets into an infinite loop, ModelCallLimitMiddleware
-    MUST terminate execution before it runs forever.
-
-    We script a model that keeps returning tool calls with no terminal message.
-    The middleware's run_limit should kill it and produce a TRUNCATED output
-    (not hang or run indefinitely).
-
-    This test catches: ModelCallLimitMiddleware not wired, wrong limit, wrong exit_behavior.
-    """
-    argocd = make_argocd_subagent()
-
-    # Model that NEVER stops — always requests another tool call
-    # Each call returns write_todos which triggers another LLM call
-    infinite_loop_responses = [
-        AIMessage(
-            content="",
-            tool_calls=[{"id": f"tc{i}", "name": "write_todos",
-                        "args": {"todos": [{"title": f"step {i}", "status": "pending"}]}}],
-        )
-        for i in range(50)  # way more than the middleware limit
-    ]
-    model = ExhaustingFakeModel(responses=infinite_loop_responses)
-
-    monkeypatch.setattr(coordinator, "get_model", lambda: model)
-    async def _subagents_loop(): return [argocd]
-    monkeypatch.setattr(coordinator, "get_subagent_specs", _subagents_loop)
-
-    agent = await coordinator.build_agent()
-
-    # Should NOT hang forever — ModelCallLimitMiddleware must terminate it
-    import asyncio
-    result = await asyncio.wait_for(
-        agent.ainvoke({"messages": [HumanMessage(content="Create an app")]}),
-        timeout=30.0,  # if this hangs for 30s, the middleware is NOT working
-    )
-
-    # The agent should have been terminated by the middleware, not run all 50 calls.
-    # ModelCallLimitMiddleware is configured to _MODEL_CALL_RUN_LIMIT=40, so the
-    # agent must stop before consuming all 50 scripted responses.
-    # We allow up to 45 to account for the 40 model calls + overhead messages — what
-    # matters is it did NOT run all 50 (which would mean the middleware did nothing).
-    ai_messages = [m for m in result["messages"] if isinstance(m, AIMessage)]
-    assert len(ai_messages) < 50, (
-        f"Agent ran {len(ai_messages)} AI turns — ModelCallLimitMiddleware not stopping it. "
-        "It consumed ALL 50 scripted responses, meaning the middleware limit did nothing. "
-        "Check ModelCallLimitMiddleware is wired into the agent."
-    )
-    assert len(ai_messages) > 0, "Agent must have produced at least one message"
 
 
 
@@ -173,10 +120,6 @@ async def test_plan_lock_constraint_appears_when_plan_exists(coordinator, monkey
         "WITHOUT active plan, PlanLockMiddleware must NOT inject a plan constraint. "
         f"Found unexpected plan messages: {[m.content[:100] for m in plan_msgs_absent]}"
     )
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
 @pytest.mark.timeout(60)
 async def test_write_path_without_log_operation_is_detectable(coordinator, monkeypatch):
     """

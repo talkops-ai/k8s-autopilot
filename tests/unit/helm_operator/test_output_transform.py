@@ -12,13 +12,13 @@ def coordinator(mock_config):
 def test_output_transform_extracts_final_message(coordinator):
     state = {"messages": [AIMessage(content="Final result")]}
     result = coordinator.output_transform(state)
-    assert result["final_message"] == "Final result"
+    assert result["summary_text"] == "Final result"
 
 
 def test_output_transform_defaults_final_message(coordinator):
     state = {"messages": []}
     result = coordinator.output_transform(state)
-    assert result["final_message"] == "Helm operator completed."
+    assert result["summary_text"] == "Helm operator completed."
 
 
 def test_output_transform_includes_status_completed(coordinator):
@@ -33,7 +33,7 @@ def test_output_transform_syncs_workspace_files(mock_sync, coordinator):
     state = {"files": {"/workspace/charts/nginx/Chart.yaml": "content"}}
     result = coordinator.output_transform(state)
     mock_sync.assert_called_once_with(state["files"])
-    assert "synced_paths" in result["helm_operator_output"]
+    assert "synced_paths" in result["artifacts"]
 
 
 @patch("k8s_autopilot.core.agents.helm_operator.coordinator.sync_workspace_to_disk")
@@ -55,4 +55,4 @@ def test_output_transform_handles_pydantic_model_input(coordinator):
             return {"messages": [AIMessage(content="Pydantic result")]}
     
     result = coordinator.output_transform(MockState())
-    assert result["final_message"] == "Pydantic result"
+    assert result["summary_text"] == "Pydantic result"

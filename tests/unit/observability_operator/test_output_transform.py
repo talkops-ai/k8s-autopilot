@@ -14,12 +14,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 def test_output_transform_extracts_final_message(coordinator):
     state = {"messages": [AIMessage(content="Prometheus query result: CPU at 45%")]}
     result = coordinator.output_transform(state)
-    assert result["final_message"] == "Prometheus query result: CPU at 45%"
+    assert result["summary_text"] == "Prometheus query result: CPU at 45%"
 
 @pytest.mark.unit
 def test_output_transform_defaults_final_message(coordinator):
     result = coordinator.output_transform({"messages": []})
-    assert result["final_message"] == "Observability operator completed."
+    assert result["summary_text"] == "Observability operator completed."
 
 @pytest.mark.unit
 def test_output_transform_includes_status_completed(coordinator):
@@ -33,9 +33,9 @@ def test_output_transform_includes_observability_output(coordinator):
         "structured_response": {"alerts": ["HighCPU"]},
     }
     result = coordinator.output_transform(state)
-    assert "messages" in result["observability_output"]
-    assert "structured_response" in result["observability_output"]
-    assert result["observability_output"]["structured_response"] == {"alerts": ["HighCPU"]}
+    assert "messages" in result["artifacts"]
+    assert "structured_response" in result["artifacts"]
+    assert result["artifacts"]["structured_response"] == {"alerts": ["HighCPU"]}
 
 @pytest.mark.unit
 def test_output_transform_builds_domain_summary(coordinator, monkeypatch):
@@ -56,10 +56,10 @@ def test_output_transform_handles_pydantic_model_input(coordinator):
             return {"messages": [AIMessage(content="pydantic final")]}
 
     result = coordinator.output_transform(DummyModel())
-    assert result["final_message"] == "pydantic final"
+    assert result["summary_text"] == "pydantic final"
 
 @pytest.mark.unit
 def test_output_transform_handles_dict_message(coordinator):
-    state = {"messages": [{"role": "assistant", "content": "dict content"}]}
+    state = {"messages": [{"type": "ai", "content": "dict content"}]}
     result = coordinator.output_transform(state)
-    assert result["final_message"] == "dict content"
+    assert result["summary_text"] == "dict content"

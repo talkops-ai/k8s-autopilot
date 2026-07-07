@@ -22,12 +22,15 @@ Docs: https://docs.langchain.com/oss/python/deepagents/customization
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, cast
+from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, cast
+from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
 
 from langchain_core.runnables import RunnableLambda
 from langchain_core.runnables.config import RunnableConfig
 from langchain.tools import tool, ToolRuntime
 from langgraph.store.memory import InMemoryStore
+from k8s_autopilot.core.hitl.checkpointer import get_checkpointer
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import ToolMessage
 from deepagents import create_deep_agent
@@ -40,7 +43,6 @@ from k8s_autopilot.core.state.helm_planner_state import (
 from k8s_autopilot.utils.llm import create_model
 from k8s_autopilot.utils.user_input_tool import (
     create_user_input_tool,
-    create_chat_continue_tool,
 )
 from k8s_autopilot.utils.operations_context import create_log_operation_tool
 from k8s_autopilot.utils.escalate_tool import create_escalate_to_supervisor_tool
@@ -347,16 +349,13 @@ class HelmOperatorCoordinator(BaseDeepAgent):
         # Build the generic user input HITL tool
         user_input = create_user_input_tool()
         
-        # Build the chat continue tool for data presentation
-        chat_continue = create_chat_continue_tool()
-
         # Build the operations journal tool for context persistence
         log_operation = create_log_operation_tool()
 
         # Build the escalation tool for cross-domain re-routing
         escalate = create_escalate_to_supervisor_tool()
 
-        return [sync_workspace, user_input, chat_continue, log_operation, escalate]
+        return [sync_workspace, user_input, log_operation, escalate]
 
     def get_skill_paths(self) -> List[str]:
         return ["/skills/helm-operator/helm-operation"]
@@ -423,8 +422,8 @@ class HelmOperatorCoordinator(BaseDeepAgent):
         return store
 
     def build_checkpointer(self) -> Any:
-        """Return None to inherit the parent supervisor's checkpointer natively."""
-        return None
+        """Return Postgres-backed per-thread multi-turn memory checkpointer."""
+        return get_checkpointer(self._config, prefer_postgres=True)
 
     # ── Abstract implementations — build_agent & seed_files ──────────────
 
@@ -491,21 +490,40 @@ class HelmOperatorCoordinator(BaseDeepAgent):
 
     def input_transform(self, send_payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Transform supervisor ``@tool`` payload → deep agent graph input (state).
-
-        Extracts ``messages`` and seeds the virtual filesystem so the deep agent
-        starts with skills and memory already loaded.
-
-        Args:
-            send_payload: Dict from ``dict(runtime.state)`` in the tool wrapper,
-                          with ``messages`` replaced by ``[HumanMessage(task_description)]``.
-
         Returns:
             Deep agent graph input: ``{messages: [...], files: {...}}``
 
         Reference: TFCoordinator.input_transform
         """
-        messages = send_payload.get("messages", [])
+        # Only forward the latest query to prevent exponential message duplication
+        # since the deep agent maintains its own per-thread persistence.
+        user_query = send_payload.get("user_query", "")
+        messages: List[BaseMessage] = []
+        
+        domain_summaries = send_payload.get("domain_summaries")
+        cross_domain = send_payload.get("cross_domain_context")
+        
+        context_parts = []
+        if domain_summaries:
+            summary_lines = []
+            for s in domain_summaries:
+                if isinstance(s, dict):
+                    domain = s.get("domain", "unknown")
+                    outcome = s.get("outcome", "completed")
+                    detail = s.get("detail", "")
+                    summary_lines.append(f"- {domain}: {outcome} — {detail}")
+            if summary_lines:
+                context_parts.append("Recent tasks completed by other domains:\n" + "\n".join(summary_lines))
+                
+        if cross_domain and isinstance(cross_domain, dict):
+            context_parts.append(f"Deferred task context: {cross_domain}")
+            
+        if context_parts:
+            messages.append(SystemMessage(content="Cross-Domain Context:\n\n" + "\n\n".join(context_parts)))
+            
+        if user_query:
+            messages.append(HumanMessage(content=user_query))
+            
         files = self.seed_files()
 
         transformed: Dict[str, Any] = {
@@ -635,22 +653,29 @@ class HelmOperatorCoordinator(BaseDeepAgent):
                     extra={"error": str(e)},
                 )
 
-        # Extract the final message from the deep agent's conversation
-        final_message: Optional[str] = None
+        # Extract the user-facing AI response from the deep agent's messages.
+        # In the sub-agent architecture, the messages array contains both
+        # sub-agent ToolMessages (raw execution output) and the coordinator's
+        # own AI messages (formatted user-facing response).
+        # _extract_final_ai_text walks backwards to find only the coordinator's
+        # last AI response, skipping internal sub-agent results.
         messages = state.get("messages", [])
-        if messages:
-            last_msg = messages[-1]
-            final_message = getattr(last_msg, "content", None) or (
-                last_msg.get("content") if isinstance(last_msg, dict) else None
-            )
+        final_message = self._extract_final_ai_text(messages)
 
-        # Build supervisor-compatible update dict
+        # Build supervisor-compatible update dict (CoordinatorResult contract)
         output: Dict[str, Any] = {
-            "final_message": final_message or "Helm operator completed.",
+            "summary_text": final_message or "Helm operator completed.",
             "status": "completed",
-            "helm_operator_output": {
+            "ui_payload": {
+                "type": "helm_operation_result",
+                "content": final_message or "Helm operator completed.",
+            },
+            "artifacts": {
                 "messages": messages,
                 "files": files,
+                "collected_inputs": state.get("collected_inputs", {}),
+                "workflow_state": state.get("workflow_state", {}),
+                "pending_interrupt": state.get("pending_interrupt"),
                 "synced_paths": {k: str(v) for k, v in synced.items()},
                 "structured_response": state.get("structured_response"),
             },

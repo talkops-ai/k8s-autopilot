@@ -41,7 +41,7 @@ def create_escalate_to_supervisor_tool():
         from k8s_autopilot.utils.escalate_tool import create_escalate_to_supervisor_tool
 
         escalate = create_escalate_to_supervisor_tool()
-        tools = [sync_workspace, user_input, chat_continue, log_operation, escalate]
+        tools = [sync_workspace, user_input, log_operation, escalate]
     """
 
     @tool

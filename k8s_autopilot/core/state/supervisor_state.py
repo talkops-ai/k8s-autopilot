@@ -104,6 +104,11 @@ class MainSupervisorState(TypedDict, total=False):
     """
     # ── Required at invocation ─────────────────────────────────────────
     messages: Annotated[List[AnyMessage], add_messages]
+    agent_messages: Annotated[List[AnyMessage], add_messages]
+    
+    # ── HITL Flow ──────────────────────────────────────────────────────
+    pending_interrupt: Optional[Dict[str, Any]]
+    collected_inputs: Dict[str, Any]
     
     # ── Core identifiers ──────────────────────────────────────────────
     user_query: str
@@ -134,3 +139,15 @@ class MainSupervisorState(TypedDict, total=False):
     
     # ── HITL ──────────────────────────────────────────────────────────
     pending_feedback_requests: Dict[str, Any]
+
+    # ── Routing decision (structured control-flow, NOT user-facing) ───
+    # Reference: deep-agent-architecture-review.md §Q1
+    routing_decision: Dict[str, Any]
+
+    # ── UI payload (replayable structured surfaces) ───────────────────
+    # Reference: deep-agent-architecture-review.md §Q3
+    ui_payload: Dict[str, Any]
+
+    # ── Conversation summary (long-thread management) ─────────────────
+    # Reference: deep-agent-architecture-review.md §Q10
+    conversation_summary: str

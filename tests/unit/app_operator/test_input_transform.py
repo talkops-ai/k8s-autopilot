@@ -2,10 +2,10 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 @pytest.mark.unit
-def test_input_transform_preserves_messages(coordinator):
-    msgs = [HumanMessage(content="hi")]
-    result = coordinator.input_transform({"messages": msgs})
-    assert result["messages"] == msgs
+def test_input_transform_uses_user_query(coordinator):
+    result = coordinator.input_transform({"user_query": "hi"})
+    assert len(result["messages"]) == 1
+    assert result["messages"][0].content == "hi"
 
 @pytest.mark.unit
 def test_input_transform_calls_seed_files(coordinator, monkeypatch):

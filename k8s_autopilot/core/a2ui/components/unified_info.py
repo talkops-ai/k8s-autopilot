@@ -144,6 +144,8 @@ class UnifiedInfoComponent(BaseComponent):
 
             if status_key in ("error", "failed"):
                 markdown_text = f"### {icon} {heading}\n\n**{content.strip()}**\n"
+            elif status_key in ("completed", "success"):
+                markdown_text = f"{content.strip()}\n"
             else:
                 markdown_text = f"### {icon} {heading}\n\n{content.strip()}\n"
 

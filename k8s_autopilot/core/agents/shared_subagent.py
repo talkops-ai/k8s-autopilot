@@ -137,8 +137,14 @@ def build_mcp_subagent(
         from langchain.agents import create_agent
 
         try:
+            cfg = (
+                config.get("configurable", {}).get("app_config")
+                if isinstance(config, dict)
+                else None
+            ) or Config()
+
             # Lazily connect to MCP right before execution
-            async with create_mcp_client(Config(), server_filter=server_filter) as mcp_client:
+            async with create_mcp_client(cfg, server_filter=server_filter) as mcp_client:
                 tools = mcp_client.get_tools()
 
                 from k8s_autopilot.core.hitl.tools import create_hitl_tools
@@ -275,14 +281,6 @@ def build_mcp_subagent(
                     f"dedup=on)"
                 )
 
-                # Lazily instantiate model and graph — prefer coordinator's config
-                # over a fresh Config() to ensure sub-agents inherit model/backend
-                # settings from the coordinator.
-                cfg = (
-                    config.get("configurable", {}).get("app_config")
-                    if isinstance(config, dict)
-                    else None
-                ) or Config()
                 model = create_model(cfg.get_llm_deepagent_config())
                 agent_graph = create_agent(
                     model=model,

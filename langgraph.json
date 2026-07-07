@@ -1,0 +1,11 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["."],
+  "graphs": {
+    "k8s_autopilot": "./k8s_autopilot/core/agents/supervisor_agent.py:graph"
+  },
+  "env": ".env",
+  "http": {
+    "app": "./k8s_autopilot/core/integration/slack/app.py:app"
+  }
+}

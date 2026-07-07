@@ -229,60 +229,12 @@ def create_user_input_tool():
                     tool_call_id=runtime.tool_call_id,
                 )
             ],
+            # Phase 3: Persist the HITL surface data for history replay.
+            # The frontend can reconstruct the approval card / input form
+            # from this payload instead of parsing text fallbacks.
+            "ui_payload": payload.model_dump(),
         })
 
     return request_user_input
 
-
-def create_chat_continue_tool():
-    """Factory that returns a tool to pause the conversation natively.
-    Unlike request_user_input, this tool triggers an \"info_message\" pause,
-    which does NOT render heavy UI cards or buttons—it just outputs conversational
-    text and waits for the user to type."""
-
-    @tool
-    def request_chat_continue(
-        message: str,
-        runtime: ToolRuntime,
-    ) -> Command:
-        """Pause execution, present conversational text to the user, and wait for their next reply.
-        
-        Use this when you want to return massive data tables, logs, or operational output
-        (like Helm releases) WITHOUT forcing the user into a UI Card with buttons.
-        This provides a "simple and elegant" chat-based continuation.
-
-        Args:
-            message: The content to present (e.g. the Markdown table and your follow-up question).
-        """
-        payload = UserInputPayload(
-            type="chat_continue",
-            status="input_required",
-            question=message,
-            options=[],
-            input_fields=[]
-        )
-
-        logger.info(
-            "Requesting chat continue",
-            extra={"message_preview": message[:100]},
-        )
-
-        human_response = interrupt(payload.model_dump())
-
-        human_response_str = (
-            json.dumps(human_response, indent=2)
-            if isinstance(human_response, dict)
-            else str(human_response)
-        )
-
-        return Command(update={
-            "messages": [
-                ToolMessage(
-                    content=f"Human replied to your message. Their response: {human_response_str}",
-                    tool_call_id=runtime.tool_call_id,
-                )
-            ],
-        })
-
-    return request_chat_continue
 

@@ -1,7 +1,14 @@
+from typing import Annotated, Sequence, Dict, Any, Optional
 from typing_extensions import NotRequired, TypedDict
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
 
 
 class K8sOperatorContext(TypedDict, total=False):
+    messages: Annotated[Sequence[AnyMessage], add_messages]
+    agent_messages: Annotated[Sequence[AnyMessage], add_messages]
+    pending_interrupt: Optional[Dict[str, Any]]
+    collected_inputs: Dict[str, Any]
     """Runtime context for the K8s Operator Deep Agent.
 
     Injected via ``config["context"]`` during LangGraph invocation.

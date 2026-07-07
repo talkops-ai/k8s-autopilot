@@ -464,6 +464,25 @@ class MainSupervisorState(TypedDict, total=False):
     # ── HITL ──────────────────────────────────────────────────────────
     pending_feedback_requests: NotRequired[Dict[str, Any]]
 
+    # ── Routing decision (structured control-flow, NOT user-facing) ───
+    # Stores the classify_request router's decision without polluting
+    # the messages[] conversation ledger.
+    # Reference: deep-agent-architecture-review.md §Q1
+    routing_decision: NotRequired[Dict[str, Any]]
+
+    # ── UI payload (replayable structured surfaces) ───────────────────
+    # Structured data for frontend replay (tables, cards, approval forms).
+    # Persisted so history replay can reconstruct the original UI surface
+    # without output_transform flat-text conversion.
+    # Reference: deep-agent-architecture-review.md §Q3
+    ui_payload: NotRequired[Dict[str, Any]]
+
+    # ── Conversation summary (long-thread management) ─────────────────
+    # Running summary of the conversation for long-lived threads.
+    # Used by the summarization node to compress message history.
+    # Reference: deep-agent-architecture-review.md §Q10
+    conversation_summary: NotRequired[str]
+
 
 # ============================================================================
 # Helm Planner State (K8s Operator — 2-phase pipeline)

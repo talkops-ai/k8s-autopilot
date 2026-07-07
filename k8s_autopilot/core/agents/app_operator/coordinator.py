@@ -8,9 +8,11 @@ Wires backends, MCP tools, and subagents via the ``BaseDeepAgent`` abstract clas
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, cast
+from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
 
 from langchain.tools import tool, ToolRuntime
 from langgraph.store.memory import InMemoryStore
+from k8s_autopilot.core.hitl.checkpointer import get_checkpointer
 
 from deepagents import create_deep_agent
 from deepagents.backends.utils import create_file_data
@@ -22,7 +24,6 @@ from k8s_autopilot.core.state.handoff_contracts import extract_handoff_from_text
 from k8s_autopilot.utils.llm import create_model
 from k8s_autopilot.utils.user_input_tool import (
     create_user_input_tool,
-    create_chat_continue_tool,
 )
 from k8s_autopilot.utils.operations_context import create_log_app_operation_tool
 from k8s_autopilot.utils.escalate_tool import create_escalate_to_supervisor_tool
@@ -125,7 +126,7 @@ For out_of_scope:
 For read_only:
 - Delegate once to the most relevant sub-agent with a clear [READ-ONLY] prefixed task.
 - Do not create a plan, write_todos, or approval gate.
-- Call `request_chat_continue` with a polished markdown summary of the result.
+- Provide a concise markdown summary in your final response.
 - Do NOT call `log_app_operation` for read-only results.
 
 For state_mutation:
@@ -134,7 +135,7 @@ For state_mutation:
 - Never fabricate missing resource names, namespaces, or application details.
 - NEVER list sync, delete, abort, rollback, promote, or traffic-weight-change as DIRECT EXECUTE.
 - Always call `log_app_operation` after a successful state-mutating operation.
-- Always call `request_chat_continue` after completing the operation.
+- Always provide a markdown summary after completing the operation.
 </decision_policy>
 
 <parameter_completeness>
@@ -144,7 +145,7 @@ Required identifiers vary by operation — see AGENTS.md §Parameter Completenes
 Resolve missing identifiers in this order:
 1. Check the operations journal (auto-injected by AppOperationContextMiddleware).
 2. Perform a [READ-ONLY] discovery delegation to enumerate available resources.
-3. Call `request_chat_continue` to ask the user for the missing information.
+3. Ask the user for the missing information in your response.
 
 Never guess or invent parameters for state-mutating tasks.
 </parameter_completeness>
@@ -162,7 +163,7 @@ For any state_mutation request, follow this flow. See AGENTS.md §Planning Workf
 4. Execute — Delegate each TODO with [PLAN-APPROVED] prefix so the sub-agent skips its own plan gate.
    Update TODO status via `write_todos` as you proceed (pending → in_progress → completed).
 5. Verify — Run a read-only follow-up to confirm health, sync, or routing state.
-6. Report — Return a concise markdown summary via `request_chat_continue`. See AGENTS.md §Response Format.
+6. Report — Return a concise markdown summary. See AGENTS.md §Response Format.
 
 The HITL middleware at the sub-agent tool level still fires as the mechanical safety net — that is correct.
 Sub-agents receiving [PLAN-APPROVED] MUST skip their internal plan review.
@@ -287,10 +288,9 @@ class AppOperatorCoordinator(BaseDeepAgent):
 
     async def get_tools(self) -> List[Any]:
         user_input = create_user_input_tool()
-        chat_continue = create_chat_continue_tool()
         log_operation = create_log_app_operation_tool()
         escalate = create_escalate_to_supervisor_tool()
-        return [user_input, chat_continue, log_operation, escalate]
+        return [user_input, log_operation, escalate]
 
     def get_skill_paths(self) -> List[str]:
         return [
@@ -315,7 +315,7 @@ class AppOperatorCoordinator(BaseDeepAgent):
             StateBackend,
             StoreBackend,
         )
-        from k8s_autopilot.utils.memory import get_project_root
+        from k8s_autopilot.utils.memory import get_project_root, get_memories_namespace
         
         root = get_project_root()
         default = FilesystemBackend(
@@ -323,13 +323,11 @@ class AppOperatorCoordinator(BaseDeepAgent):
             virtual_mode=True,
         )
 
-        _org = os.getenv("ORG_NAME", "default_org")
-
         return CompositeBackend(
             default=default,
             routes={
                 "/memories/": StoreBackend(
-                    namespace=lambda _rt: (_org,),
+                    namespace=get_memories_namespace,
                 ),
                 "/shared/": StoreBackend(
                     namespace=lambda _rt: ("shared",),
@@ -366,16 +364,8 @@ class AppOperatorCoordinator(BaseDeepAgent):
         return store
 
     def build_checkpointer(self) -> Any:
-        """Return None to inherit the parent supervisor's checkpointer.
-
-        Per-invocation mode (checkpointer=None) is the recommended pattern
-        for subagents invoked as tools.  The child inherits the parent's
-        checkpointer via the config passed to ainvoke(), enabling native
-        interrupt()/resume support without manual bridging.
-
-        Reference: LangGraph docs — Subgraph persistence / Per-invocation.
-        """
-        return None
+        """Return Postgres-backed per-thread multi-turn memory checkpointer."""
+        return get_checkpointer(self._config, prefer_postgres=True)
 
     async def build_agent(self) -> Any:
         if getattr(self, "_agent", None):
@@ -421,7 +411,35 @@ class AppOperatorCoordinator(BaseDeepAgent):
         )
 
     def input_transform(self, send_payload: Dict[str, Any]) -> Dict[str, Any]:
-        messages = send_payload.get("messages", [])
+        # Only forward the latest query to avoid exponential message duplication 
+        # since this subgraph maintains its own per-thread persistence.
+        user_query = send_payload.get("user_query", "")
+        messages: List[BaseMessage] = []
+        
+        domain_summaries = send_payload.get("domain_summaries")
+        cross_domain = send_payload.get("cross_domain_context")
+        
+        context_parts = []
+        if domain_summaries:
+            summary_lines = []
+            for s in domain_summaries:
+                if isinstance(s, dict):
+                    domain = s.get("domain", "unknown")
+                    outcome = s.get("outcome", "completed")
+                    detail = s.get("detail", "")
+                    summary_lines.append(f"- {domain}: {outcome} — {detail}")
+            if summary_lines:
+                context_parts.append("Recent tasks completed by other domains:\n" + "\n".join(summary_lines))
+                
+        if cross_domain and isinstance(cross_domain, dict):
+            context_parts.append(f"Deferred task context: {cross_domain}")
+            
+        if context_parts:
+            messages.append(SystemMessage(content="Cross-Domain Context:\n\n" + "\n\n".join(context_parts)))
+            
+        if user_query:
+            messages.append(HumanMessage(content=user_query))
+            
         files = self.seed_files()
         transformed: Dict[str, Any] = {
             "messages": messages,
@@ -486,18 +504,21 @@ class AppOperatorCoordinator(BaseDeepAgent):
 
         final_message: Optional[str] = None
         messages = state.get("messages", [])
-        if messages:
-            last_msg = messages[-1]
-            final_message = getattr(last_msg, "content", None) or (
-                last_msg.get("content") if isinstance(last_msg, dict) else None
-            )
+        final_message = self._extract_final_ai_text(messages)
 
         output: Dict[str, Any] = {
-            "final_message": final_message or "App operator completed.",
+            "summary_text": final_message or "App operator completed.",
             "status": "completed",
-            "app_operator_output": {
+            "ui_payload": {
+                "type": "app_operation_result",
+                "content": final_message or "App operator completed.",
+            },
+            "artifacts": {
                 "messages": messages,
                 "structured_response": state.get("structured_response"),
+                "collected_inputs": state.get("collected_inputs", {}),
+                "workflow_state": state.get("workflow_state", {}),
+                "pending_interrupt": state.get("pending_interrupt"),
             },
             "domain_summary": extract_domain_summary(
                 domain="app",

@@ -156,7 +156,7 @@ For out_of_scope:
 For read_only:
 - Delegate once to helm-operation with a clear [READ-ONLY] prefixed task.
 - Do not create a plan, write_todos, or approval gate.
-- Call `request_chat_continue` with a polished markdown summary of the result.
+- Provide a polished markdown summary of the result in your response.
 - Do NOT call `log_helm_operation` for read-only results.
 
 For chart_generation:
@@ -169,7 +169,7 @@ For chart_update:
 For helm_operation:
 - Follow the <workflow_helm_operation> pipeline.
 - Always call `log_helm_operation` after state-modifying operations.
-- Always call `request_chat_continue` after presenting results.
+- Always provide a summary after presenting results.
 </decision_policy>"""
 
 COORDINATOR_WORKFLOW_CHART_GENERATION = """\
@@ -232,8 +232,8 @@ For live Helm release operations:
      d. Delegate to helm-operation with [PLAN-APPROVED] prefix ONLY after user approves.
 
 3. Synthesize results:
-   - PATH B (Read-Only): Present a structured Markdown summary.
-   - PATH A (State-Modifying): Present a walkthrough summary of what was accomplished,
+   - PATH B (Read-Only): Provide a conversational, helpful, and natural response summarizing the result. Do not just dump structured markdown; speak to the user as a helpful assistant.
+   - PATH A (State-Modifying): Provide a conversational walkthrough summary of what was accomplished in your response,
      including release names, namespaces, chart versions, and verification results.
 
 4. Call `log_helm_operation` with action, release_name, namespace, chart_source, values, version.

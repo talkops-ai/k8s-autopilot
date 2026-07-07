@@ -10,7 +10,7 @@ def coordinator(mock_config):
 
 def test_input_transform_preserves_messages(coordinator):
     msg = HumanMessage(content="test")
-    payload = {"messages": [msg]}
+    payload = {"user_query": "test", "messages": [msg]}
     result = coordinator.input_transform(payload)
     assert result["messages"] == [msg]
 

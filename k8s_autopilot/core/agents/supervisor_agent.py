@@ -1,5 +1,7 @@
 """K8s Autopilot Supervisor Agent — pure router delegating to coordinators."""
 
+import uuid as _uuid
+
 import asyncio
 import json
 import re
@@ -7,8 +9,9 @@ from collections.abc import AsyncGenerator
 from typing import Any, cast, Literal
 from pydantic import BaseModel, Field
 from langchain.tools import tool
-from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, RemoveMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphInterrupt
 from langgraph.graph import StateGraph, START, END
@@ -46,12 +49,12 @@ class RouterDecision(BaseModel):
         "transfer_to_k8s_operator",
         "transfer_to_app_operator",
         "transfer_to_observability_operator",
-        "request_human_feedback",
+        "direct_response",
     ] = Field(
-        description="The target coordinator for the user's query. Use request_human_feedback for out-of-scope requests."
+        description="The target coordinator for the user's query. Use direct_response for out-of-scope requests."
     )
     task: str = Field(
-        description="A concise technical task description for the destination, or the clarifying question to ask the user if destination is request_human_feedback."
+        description="A concise technical task description for the destination, or the clarifying question to ask the user if destination is direct_response."
     )
     reasoning: str = Field(
         description="Brief explanation of why this route was chosen."
@@ -69,7 +72,7 @@ Do not perform any operational work yourself.
 - transfer_to_k8s_operator: Kubernetes cluster operations and diagnostics.
 - transfer_to_app_operator: ArgoCD, Argo Rollouts, and Traefik traffic control.
 - transfer_to_observability_operator: Prometheus, Alertmanager, OpenTelemetry, Loki, and Tempo.
-- request_human_feedback: Out-of-scope, unclear, or non-infrastructure requests.
+- direct_response: Out-of-scope, unclear, or non-infrastructure requests.
 </destinations>
 
 <decision_rules>
@@ -84,7 +87,7 @@ Do not perform any operational work yourself.
 Return a concise technical task for the chosen destination.
 Normalize user wording into DevOps terminology.
 Do not copy the user message verbatim.
-CRITICAL: If the destination is `request_human_feedback`, the `task` field MUST be the exact conversational response or clarifying question you want to display directly to the user (e.g., "Hi! How can I help you with Kubernetes today?"). Do NOT output instructions like "Acknowledge the user".
+CRITICAL: If the destination is `direct_response`, the `task` field MUST be the exact conversational response or clarifying question you want to display directly to the user (e.g., "Hi! How can I help you with Kubernetes today?"). Do NOT output instructions like "Acknowledge the user".
 </task_rules>
 
 <cross_domain>
@@ -234,7 +237,7 @@ def _extract_interrupt_tool_name(interrupts: tuple) -> str:
     if not isinstance(value, dict):
         return ""
 
-    # pending_feedback_requests (request_human_feedback)
+    # pending_feedback_requests (direct_response)
     feedback = value.get("pending_feedback_requests", {})
     if isinstance(feedback, dict) and feedback.get("tool_name"):
         return str(feedback["tool_name"])
@@ -338,13 +341,26 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         self.config_instance = config or Config(custom_config or {})
         self._name = name
 
-        try:
-            from k8s_autopilot.core.hitl import get_checkpointer  # noqa: PLC0415
-            self.memory = get_checkpointer(config=self.config_instance, prefer_postgres=True)
-        except Exception:  # noqa: BLE001
-            self.memory = MemorySaver()
+        # Start with MemorySaver — async PostgreSQL upgrade happens lazily
+        # on the first stream() call via _ensure_async_checkpointer().
+        self.memory: BaseCheckpointSaver = MemorySaver()
+        self._async_checkpointer_ready = False
+        self._config_for_postgres = self.config_instance
 
-        self.model = create_model(self.config_instance.get_llm_config())
+        # Register custom Pydantic state types for checkpoint serialization.
+        # Without this, LangGraph emits a deprecation warning and will block
+        # deserialization in v2.0.
+        self._apply_serialization_allowlist()
+
+        self._model = None
+        try:
+            # Warm up the model on startup to log warnings if credentials are missing
+            _ = self.model
+        except Exception as e:
+            logger.warning(
+                f"LLM provider model could not be initialized on startup: {e}. "
+                "This is expected if API keys are not yet configured. Please configure them in the Admin Settings panel."
+            )
 
         # Coordinator(s) — multi-coordinator is preferred
         self.agents: dict[str, Any] = {}
@@ -374,6 +390,16 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
             "Supervisor agent initialized",
             extra={"mode": mode, "agent_count": len(self.agents), "agent_names": list(self.agents.keys())},
         )
+
+    @property
+    def model(self) -> Any:
+        if self._model is None:
+            self._model = create_model(self.config_instance.get_llm_config())
+        return self._model
+
+    @model.setter
+    def model(self, value: Any) -> None:
+        self._model = value
 
     @property
     def name(self) -> str:
@@ -409,6 +435,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         builder.add_node("supervisor_router", self._supervisor_router_node)  # type: ignore[arg-type]
         builder.add_node("classify_request", self._classify_request_node)  # type: ignore[arg-type]
         builder.add_node("error_handler", self._error_handler_node)  # type: ignore[arg-type]
+        builder.add_node("summarize_conversation", self._summarize_conversation_node)  # type: ignore[arg-type]
         builder.add_node("finalize_response", self._finalize_response_node)  # type: ignore[arg-type]
 
         # Coordinator nodes (lazy-init deep agent invocation)
@@ -439,7 +466,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         route_map: dict[str, str] = {
             "classify_request": "classify_request",
             "error_handler": "error_handler",
-            "finalize_response": "finalize_response",
+            "finalize_response": "summarize_conversation",  # Phase 4: summarize before finalizing
             END: END,
         }
         for nn in available_nodes:
@@ -457,6 +484,9 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
             builder.add_edge(nn, "supervisor_router")
         builder.add_edge("error_handler", "supervisor_router")
 
+        # Phase 4: summarize → finalize
+        builder.add_edge("summarize_conversation", "finalize_response")
+
         # Terminal
         builder.add_edge("finalize_response", END)
 
@@ -468,7 +498,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
             },
         )
 
-        return builder.compile(checkpointer=cast("MemorySaver", self.memory))
+        return builder.compile(checkpointer=self.memory)
 
     # ── Tool wrappers (Legacy code removed) ───────────────────────────
 
@@ -658,7 +688,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 if isinstance(s, dict):
                     domain = s.get("domain", "unknown")
                     outcome = s.get("outcome", "completed")
-                    detail = s.get("detail", "")
+                    detail = s.get("message_preview", "")
                     lines.append(f"- **{domain}**: {outcome}" + (f" — {detail}" if detail else ""))
             if lines:
                 context_msgs.append(SystemMessage(
@@ -698,7 +728,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
             f"--------------------------------------------------\n"
             f"CURRENT USER REQUEST TO CLASSIFY:\n"
             f"<user_request>\n{user_query}\n</user_request>\n\n"
-            f"INSTRUCTION: Focus strictly on the <user_request> above. Route this exact request. Do not route based on past completed tasks."
+            f"INSTRUCTION: Focus on the <user_request> above, but use the provided Cross-Domain Context to resolve any ambiguous entities (like \"it\", \"this\", or \"that release\") and target the appropriate coordinator."
         )
 
         messages = [
@@ -725,43 +755,27 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         if not decision:
             logger.warning("Classification produced no parsed decision")
             content = _extract_content_text(getattr(raw_msg, "content", "")) if raw_msg else "Unknown parsing error."
-            payload = {
-                "pending_feedback_requests": {
-                    "status": "input_required",
-                    "question": "I'm not sure how to help. Could you describe your Kubernetes task?",
-                    "context": content or "No matching coordinator",
-                    "tool_name": "request_human_feedback",
-                },
-            }
-            resume_val = interrupt(payload)
-            resume_str = str(resume_val) if resume_val is not None else ""
-            msgs = [raw_msg] if raw_msg else []
-            msgs.append(HumanMessage(content=resume_str))
+            question = "I'm not sure how to help. Could you describe your Kubernetes task?"
             return {
-                "pending_feedback_requests": {},
-                "messages": msgs,
-                "user_query": resume_str,
-                "status": "pending",
+                "messages": [AIMessage(content=question, id=str(_uuid.uuid4()))],
+                "routing_decision": {
+                    "destination": "direct_response",
+                    "task": "Could not parse classification",
+                    "reasoning": "Parsing failure — requesting human input",
+                },
+                "status": "completed",
             }
 
         # Handle the structured decision
-        if decision.destination == "request_human_feedback":
-            payload = {
-                "pending_feedback_requests": {
-                    "status": "input_required",
-                    "question": decision.task,
-                    "context": decision.reasoning or "No additional context provided",
-                    "tool_name": "request_human_feedback",
-                },
-            }
-            resume_val = interrupt(payload)
-            resume_str = str(resume_val) if resume_val is not None else ""
-            
+        if decision.destination == "direct_response":
             return {
-                "pending_feedback_requests": {},
-                "messages": [raw_msg, HumanMessage(content=resume_str)],
-                "user_query": resume_str,
-                "status": "pending",  # re-classify after feedback
+                "messages": [AIMessage(content=decision.task, id=str(_uuid.uuid4()))],
+                "routing_decision": {
+                    "destination": "direct_response",
+                    "task": decision.task,
+                    "reasoning": decision.reasoning or "",
+                },
+                "status": "completed",
             }
 
         target_node = _TOOL_TO_NODE.get(decision.destination)
@@ -775,28 +789,26 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 "active_agent": target_node,
                 "user_query": decision.task,
                 "status": "working",
-                "messages": [raw_msg],
+                "routing_decision": {
+                    "destination": decision.destination,
+                    "task": decision.task,
+                    "reasoning": decision.reasoning or "",
+                },
             }
 
         # Fallback: unknown destination string
         logger.warning(
             "Classification produced unknown destination", extra={"destination": decision.destination},
         )
-        payload = {
-            "pending_feedback_requests": {
-                "status": "input_required",
-                "question": "I'm not sure how to help. Could you describe your Kubernetes task?",
-                "context": "No matching coordinator",
-                "tool_name": "request_human_feedback",
-            },
-        }
-        resume_val = interrupt(payload)
-        resume_str = str(resume_val) if resume_val is not None else ""
+        question = "I'm not sure how to help. Could you describe your Kubernetes task?"
         return {
-            "pending_feedback_requests": {},
-            "messages": [raw_msg, HumanMessage(content=resume_str)],
-            "user_query": resume_str,
-            "status": "pending",
+            "messages": [AIMessage(content=question, id=str(_uuid.uuid4()))],
+            "routing_decision": {
+                "destination": decision.destination if decision else "unknown",
+                "task": "Unknown destination — requesting human input",
+                "reasoning": "No matching coordinator",
+            },
+            "status": "completed",
         }
 
     def _make_coordinator_node(
@@ -880,14 +892,36 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                     store=child_store,
                 )
 
+            child_thread_id = f"{state.get('session_id', 'default')}:{tool_name}"
             child_config["configurable"] = {
                 **configurable,
-                "thread_id": f"{state.get('session_id', 'default')}:{tool_name}",
+                # Use a stable thread_id per session and tool_name so the deep agent
+                # can resume its previous memory state across multiple invocations.
+                # This follows LangGraph's "per-thread" persistence pattern.
+                "thread_id": child_thread_id,
                 "context": coordinator.build_context(
                     supervisor_state=dict(state),
                 ),
             }
             child_config["recursion_limit"] = 250
+
+            # ── Pre-seed thread-scoped memories ───────────────────
+            if child_store is not None:
+                import os
+                _org = os.getenv("ORG_NAME", "default_org")
+                global_ns = (_org,)
+                thread_ns = (_org, child_thread_id)
+                try:
+                    global_items = await child_store.asearch(global_ns)
+                    for item in global_items:
+                        existing = await child_store.aget(thread_ns, item.key)
+                        if existing is None:
+                            await child_store.aput(thread_ns, item.key, item.value)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        f"Failed to pre-seed thread-scoped store namespace: {exc}",
+                        extra={"thread_id": child_thread_id},
+                    )
 
             # ── Invoke deep agent ─────────────────────────────────
             try:
@@ -977,7 +1011,12 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                     child_dict = cast("dict[str, Any]", dict(final_state))
 
                 payload_out = coordinator.output_transform(child_dict)
-                final_msg = payload_out.get("final_message", f"{node_name} completed.")
+                # CoordinatorResult contract: prefer summary_text, fall back to final_message
+                final_msg = (
+                    payload_out.get("summary_text")
+                    or payload_out.get("final_message")
+                    or f"{node_name} completed."
+                )
 
                 # ── Escalation from deep agent tool? ──────────────
                 # The escalate_to_supervisor tool sets a structured
@@ -1016,7 +1055,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
 
                     return {
                         output_key: {
-                            "final_message": esc_reason,
+                            "summary_text": esc_reason,
                             "status": "escalated",
                         },
                         "user_query": esc_user_req,
@@ -1056,7 +1095,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
 
                     result_payload = {
                         k: v for k, v in payload_out.items()
-                        if k not in ("final_message", "handoff_request")
+                        if k not in ("summary_text", "final_message", "handoff_request")
                     }
                     handoff_result = HandoffResult(
                         source_agent=tool_name,
@@ -1098,8 +1137,33 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                     "status": "completed",
                     "workflow_state": wf,
                     "workflow_complete": wf.workflow_complete,
-                    "messages": [HumanMessage(content=final_msg)],
                 }
+                # CoordinatorResult contract: persist structured UI
+                # payload for frontend replay (tables, cards, etc.)
+                coord_ui_payload = payload_out.get("ui_payload")
+                if coord_ui_payload:
+                    update["ui_payload"] = coord_ui_payload
+
+                # IMPORTANT: Propagate the deep agent's messages to the supervisor's
+                # message ledger so that UI history reconstruction on reload works.
+                # Without this, the deep agent's tool calls and A2UI ops are lost on refresh.
+                artifacts = payload_out.get("artifacts", {})
+                if "messages" in artifacts:
+                    filtered_msgs = []
+                    for m in artifacts["messages"]:
+                        # Exclude the artificial HumanMessage injected by input_transform
+                        if isinstance(m, HumanMessage):
+                            continue
+                        # Or if it's a raw dict from a previous checkpoint
+                        if isinstance(m, dict) and m.get("type") == "human":
+                            continue
+                        filtered_msgs.append(m)
+                        
+                    if filtered_msgs:
+                        update["messages"] = filtered_msgs
+
+                # CoordinatorResult contract: domain_summary for the
+                # cross-domain blackboard
                 if "domain_summary" in payload_out:
                     update["domain_summaries"] = [payload_out["domain_summary"]]
                 return update
@@ -1160,7 +1224,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 "error_state": {},
                 "pending_feedback_requests": {},
                 "dialog_state": clear_stack[0] if clear_stack else [],
-                "messages": [HumanMessage(content=resume_str)],
+                "messages": [HumanMessage(content=resume_str, id=str(_uuid.uuid4()))],
                 "user_query": resume_str,
                 "status": "pending",
             }
@@ -1182,10 +1246,92 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         return {
             "error_state": {},
             "pending_feedback_requests": {},
-            "messages": [HumanMessage(content=resume_str)],
+            "messages": [HumanMessage(content=resume_str, id=str(_uuid.uuid4()))],
             "user_query": resume_str,
             "status": "pending",
         }
+
+    # ── Phase 4: Summarization & Memory Management ─────────────────────
+
+    # Messages threshold — summarize once this count is exceeded
+    MAX_MESSAGES_BEFORE_SUMMARY: int = 20
+    # Number of recent messages to keep after summarization
+    KEEP_RECENT_MESSAGES: int = 4
+
+    async def _summarize_conversation_node(
+        self, state: dict[str, Any], config: RunnableConfig,
+    ) -> dict[str, Any]:
+        """Phase 4: Summarize conversation and prune old messages.
+
+        Follows the canonical LangGraph pattern:
+        1. If messages exceed threshold, summarize with LLM
+        2. Store running summary in ``conversation_summary``
+        3. Delete all but the N most recent messages with ``RemoveMessage``
+        4. If below threshold, no-op (pass through)
+
+        This node runs before ``finalize_response`` to keep checkpoints lean.
+        """
+        messages = state.get("messages", [])
+
+        # Below threshold — no summarization needed
+        if len(messages) <= self.MAX_MESSAGES_BEFORE_SUMMARY:
+            return {}
+
+        logger.info(
+            "Message count exceeded threshold — summarizing",
+            extra={"message_count": len(messages), "threshold": self.MAX_MESSAGES_BEFORE_SUMMARY},
+        )
+
+        # Get existing summary for incremental extension
+        existing_summary = state.get("conversation_summary", "") or ""
+
+        # Build summarization prompt
+        if existing_summary:
+            summary_prompt = (
+                f"This is the running summary of the conversation so far:\n"
+                f"{existing_summary}\n\n"
+                f"Extend this summary by incorporating the new messages above. "
+                f"Keep the summary concise (3-5 sentences) and focused on: "
+                f"what the user asked for, what operations were performed, "
+                f"and what the current state of their request is."
+            )
+        else:
+            summary_prompt = (
+                "Create a concise summary (3-5 sentences) of the conversation above. "
+                "Focus on: what the user asked for, what Kubernetes operations were "
+                "performed, what coordinators were involved, and the current state."
+            )
+
+        try:
+            # Use the supervisor's LLM to summarize
+            summary_messages = messages + [HumanMessage(content=summary_prompt)]
+            response = await self.model.ainvoke(summary_messages)
+            new_summary = response.content if hasattr(response, "content") else str(response)
+
+            # Prune: delete all but the most recent messages
+            delete_messages = [
+                RemoveMessage(id=m.id)
+                for m in messages[:-self.KEEP_RECENT_MESSAGES]
+                if hasattr(m, "id") and m.id
+            ]
+
+            logger.info(
+                "Conversation summarized",
+                extra={
+                    "summary_length": len(new_summary),
+                    "messages_pruned": len(delete_messages),
+                    "messages_kept": self.KEEP_RECENT_MESSAGES,
+                },
+            )
+
+            return {
+                "conversation_summary": new_summary,
+                "messages": delete_messages,
+            }
+
+        except Exception:  # noqa: BLE001
+            logger.warning("Summarization failed — skipping prune", exc_info=True)
+            return {}
 
     async def _finalize_response_node(
         self, state: dict[str, Any], config: RunnableConfig,
@@ -1199,6 +1345,59 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
 
     # ── Legacy tools removed ─────────────────────────────────────────
 
+    # ── Serialization allowlist helper ─────────────────────────────────
+
+    def _apply_serialization_allowlist(self) -> None:
+        """Register Pydantic state types for checkpoint serialization."""
+        try:
+            self.memory = self.memory.with_allowlist([  # type: ignore[assignment]
+                ("k8s_autopilot.core.state.base", "SupervisorWorkflowState"),
+                ("k8s_autopilot.core.state.supervisor_state", "SupervisorWorkflowState"),
+                ("k8s_autopilot.core.state.helm_planner_state", "HelmPlannerWorkflowState"),
+            ])
+        except Exception:  # noqa: BLE001
+            pass  # Older LangGraph without with_allowlist — warning only
+
+    # ── Async PostgreSQL checkpointer upgrade ─────────────────────────
+
+    async def _ensure_async_checkpointer(self) -> None:
+        """Lazily upgrade from MemorySaver to AsyncPostgresSaver.
+
+        Called once before the first stream() invocation.  If PostgreSQL
+        is configured and reachable, the graph is recompiled with the
+        async checkpointer.  Otherwise, MemorySaver is kept (graceful
+        degradation — no crash).
+        """
+        if self._async_checkpointer_ready:
+            return
+        self._async_checkpointer_ready = True  # Only attempt once
+
+        try:
+            from k8s_autopilot.core.hitl.checkpointer import (  # noqa: PLC0415
+                get_async_checkpointer,
+            )
+
+            checkpointer = await get_async_checkpointer(
+                config=self._config_for_postgres,
+            )
+            if checkpointer is not None:
+                self.memory = checkpointer
+                self._apply_serialization_allowlist()
+                self._graph = self._build_supervisor_graph()
+                logger.info(
+                    "Checkpointer upgraded to AsyncPostgresSaver",
+                    extra={"checkpointer_type": type(self.memory).__name__},
+                )
+            else:
+                logger.info(
+                    "No async checkpointer available — keeping MemorySaver",
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "AsyncPostgresSaver upgrade failed — keeping MemorySaver",
+                extra={"error": str(exc)},
+            )
+
     # ── Streaming ─────────────────────────────────────────────────────
 
     @log_async
@@ -1210,6 +1409,9 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         use_ui: bool = False,  # noqa: ARG002, FBT001, FBT002
     ) -> AsyncGenerator[AgentResponse, None]:
         """Stream graph execution, yielding AgentResponse objects."""
+        # Lazy-upgrade to PostgreSQL on first call (no-op after first run)
+        await self._ensure_async_checkpointer()
+
         if not self._graph:
             msg = "Supervisor graph not constructed"
             raise RuntimeError(msg)
@@ -1229,7 +1431,13 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
         rec_limit = getattr(self.config_instance, "recursion_limit", 50)
         config = cast(
             "RunnableConfig",
-            {"configurable": {"thread_id": context_id, "recursion_limit": rec_limit}},
+            {
+                "configurable": {
+                    "thread_id": context_id,
+                    "recursion_limit": rec_limit,
+                    "app_config": self.config_instance,
+                }
+            },
         )
 
         async for response in self._run_stream(stream_input, config, context_id, task_id):
@@ -1542,13 +1750,25 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                 metadata={"context_id": context_id, "task_id": task_id, "status": "working"},
             )
 
-        messages = output.get("messages", [])
-        content = ""
-        for msg in reversed(messages):
-            msg_content = _extract_content_text(getattr(msg, "content", ""))
-            if msg_content:
-                content = msg_content
-                break
+        # ── Extract user-facing content ─────────────────────────────
+        # CoordinatorResult contract: prefer summary_text (curated by
+        # the coordinator) over walking messages[-1] (may contain
+        # internal tool chatter or routing artifacts).
+        content = (
+            output.get("summary_text")
+            or output.get("final_message")
+            or ""
+        )
+
+        # Fallback: extract from messages (backward compat for nodes
+        # that don't use CoordinatorResult yet)
+        if not content:
+            messages = output.get("messages", [])
+            for msg in reversed(messages):
+                msg_content = _extract_content_text(getattr(msg, "content", ""))
+                if msg_content:
+                    content = msg_content
+                    break
 
         # Strip internal cross-domain routing metadata — show only
         # the summary text to the end user.
@@ -1842,12 +2062,7 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
             "user_query": query,
             "session_id": context_id,
             "task_id": task_id,
-            "workflow_state": SupervisorWorkflowState(current_phase="requirements"),
             "status": "pending",
-            "dialog_state": [],
-            "active_agent": "",
-            "handoff_request": {},
-            "handoff_result": {},
         }
 
     @staticmethod
@@ -1863,7 +2078,16 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
     @log_sync
     def is_ready(self) -> bool:
         """Check if the supervisor is ready for use."""
-        return bool(self.model and self._graph and (self.agents or self._coordinator))
+        try:
+            model_ok = self.model is not None
+        except Exception:
+            model_ok = False
+        return bool(self._graph and (self.agents or self._coordinator))
+
+    @property
+    def graph(self) -> Any:
+        """Expose the compiled LangGraph graph for state operations."""
+        return self._graph
 
     @log_sync
     def list_agents(self) -> list[str]:

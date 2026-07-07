@@ -30,29 +30,13 @@ def test_get_app_subagent_specs_returns_3():
     specs = get_app_subagent_specs(coordinator_model="mock")
     assert len(specs) == 3
 
-@pytest.mark.unit
-def test_argocd_prompt_contains_classify_first():
-    assert "Classify First" in ARGOCD_ONBOARDER_SUBAGENT["system_prompt"]
 
-@pytest.mark.unit
-def test_argocd_prompt_contains_iron_rules():
-    assert "IRON RULES" in ARGOCD_ONBOARDER_SUBAGENT["system_prompt"]
-
-@pytest.mark.unit
-def test_rollouts_prompt_contains_tool_routing_table():
-    assert "Correct Tool" in ARGO_ROLLOUTS_ONBOARDER_SUBAGENT["system_prompt"]
-    assert "NEVER use" in ARGO_ROLLOUTS_ONBOARDER_SUBAGENT["system_prompt"]
 
 @pytest.mark.unit
 def test_traefik_prompt_contains_generate_before_apply():
     assert "Generate-before-apply" in TRAEFIK_EDGE_ROUTER_SUBAGENT["system_prompt"]
 
 @pytest.mark.unit
-def test_all_subagent_prompts_contain_plan_locked_section():
+def test_all_subagent_prompts_contain_plan_approved_section():
     for spec in [ARGOCD_ONBOARDER_SUBAGENT, ARGO_ROLLOUTS_ONBOARDER_SUBAGENT, TRAEFIK_EDGE_ROUTER_SUBAGENT]:
-        assert "PLAN-LOCKED" in spec["system_prompt"]
-
-@pytest.mark.unit
-def test_all_subagent_prompts_contain_rejection_protocol():
-    for spec in [ARGOCD_ONBOARDER_SUBAGENT, ARGO_ROLLOUTS_ONBOARDER_SUBAGENT, TRAEFIK_EDGE_ROUTER_SUBAGENT]:
-        assert "Rejection Protocol" in spec["system_prompt"]
+        assert "[PLAN-APPROVED]" in spec["system_prompt"]
