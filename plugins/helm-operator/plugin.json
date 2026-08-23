@@ -1,0 +1,13 @@
+{
+  "name": "helm-operator",
+  "version": "0.1.0",
+  "description": "Helm chart lifecycle management — generation, validation, deployment, and GitHub commit operations",
+  "mcp_servers": [
+    "helm_mcp_server",
+    "github_mcp"
+  ],
+  "skills": [
+    "plugins/helm-operator/skills/SKILL.md"
+  ],
+  "memory": "plugins/helm-operator/AGENTS.md"
+}

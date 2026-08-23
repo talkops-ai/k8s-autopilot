@@ -21,11 +21,11 @@ Reference:
 from __future__ import annotations
 
 import json
-import logging
+from k8s_autopilot.utils.logger import AgentLogger
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
+logger = AgentLogger("A2UISchemaLoader")
 
 _SCHEMAS_DIR = Path(__file__).parent / "schemas"
 
@@ -56,7 +56,7 @@ def load_schema(name: str) -> list[dict[str, Any]]:
     with open(path, "r", encoding="utf-8") as fh:
         data = json.load(fh)
 
-    logger.debug("Loaded A2UI schema %s (%d components)", name, len(data))
+    logger.debug(f"Loaded A2UI schema {name} ({len(data):d} components)")
     return data
 
 
@@ -67,14 +67,14 @@ def _load_all_schemas() -> dict[str, list[dict[str, Any]]]:
     """
     schemas: dict[str, list[dict[str, Any]]] = {}
     if not _SCHEMAS_DIR.is_dir():
-        logger.warning("Schemas directory not found: %s", _SCHEMAS_DIR)
+        logger.warning(f"Schemas directory not found: {_SCHEMAS_DIR}")
         return schemas
 
     for path in sorted(_SCHEMAS_DIR.glob("*.json")):
         try:
             schemas[path.stem] = load_schema(path.name)
         except Exception:
-            logger.exception("Failed to load schema %s", path.name)
+            logger.exception(f"Failed to load schema {path.name}")
 
     return schemas
 

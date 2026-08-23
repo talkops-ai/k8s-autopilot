@@ -22,14 +22,14 @@ Reference:
 
 from __future__ import annotations
 
-import logging
+from k8s_autopilot.utils.logger import AgentLogger
 import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
-logger = logging.getLogger(__name__)
+logger = AgentLogger("A2UIDataReduction")
 
 # ── LTTB (Largest-Triangle-Three-Buckets) ─────────────────────────────────
 
@@ -131,7 +131,7 @@ def lttb_downsample(
     # Always include the last point
     result.append({"x": float(timestamps[-1]), "y": float(values[-1])})
 
-    logger.debug("LTTB: %d → %d points", n, len(result))
+    logger.debug(f"LTTB: {n:d} → {len(result):d} points")
     return result
 
 
@@ -259,10 +259,7 @@ def cluster_log_lines(
     templates.sort(key=lambda t: t["count"], reverse=True)
     result = templates[:max_templates]
 
-    logger.debug(
-        "SLCT: %d lines → %d templates (capped at %d)",
-        len(log_lines), len(templates), max_templates,
-    )
+    logger.debug(f"SLCT: {len(log_lines):d} lines → {len(templates):d} templates (capped at {max_templates:d})")
     return result
 
 
@@ -344,7 +341,7 @@ def prune_trace_spans(
 
     result = sorted(kept.values(), key=lambda s: s.get("startTime", 0))
 
-    logger.debug("Span pruning: %d → %d spans", len(spans), len(result))
+    logger.debug(f"Span pruning: {len(spans):d} → {len(result):d} spans")
     return result
 
 

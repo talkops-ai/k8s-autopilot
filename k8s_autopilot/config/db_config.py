@@ -21,7 +21,7 @@ SETTINGS_METADATA = {
     },
     "LLM_MODEL": {
         "display_name": "Standard LLM Model",
-        "description": "Model used for fast validation and formatting tasks (e.g. 'gemini-3.1-flash-lite-preview')."
+        "description": "Model used for fast validation and formatting tasks (e.g. 'gemini-3.1-flash-lite')."
     },
     "LLM_TEMPERATURE": {
         "display_name": "Standard Model Temperature",

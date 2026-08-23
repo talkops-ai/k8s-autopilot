@@ -33,7 +33,7 @@ from k8s_autopilot.core.agents.k8s_operator.middleware import build_k8s_operator
 import k8s_autopilot.core.agents.profiles  # noqa: F401 — side-effect registration
 from k8s_autopilot.core.agents.profiles import register_domain_profiles
 register_domain_profiles("k8s")
-from k8s_autopilot.utils.memory import K8sBackendMixin, get_project_root
+from k8s_autopilot.core.backend import K8sBackendMixin, get_project_root
 from k8s_autopilot.utils.logger import AgentLogger
 from k8s_autopilot.utils.domain_summary import extract_domain_summary
 from k8s_autopilot.core.state.handoff_contracts import extract_handoff_from_text
@@ -124,15 +124,22 @@ class K8sOperatorCoordinator(BaseDeepAgent):
         return [user_input, log_operation, escalate]
 
     def get_skill_paths(self) -> List[str]:
-        return [
-            "/skills/k8s-operator/kubernetes-cluster-ops",
-        ]
+        from k8s_autopilot.core.skills.registry import get_skill_registry
+        registry = get_skill_registry()
+        paths = registry.get_skill_sources_for_domain("k8s-operator")
+        paths.extend(registry.get_skill_sources_for_domain("global"))
+        paths.extend(registry.get_skill_sources_for_domain("shared"))
+        return paths
 
     def get_memory_paths(self) -> List[str]:
-        return [
-            "/memories/k8s-operator/AGENTS.md",
-            "/memories/k8s-operator/hitl-policies.md",
-        ]
+        from k8s_autopilot.core.memory import get_memory_registry
+        registry = get_memory_registry()
+        paths = []
+        paths.extend(registry.get_memory_paths_for_domain_and_role("k8s-operator", "coordinator"))
+        paths.extend(registry.get_memory_paths_for_domain("global"))
+        paths.extend(registry.get_memory_paths_for_domain("project"))
+        paths.extend(registry.get_memory_paths_for_domain("user"))
+        return sorted(paths)
 
     def get_interrupt_config(self) -> Dict[str, Any]:
         return {}

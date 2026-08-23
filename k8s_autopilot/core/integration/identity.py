@@ -32,12 +32,12 @@ Example mapping file::
 from __future__ import annotations
 
 import json
-import logging
+from k8s_autopilot.utils.logger import AgentLogger
 import os
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger(__name__)
+logger = AgentLogger("IdentityIntegration")
 
 
 @dataclass
@@ -89,33 +89,20 @@ class IdentityMapper:
             try:
                 with open(mapping_file) as fh:
                     self._mapping = json.load(fh)
-                    logger.info(
-                        "Loaded identity mapping from file: %s (%d entries)",
-                        mapping_file,
-                        len(self._mapping),
-                    )
+                    logger.info(f"Loaded identity mapping from file: {mapping_file} ({len(self._mapping):d} entries)")
                     return
             except (FileNotFoundError, json.JSONDecodeError) as exc:
-                logger.warning(
-                    "Failed to load identity mapping file %s: %s",
-                    mapping_file,
-                    exc,
-                )
+                logger.warning(f"Failed to load identity mapping file {mapping_file}: {exc}")
 
         # Priority 2: Inline JSON string
         mapping_str = os.getenv("IDENTITY_MAPPING")
         if mapping_str:
             try:
                 self._mapping = json.loads(mapping_str)
-                logger.info(
-                    "Loaded identity mapping from IDENTITY_MAPPING env (%d entries)",
-                    len(self._mapping),
-                )
+                logger.info(f"Loaded identity mapping from IDENTITY_MAPPING env ({len(self._mapping):d} entries)")
                 return
             except json.JSONDecodeError as exc:
-                logger.warning(
-                    "Failed to parse IDENTITY_MAPPING env: %s", exc,
-                )
+                logger.warning(f"Failed to parse IDENTITY_MAPPING env: {exc}")
 
         logger.info("No identity mapping configured — using default viewer role")
 

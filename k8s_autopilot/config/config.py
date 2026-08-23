@@ -186,12 +186,19 @@ def _inject_thinking_kwargs(
 
     if norm in ("google_genai", "gemini"):
         kwargs["include_thoughts"] = True
-        if budget is not None:
-            # Gemini 2.5: thinking_budget (token count)
-            # Gemini 3.x: thinking_level takes precedence
-            # Let LangChain pick the right one — if both are set the
-            # adapter resolves automatically.
-            kwargs["thinking_budget"] = budget
+        is_gemini_2_5 = "2.5" in model
+        if is_gemini_2_5:
+            if budget is not None:
+                kwargs["thinking_budget"] = budget
+        else:
+            kwargs["thinking_level"] = "medium"
+            if budget is not None:
+                if budget <= 1024:
+                    kwargs["thinking_level"] = "low"
+                elif budget <= 4096:
+                    kwargs["thinking_level"] = "medium"
+                else:
+                    kwargs["thinking_level"] = "high"
 
     elif norm in ("anthropic", "bedrock", "aws_bedrock", "bedrock_converse"):
         # Anthropic Claude 3.5+ / Bedrock Converse
@@ -276,14 +283,25 @@ class Config:
         # Freeze the internal dict
         self._store: dict[str, Any] = store
 
-        # Sync key env vars to os.environ so third-party libraries (e.g. LangChain, Google SDK) pick them up
+        # Sync all config values to os.environ so third-party libraries and spawned subprocesses automatically inherit them
         for k, v in self._store.items():
-            if k.startswith(("LANGCHAIN_", "LANGGRAPH_", "GOOGLE_", "OPENAI_", "ANTHROPIC_", "AZURE_", "AWS_")):
-                if v is not None and v != "":
-                    if isinstance(v, bool):
-                        os.environ[k] = "true" if v else "false"
-                    else:
-                        os.environ[k] = str(v)
+            if v is not None and v != "":
+                if isinstance(v, bool):
+                    os.environ[k] = "true" if v else "false"
+                elif isinstance(v, (list, dict)):
+                    os.environ[k] = json.dumps(v)
+                else:
+                    os.environ[k] = str(v)
+
+        # ── Safety-gate validation (advisory — never crashes) ─────────────
+        # Mirrors dcode's "log + fallback on bad values" pattern.
+        self._validation_warnings: list[str] = []
+        try:
+            from k8s_autopilot.config.schema import validate_config
+            self._validation_warnings = validate_config(self._store)
+        except Exception:
+            # Schema module itself failed to import — skip validation entirely
+            pass
 
     async def reload(self) -> None:
         """Fetch all settings from the database and refresh the overrides cache."""
@@ -317,14 +335,15 @@ class Config:
             with self._lock:
                 self._db_overrides = new_overrides
                 self._db_mcp_server_ids = new_mcp_server_ids
-                # Sync key env vars to os.environ so third-party libraries (e.g. LangChain, Google SDK) pick them up
+                # Sync all dynamic database overrides to os.environ so that third-party libraries and subprocesses dynamically pick them up
                 for k, v in self._db_overrides.items():
-                    if k.startswith(("LANGCHAIN_", "LANGGRAPH_", "GOOGLE_", "OPENAI_", "ANTHROPIC_", "AZURE_", "AWS_")):
-                        if v is not None and v != "":
-                            if isinstance(v, bool):
-                                os.environ[k] = "true" if v else "false"
-                            else:
-                                os.environ[k] = str(v)
+                    if v is not None and v != "":
+                        if isinstance(v, bool):
+                            os.environ[k] = "true" if v else "false"
+                        elif isinstance(v, (list, dict)):
+                            os.environ[k] = json.dumps(v)
+                        else:
+                            os.environ[k] = str(v)
         except Exception:
             # Silently degrade if DB is not ready/reachable yet
             pass
@@ -376,6 +395,23 @@ class Config:
             return self[key]
         except KeyError:
             return default
+
+    @property
+    def validation_warnings(self) -> List[str]:
+        """Return any validation warnings from startup.
+
+        Returns an empty list if validation passed or was skipped.
+        """
+        return getattr(self, "_validation_warnings", [])
+
+    def validate(self) -> List[str]:
+        """Re-run Pydantic validation against the current resolved store.
+
+        Returns:
+            A list of human-readable validation warning strings.
+        """
+        from k8s_autopilot.config.schema import validate_config
+        return validate_config(self._get_merged_store())
 
     # ── LLM config properties (DRY — single builder) ─────────────────────
 

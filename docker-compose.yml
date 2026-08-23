@@ -114,7 +114,7 @@ services:
       - K8S_AGENT_URL=http://localhost:10102
       - TALKOPS_ENABLE_LOGGING=false
     ports:
-      - "8080:80"
+      - "8888:80"
     depends_on:
       - k8s-autopilot
     restart: unless-stopped

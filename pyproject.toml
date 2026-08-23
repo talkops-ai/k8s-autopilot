@@ -23,6 +23,8 @@ dependencies = [
     "loguru>=0.7.3",
     "pydantic>=2.12.5",
     "uvicorn>=0.42.0",
+    "tavily-python>=0.7.26",
+    "markdownify>=1.2.3",
 ]
 
 license = {text = "Apache-2.0"}
@@ -57,6 +59,13 @@ interpreter = [
 slack = [
     "slack-bolt>=1.22.0",
     "slack-sdk>=3.35.0",
+]
+sandboxes = [
+    "langchain-daytona",
+    "langchain-modal",
+    "langchain-runloop",
+    "langchain-vercel-sandbox",
+    "langchain-agentcore-codeinterpreter",
 ]
 
 [project.urls]

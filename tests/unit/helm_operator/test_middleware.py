@@ -1,16 +1,29 @@
 import pytest
 from langchain_core.messages import SystemMessage
 from langchain.agents.middleware import AgentState
+from k8s_autopilot.core.middleware.operation_context import OperationContextMiddleware
 from typing import cast
 
-from k8s_autopilot.core.agents.helm_operator.middleware import (
-    OperationContextMiddleware,
-    build_k8s_middleware,
-)
+from unittest.mock import patch, MagicMock
+
+@pytest.fixture(autouse=True)
+def mock_genai_model():
+    mock_result = MagicMock()
+    mock_result.model_name = "fake-model"
+    mock_result.provider = "google_genai"
+    mock_result.context_limit = 1000000
+    mock_result.unsupported_modalities = frozenset()
+    mock_result.model = MagicMock()
+    
+    with patch("k8s_autopilot.core.agents.helm_operator.coordinator.create_model_with_result", return_value=mock_result):
+        yield mock_result
 
 
 def test_operation_context_middleware_injects_system_message():
-    middleware = OperationContextMiddleware()
+    middleware = OperationContextMiddleware(
+        log_path="/memories/helm-operator/operations-log.md",
+        prefix="Helm",
+    )
     state = {
         "files": {
             "/memories/helm-operator/operations-log.md": {
@@ -26,7 +39,10 @@ def test_operation_context_middleware_injects_system_message():
 
 
 def test_operation_context_middleware_returns_none_when_empty_log():
-    middleware = OperationContextMiddleware()
+    middleware = OperationContextMiddleware(
+        log_path="/memories/helm-operator/operations-log.md",
+        prefix="Helm",
+    )
     state = {"files": {}}
     result = middleware.before_model(cast(AgentState, state), runtime=None)
     assert result is None
@@ -44,7 +60,10 @@ def test_operation_context_middleware_returns_none_when_empty_log():
 
 @pytest.mark.asyncio
 async def test_operation_context_middleware_async_delegates_to_sync():
-    middleware = OperationContextMiddleware()
+    middleware = OperationContextMiddleware(
+        log_path="/memories/helm-operator/operations-log.md",
+        prefix="Helm",
+    )
     state = {
         "files": {
             "/memories/helm-operator/operations-log.md": {
@@ -59,33 +78,28 @@ async def test_operation_context_middleware_async_delegates_to_sync():
     assert result_async["messages"][0].content == result_sync["messages"][0].content
 
 
-def test_build_k8s_middleware_includes_operation_context_first(mock_config):
-    middleware_stack = build_k8s_middleware(config=mock_config)
-    assert middleware_stack[0].__class__.__name__ == "OperationContextMiddleware"
+from k8s_autopilot.core.agents.helm_operator.coordinator import HelmOperatorCoordinator
 
 
-def test_build_k8s_middleware_respects_write_file_limit(mock_config):
-    middleware_stack = build_k8s_middleware(config=mock_config)
+def test_build_coordinator_middleware_excludes_operation_context(mock_config):
+    coordinator = HelmOperatorCoordinator(config=mock_config)
+    middleware_stack = coordinator._build_middleware()
+    names = [m.__class__.__name__ for m in middleware_stack]
+    assert "OperationContextMiddleware" not in names
+
+
+def test_build_coordinator_middleware_respects_write_file_limit(mock_config):
+    coordinator = HelmOperatorCoordinator(config=mock_config)
+    middleware_stack = coordinator._build_middleware()
     tool_limit_middlewares = [m for m in middleware_stack if m.__class__.__name__ == "ToolCallLimitMiddleware"]
     assert any(m.run_limit == 20 for m in tool_limit_middlewares) # Default write limit
 
 
-def test_build_k8s_middleware_respects_model_call_limit(mock_config):
-    middleware_stack = build_k8s_middleware(config=mock_config)
+def test_build_coordinator_middleware_respects_model_call_limit(mock_config):
+    coordinator = HelmOperatorCoordinator(config=mock_config)
+    middleware_stack = coordinator._build_middleware()
     model_limit_middlewares = [m for m in middleware_stack if m.__class__.__name__ == "ModelCallLimitMiddleware"]
     assert any(m.run_limit == 40 for m in model_limit_middlewares) # Default model limit
-
-
-def test_build_k8s_middleware_excludes_retry_by_default(mock_config):
-    middleware_stack = build_k8s_middleware(config=mock_config)
-    retry_middlewares = [m for m in middleware_stack if m.__class__.__name__ == "ToolRetryMiddleware"]
-    assert len(retry_middlewares) == 0
-
-
-def test_build_k8s_middleware_includes_retry_when_enabled(mock_config):
-    middleware_stack = build_k8s_middleware(config=mock_config, enable_tool_retry=True)
-    retry_middlewares = [m for m in middleware_stack if m.__class__.__name__ == "ToolRetryMiddleware"]
-    assert len(retry_middlewares) == 1
 
 
 class TestApprovalDescription:
@@ -115,15 +129,24 @@ class TestApprovalDescription:
         assert "UNINSTALL" in desc
         assert "⚠️" in desc
 
-    def test_build_helm_hitl_middleware_gates_install(self):
-        from k8s_autopilot.core.agents.helm_operator.middleware import build_helm_hitl_middleware
-        mw = build_helm_hitl_middleware()
-        assert "helm_install_chart" in mw.interrupt_on
+    def _get_helm_operation_spec(self):
+        from k8s_autopilot.core.agents.registry import list_subagents, get_domain_agents_dir
+        from k8s_autopilot.core.agents.helm_operator.middleware import build_dynamic_subagent_spec
 
-    def test_build_helm_hitl_middleware_allows_approve_edit_reject_for_install(self):
-        from k8s_autopilot.core.agents.helm_operator.middleware import build_helm_hitl_middleware
-        mw = build_helm_hitl_middleware()
-        val = mw.interrupt_on["helm_install_chart"]
+        agents_dir = get_domain_agents_dir("helm-operator")
+        metas = list_subagents(agents_dirs=[agents_dir])
+        meta = next((m for m in metas if m.name == "helm-operation"), None)
+        assert meta is not None, "Could not find helm-operation subagent"
+        return build_dynamic_subagent_spec(meta)
+
+    def test_dynamic_hitl_gates_install(self):
+        spec = self._get_helm_operation_spec()
+        assert "interrupt_on" in spec
+        assert "helm_install_chart" in spec["interrupt_on"]
+
+    def test_dynamic_hitl_allows_approve_edit_reject_for_install(self):
+        spec = self._get_helm_operation_spec()
+        val = spec["interrupt_on"]["helm_install_chart"]
         if hasattr(val, "allowed_decisions"):
             assert "approve" in val.allowed_decisions
             assert "edit" in val.allowed_decisions
@@ -131,10 +154,9 @@ class TestApprovalDescription:
         elif isinstance(val, dict) and "allowed_decisions" in val:
             assert "approve" in val["allowed_decisions"]
 
-    def test_build_helm_hitl_middleware_only_approve_reject_for_rollback(self):
-        from k8s_autopilot.core.agents.helm_operator.middleware import build_helm_hitl_middleware
-        mw = build_helm_hitl_middleware()
-        val = mw.interrupt_on["helm_rollback_release"]
+    def test_dynamic_hitl_only_approve_reject_for_rollback(self):
+        spec = self._get_helm_operation_spec()
+        val = spec["interrupt_on"]["helm_rollback_release"]
         if hasattr(val, "allowed_decisions"):
             assert "approve" in val.allowed_decisions
             assert "reject" in val.allowed_decisions

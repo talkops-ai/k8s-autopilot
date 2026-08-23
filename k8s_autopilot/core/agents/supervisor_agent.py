@@ -1656,7 +1656,12 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
                     # Track final output from finalize_response or last node
                     for node_name, update in chunk_data.items():
                         if isinstance(update, dict):
-                            _final_output.update(update)
+                            # Don't let RemoveMessage lists overwrite real messages in final output
+                            if "messages" in update and any(isinstance(m, RemoveMessage) for m in update["messages"]):
+                                filtered_update = {k: v for k, v in update.items() if k != "messages"}
+                                _final_output.update(filtered_update)
+                            else:
+                                _final_output.update(update)
 
             # ── Post-stream: interrupt detection ──────────────────
             if _interrupt_payload:
@@ -1759,6 +1764,14 @@ class k8sAutopilotSupervisorAgent(BaseAgent):  # noqa: N801
             or output.get("final_message")
             or ""
         )
+
+        # Look in nested coordinator outputs (e.g. helm_operator_output, etc.)
+        if not content:
+            for val in output.values():
+                if isinstance(val, dict):
+                    content = val.get("summary_text") or val.get("final_message") or ""
+                    if content:
+                        break
 
         # Fallback: extract from messages (backward compat for nodes
         # that don't use CoordinatorResult yet)

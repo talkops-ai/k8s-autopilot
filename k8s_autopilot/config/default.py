@@ -41,6 +41,27 @@ class DefaultConfig:
     LLM_DEEPAGENT_THINKING_ENABLED: bool = False
     LLM_DEEPAGENT_THINKING_BUDGET: Optional[int] = None
 
+    # ── LLM: Reasoning Effort (provider-agnostic) ────────────────────────
+    # Generic reasoning effort level mapped to provider-specific kwargs
+    # by ModelCapabilityRegistry at runtime.
+    # Values: "low", "medium", "high", or None (provider default).
+    LLM_REASONING_EFFORT: Optional[str] = None
+    LLM_DEEPAGENT_REASONING_EFFORT: Optional[str] = None
+
+    # ── Conversation Compaction ───────────────────────────────────────────
+    # Token budget before compaction triggers (75% threshold).
+    # Full history is offloaded to /conversation_history/{thread_id}.md
+    # via CompositeBackend before replacing messages with summary + tail.
+    COMPACTION_TOKEN_BUDGET: int = 100_000
+    COMPACTION_KEEP_MESSAGES: int = 6
+    COMPACTION_SUMMARY_MODEL: Optional[str] = None
+
+    # ── Rubric Evaluation (Goal-Driven Self-Repair) ──────────────────────
+    # Model used by RubricEvaluatorMiddleware to grade agent output.
+    # Falls back to LLM_MODEL (standard tier) — intentionally cheap.
+    RUBRIC_GRADER_MODEL: Optional[str] = None
+    RUBRIC_MAX_ITERATIONS: int = 3
+
     # ── PostgreSQL (LangGraph session persistence) ─────────────────────
     POSTGRES_URI: Optional[str] = None
 
@@ -59,6 +80,14 @@ class DefaultConfig:
 
     # ── LangGraph ─────────────────────────────────────────────────────────
     RECURSION_LIMIT: int = 50
+
+    # ── Execution Sandbox ──────────────────────────────────────────────────
+    K8S_SANDBOX_PROVIDER: str = "local"
+    K8S_SANDBOX_ID: Optional[str] = None
+    K8S_SANDBOX_IMAGE: Optional[str] = None
+    K8S_SANDBOX_SETUP_SCRIPT: Optional[str] = None
+    K8S_SANDBOX_SNAPSHOT: Optional[str] = None
+    K8S_SANDBOX_SYNC_WORKSPACE: bool = True
 
     # ── Supervisor Context Engineering ────────────────────────────────
     # Controls the supervisor's context summarization middleware.
@@ -201,6 +230,15 @@ class DefaultConfig:
     TEMPO_BASE_URL: str = "http://localhost:3200"
     ALERTMANAGER_BASE_URL: str = "http://alertmanager-operated.monitoring.svc:9093"
     HELM_WORKSPACE: str = "./workspace/helm-charts"
+    AGENT_PROJECT_ROOT: Optional[str] = None
+    TALKOPS_ORG_ID: str = "default"
+    ORG_NAME: str = "default_org"
+    GITHUB_REPO: Optional[str] = None
+    GITHUB_BRANCH: str = "main"
+    ENVIRONMENT: str = "development"
+    K8S_CONTEXT: Optional[str] = None
+    KUBECONFIG: Optional[str] = None
+    K8S_DEFAULT_NAMESPACE: str = "default"
     GITHUB_PERSONAL_ACCESS_TOKEN: Optional[str] = None
     ARGOCD_SERVER_URL: Optional[str] = None
     ARGOCD_USERNAME: Optional[str] = None
@@ -215,6 +253,11 @@ class DefaultConfig:
     LANGCHAIN_TRACING_V2: bool = False
     LANGCHAIN_PROJECT: str = "k8s-autopilot"
     LANGGRAPH_STRICT_MSGPACK: bool = True
+
+    # ── Web Search Settings ──────────────────────────────────────────────
+    TAVILY_API_KEY: Optional[str] = None
+    TAVILY_MAX_RESULTS: int = 5
+    WEB_SEARCH_TIMEOUT: int = 30
 
     # ── Other Provider API Keys ──────────────────────────────────────────
     OPENAI_API_KEY: Optional[str] = None

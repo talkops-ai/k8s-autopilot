@@ -88,6 +88,14 @@ def get_k8s_subagent_specs(
 
     coord_model = coordinator_model or ""
 
+    from k8s_autopilot.core.memory import get_memory_registry
+    registry = get_memory_registry()
+    memory_paths = []
+    memory_paths.extend(registry.get_memory_paths_for_domain("k8s-operator"))
+    memory_paths.extend(registry.get_memory_paths_for_domain("global"))
+    memory_paths.extend(registry.get_memory_paths_for_domain("project"))
+    memory_paths.extend(registry.get_memory_paths_for_domain("user"))
+
     return [
         # Kubernetes Cluster Operations sub-agent
         build_mcp_subagent(
@@ -96,6 +104,7 @@ def get_k8s_subagent_specs(
             mcp_resource_server_name="kubernetes_mcp_server",
             include_filesystem=True,
             skill_paths=["/skills/k8s-operator/"],
+            memory_paths=memory_paths,
             hitl_builder=build_k8s_cluster_ops_hitl_middleware,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(

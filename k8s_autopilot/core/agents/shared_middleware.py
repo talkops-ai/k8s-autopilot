@@ -536,3 +536,87 @@ def make_subagent_interpreter_builder(
         return result[0] if result else None
 
     return _builder
+
+
+def build_coordinator_filesystem_middleware(
+    *,
+    domain: str,
+    role: str = "coordinator",
+    virtual_memory_paths: List[str],
+) -> List[Any]:
+    """Build standalone SkillsMiddleware and MemoryMiddleware for a coordinator.
+
+    .. deprecated::
+        Use inline ``SkillsMiddleware`` + ``MemoryMiddleware`` construction
+        in each coordinator's ``_build_middleware()`` method instead.
+        This function has zero callers after the helm operator decoupling.
+
+    Args:
+        domain: Domain name (e.g. 'helm-operator', 'observability', etc.)
+        role: Role subdirectory name under domain (default: 'coordinator')
+        virtual_memory_paths: List of virtual memory paths returned by coordinator.get_memory_paths()
+
+    Returns:
+        List containing SkillsMiddleware (if skill exists) and MemoryMiddleware (if memory files exist).
+    """
+    import warnings
+    warnings.warn(
+        "build_coordinator_filesystem_middleware is deprecated. "
+        "Use inline SkillsMiddleware + MemoryMiddleware in _build_middleware() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from pathlib import Path
+    from deepagents.middleware.skills import SkillsMiddleware
+    from deepagents.middleware.memory import MemoryMiddleware
+    from deepagents.backends.filesystem import FilesystemBackend
+    from k8s_autopilot.core.backend import get_project_root
+
+    root = get_project_root()
+    middleware: List[Any] = []
+
+    # 1. SkillsMiddleware - Coordinator/subagent needs its own skill
+    if role == "coordinator":
+        skills_dir = root / "plugins" / domain / "skills"
+    else:
+        skills_dir = root / "plugins" / domain / "agents" / role / "skills"
+
+    if skills_dir.is_dir():
+        skills_backend = FilesystemBackend(virtual_mode=False)
+        middleware.append(
+            SkillsMiddleware(
+                backend=skills_backend,
+                sources=[str(skills_dir)],
+            )
+        )
+        logger.info(
+            f"Coordinator ({domain}/{role}): SkillsMiddleware added with source {skills_dir}"
+        )
+
+    # 2. MemoryMiddleware
+    from k8s_autopilot.core.memory import get_memory_registry
+    registry = get_memory_registry()
+
+    physical_memory_sources = []
+    for vp in virtual_memory_paths:
+        if not vp:
+            continue
+        phys = registry.resolve_virtual_path(vp)
+        if phys and phys.is_file():
+            physical_memory_sources.append(str(phys))
+
+    if physical_memory_sources:
+        memory_backend = FilesystemBackend(virtual_mode=False)
+        middleware.append(
+            MemoryMiddleware(
+                backend=memory_backend,
+                sources=sorted(list(set(physical_memory_sources))),
+                add_cache_control=True,
+            )
+        )
+        logger.info(
+            f"Coordinator ({domain}/{role}): MemoryMiddleware added with {len(physical_memory_sources)} sources"
+        )
+
+    return middleware
+

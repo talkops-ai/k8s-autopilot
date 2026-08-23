@@ -265,8 +265,17 @@ class AgentLogger:
         task_id: Optional[str] = None,
         context_id: Optional[str] = None,
         extra: Optional[dict[str, Any]] = None,
+        exc_info: Any = None,
+        **kwargs: Any,
     ) -> None:
         """Single code-path that feeds console, file, and websocket."""
+        if exc_info:
+            if exc_info is True:
+                import sys
+                exc_info = sys.exc_info()
+            elif isinstance(exc_info, BaseException):
+                exc_info = (type(exc_info), exc_info, exc_info.__traceback__)
+
         record = self._logger.makeRecord(
             name=self._logger.name,
             level=level,
@@ -274,7 +283,7 @@ class AgentLogger:
             lno=0,
             msg=message,
             args=(),
-            exc_info=None,
+            exc_info=exc_info,
         )
         # Attach agent identity + structured extras to the record
         record.agent_name = self.agent_name  # type: ignore[attr-defined]

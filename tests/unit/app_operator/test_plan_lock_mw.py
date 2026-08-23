@@ -1,6 +1,6 @@
 import pytest
 from langchain_core.messages import SystemMessage
-from k8s_autopilot.core.agents.app_operator.middleware import PlanLockMiddleware
+from k8s_autopilot.core.middleware.plan_lock import PlanLockMiddleware
 
 @pytest.fixture
 def middleware():
@@ -52,4 +52,34 @@ async def test_async_delegates_to_sync(middleware, plan_locked_files):
     sync_result = middleware.before_model(state, None)
     async_result = await middleware.abefore_model(state, None)
     assert sync_result["messages"][0].content == async_result["messages"][0].content
+
+
+@pytest.mark.unit
+def test_todos_formatting_with_title(middleware):
+    state = {
+        "todos": [
+            {"title": "Task 1", "status": "pending"},
+            {"title": "Task 2", "status": "completed"}
+        ]
+    }
+    result = middleware.before_model(state, None)
+    assert result is not None
+    content = result["messages"][0].content
+    assert "⏳ Task 1 (pending)" in content
+    assert "✅ Task 2 (completed)" in content
+
+
+@pytest.mark.unit
+def test_todos_formatting_with_content_fallback(middleware):
+    state = {
+        "todos": [
+            {"content": "Task 1 Content", "status": "pending"},
+            {"content": "Task 2 Content", "status": "completed"}
+        ]
+    }
+    result = middleware.before_model(state, None)
+    assert result is not None
+    content = result["messages"][0].content
+    assert "⏳ Task 1 Content (pending)" in content
+    assert "✅ Task 2 Content (completed)" in content
 

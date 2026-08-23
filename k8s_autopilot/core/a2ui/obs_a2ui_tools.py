@@ -11,7 +11,7 @@ Tools:
 from __future__ import annotations
 
 import json
-import logging
+from k8s_autopilot.utils.logger import AgentLogger
 from typing import Any
 
 from langchain_core.tools import tool as langchain_tool
@@ -28,7 +28,7 @@ from k8s_autopilot.core.a2ui.obs_surface_builder import (
     serialize_a2ui_ops,
 )
 
-logger = logging.getLogger(__name__)
+logger = AgentLogger("ObsA2UITools")
 
 
 @langchain_tool
@@ -62,7 +62,7 @@ def build_obs_a2ui(kind: str, data: str, runtime: ToolRuntime) -> str:
             if isinstance(msg, ToolMessage) and msg.name != "build_obs_a2ui":
                 if isinstance(msg.artifact, dict) and "a2ui_buffered_data" in msg.artifact:
                     parsed = msg.artifact["a2ui_buffered_data"]
-                    logger.debug("build_obs_a2ui: Successfully loaded buffered data from tool: %s", msg.name)
+                    logger.debug(f"build_obs_a2ui: Successfully loaded buffered data from tool: {msg.name}")
                     break
         if parsed is None:
             return json.dumps({"error": "Failed to find buffered A2UI data in previous tool messages."})
@@ -70,7 +70,7 @@ def build_obs_a2ui(kind: str, data: str, runtime: ToolRuntime) -> str:
         try:
             parsed = json.loads(data) if isinstance(data, str) else data
         except json.JSONDecodeError as e:
-            logger.error("build_obs_a2ui: invalid JSON data: %s", e)
+            logger.error(f"build_obs_a2ui: invalid JSON data: {e}")
             return json.dumps({"error": f"Invalid JSON: {e}"})
 
     title = parsed.get("title", kind.capitalize())
@@ -119,7 +119,7 @@ def build_obs_a2ui(kind: str, data: str, runtime: ToolRuntime) -> str:
         return serialize_a2ui_ops(ops)
 
     except Exception as e:
-        logger.exception("build_obs_a2ui failed for kind=%s", kind)
+        logger.exception(f"build_obs_a2ui failed for kind={kind}")
         return json.dumps({"error": f"Surface builder failed: {e}"})
 
 
@@ -148,7 +148,7 @@ def build_obs_dashboard(kind: str, data: str, runtime: ToolRuntime) -> str:
             if isinstance(msg, ToolMessage) and msg.name != "build_obs_dashboard":
                 if isinstance(msg.artifact, dict) and "a2ui_buffered_data" in msg.artifact:
                     parsed = msg.artifact["a2ui_buffered_data"]
-                    logger.debug("build_obs_dashboard: Successfully loaded buffered data from tool: %s", msg.name)
+                    logger.debug(f"build_obs_dashboard: Successfully loaded buffered data from tool: {msg.name}")
                     break
         if parsed is None:
             return json.dumps({"error": "Failed to find buffered dashboard data in previous tool messages."})
@@ -156,7 +156,7 @@ def build_obs_dashboard(kind: str, data: str, runtime: ToolRuntime) -> str:
         try:
             parsed = json.loads(data) if isinstance(data, str) else data
         except json.JSONDecodeError as e:
-            logger.error("build_obs_dashboard: invalid JSON data: %s", e)
+            logger.error(f"build_obs_dashboard: invalid JSON data: {e}")
             return json.dumps({"error": f"Invalid JSON: {e}"})
 
     try:

@@ -13,11 +13,19 @@ async def test_list_releases_calls_helm_operation(mock_config, memory_saver, in_
         def bind_tools(self, tools, **kwargs): return self
 
     fake = BindableFakeModel(responses=[
-        AIMessage(content="", tool_calls=[{"name": "helm-operation", "args": {}, "id": "tc1"}]),
+        AIMessage(content="", tool_calls=[{"name": "task", "args": {"subagent_type": "helm-operation", "description": "List all Helm releases"}, "id": "tc1"}]),
         AIMessage(content="Done", tool_calls=[])
     ])
 
-    with patch("k8s_autopilot.utils.llm.create_model", return_value=fake):
+    from k8s_autopilot.utils.llm import ModelResult
+    mock_result = ModelResult(
+        model=fake,
+        model_name="fake-model",
+        provider="google_genai",
+        context_limit=1000000,
+        unsupported_modalities=frozenset(),
+    )
+    with patch("k8s_autopilot.core.agents.helm_operator.coordinator.create_model_with_result", return_value=mock_result):
         fake_agent = MockSubAgent(name="helm-operation", response_content="List of releases")
         fake_operation = {"name": "helm-operation", "description": "mock", "runnable": fake_agent}
         coordinator = HelmOperatorCoordinator(config=mock_config)
@@ -35,10 +43,7 @@ async def test_list_releases_calls_helm_operation(mock_config, memory_saver, in_
             "messages": [HumanMessage(content="List all Helm releases")],
         }
 
-        try:
-            await agent.ainvoke(initial_state, config=config)
-        except Exception:
-            pass
+        await agent.ainvoke(initial_state, config=config)
         
         snapshot = agent.get_state(config)
         messages = snapshot.values.get("messages", [])

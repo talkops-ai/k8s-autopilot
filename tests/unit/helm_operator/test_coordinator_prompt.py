@@ -11,12 +11,7 @@ from k8s_autopilot.core.agents.helm_operator.coordinator import HELM_COORDINATOR
 
 @pytest.mark.unit
 @pytest.mark.parametrize("subagent_name", [
-    "helm-planner",
-    "helm-skill-builder",
-    "helm-generator",
-    "helm-updater",
-    "helm-validator",
-    "github-agent",
+    "helm-coder",
     "helm-operation",
 ])
 def test_contains_all_subagent_names(subagent_name):

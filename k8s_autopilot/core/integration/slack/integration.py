@@ -12,7 +12,7 @@ Orchestrates the full pipeline:
 
 from __future__ import annotations
 
-import logging
+from k8s_autopilot.utils.logger import AgentLogger
 import time
 from collections import OrderedDict
 from typing import Any
@@ -34,7 +34,7 @@ from k8s_autopilot.core.integration.slack.mrkdwn import md_to_mrkdwn
 from k8s_autopilot.core.integration.slack.operation_gate import SlackOperationGate
 from k8s_autopilot.core.integration.slack.stream_sink import SlackStreamSink
 
-logger = logging.getLogger(__name__)
+logger = AgentLogger("SlackIntegration")
 
 
 class SlackMessagingIntegration(MessagingIntegration):

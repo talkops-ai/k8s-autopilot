@@ -175,6 +175,14 @@ def get_obs_subagent_specs(
 
     a2ui_builder = make_a2ui_buffer_builder()
 
+    from k8s_autopilot.core.memory import get_memory_registry
+    registry = get_memory_registry()
+    memory_paths = []
+    memory_paths.extend(registry.get_memory_paths_for_domain("observability"))
+    memory_paths.extend(registry.get_memory_paths_for_domain("global"))
+    memory_paths.extend(registry.get_memory_paths_for_domain("project"))
+    memory_paths.extend(registry.get_memory_paths_for_domain("user"))
+
     return [
         # Prometheus sub-agent — filesystem + skills + PTC interpreter
         build_mcp_subagent(
@@ -186,6 +194,7 @@ def get_obs_subagent_specs(
                 "/skills/observability/prometheus/",
                 "/skills/observability/response-formats/",
             ],
+            memory_paths=memory_paths,
             hitl_builder=build_prometheus_hitl_middleware,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(
@@ -205,6 +214,7 @@ def get_obs_subagent_specs(
                 "/skills/observability/alertmanager/",
                 "/skills/observability/response-formats/",
             ],
+            memory_paths=memory_paths,
             hitl_builder=build_alertmanager_hitl_middleware,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(
@@ -224,6 +234,7 @@ def get_obs_subagent_specs(
                 "/skills/observability/opentelemetry/",
                 "/skills/observability/response-formats/",
             ],
+            memory_paths=memory_paths,
             hitl_builder=build_opentelemetry_hitl_middleware,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(
@@ -243,6 +254,7 @@ def get_obs_subagent_specs(
                 "/skills/observability/loki/",
                 "/skills/observability/response-formats/",
             ],
+            memory_paths=memory_paths,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(
                     ptc_allowlist=LOKI_PTC_ALLOWLIST,
@@ -261,6 +273,7 @@ def get_obs_subagent_specs(
                 "/skills/observability/tempo/",
                 "/skills/observability/response-formats/",
             ],
+            memory_paths=memory_paths,
             hitl_builder=build_tempo_hitl_middleware,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(

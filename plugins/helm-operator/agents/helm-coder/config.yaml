@@ -1,0 +1,26 @@
+name: helm-coder
+description: >-
+  A deep coordinator agent for Helm coding tasks.
+  Coordinates generating new charts, updating existing charts, validating, and committing to GitHub.
+agent_type: deep
+
+tools:
+  mcp: []
+  extra: []
+
+middleware:
+  - name: skills
+    config:
+      sources:
+        - plugins/helm-operator/agents/helm-coder
+  - name: memory
+    config:
+      sources:
+        - plugins/helm-operator/agents/helm-coder/AGENTS.md
+  - name: local_context
+    config: {}
+  - name: goal_tools
+    config: {}
+  - name: rubric_evaluator
+    config:
+      max_iterations: 3

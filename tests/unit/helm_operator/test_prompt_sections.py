@@ -1,20 +1,33 @@
 """
-Unit: Helm Operator PromptRegistry — scope bug regression tests.
+Unit: Helm Operator Prompt — scope bug regression tests.
 
 These tests catch the exact bug class where keyword-based scope rules
 cause false OOS rejections for legitimate Helm install requests.
 """
 import pytest
-from k8s_autopilot.core.agents.helm_operator.prompt_sections import (
-    COORDINATOR_SCOPE,
-    COORDINATOR_ROUTING_RULES,
-    HELM_OPERATION_SCOPE,
-    HELM_OPERATION_PLAN_LOCKED_PROTOCOL,
-    create_coordinator_registry,
-    create_helm_operation_registry,
-    compose_coordinator_prompt,
-    compose_helm_operation_prompt,
-)
+import re
+from pathlib import Path
+from k8s_autopilot.core.backend import get_project_root
+
+
+def _parse_xml_block(content: str, tag: str) -> str:
+    """Helper to extract XML-tagged section from content."""
+    match = re.search(rf"<{tag}>(.*?)</{tag}>", content, re.DOTALL)
+    return match.group(0).strip() if match else ""
+
+
+# Load the actual files for scope assertions
+root = get_project_root()
+coord_file = root / "plugins" / "helm-operator" / "prompts" / "coordinator.md"
+coord_content = coord_file.read_text(encoding="utf-8") if coord_file.exists() else ""
+
+COORDINATOR_SCOPE = _parse_xml_block(coord_content, "scope")
+COORDINATOR_ROUTING_RULES = _parse_xml_block(coord_content, "routing_rules")
+
+op_file = root / "plugins" / "helm-operator" / "agents" / "helm-operation" / "prompts" / "system.md"
+op_content = op_file.read_text(encoding="utf-8") if op_file.exists() else ""
+
+HELM_OPERATION_SCOPE = _parse_xml_block(op_content, "scope")
 
 
 # ── Scope bug regression ────────────────────────────────────────────────
@@ -51,58 +64,3 @@ def test_helm_operation_scope_operation_based():
     """The subagent scope must also be operation-based, not keyword-based."""
     assert "operation type determines scope" in HELM_OPERATION_SCOPE.lower()
     assert "ALWAYS IN SCOPE" in HELM_OPERATION_SCOPE
-
-
-# ── Registry testability ────────────────────────────────────────────────
-
-@pytest.mark.unit
-def test_registry_section_override():
-    """Can override any section — proves testability of the registry pattern."""
-    custom_scope = "<scope>Custom test scope</scope>"
-    registry = create_coordinator_registry(scope=custom_scope)
-    prompt = registry.compose()
-    assert "Custom test scope" in prompt
-    # Original scope should NOT be present
-    assert "operation type determines scope" not in prompt.lower()
-
-
-@pytest.mark.unit
-def test_registry_compose_excludes_section():
-    """Can exclude sections — useful for slim prompts or A/B testing."""
-    registry = create_coordinator_registry()
-    prompt = registry.compose(exclude={"safety_guardrails"})
-    assert "<safety_and_guardrails>" not in prompt
-    # Other sections should still be present
-    assert "<identity>" in prompt
-
-
-@pytest.mark.unit
-def test_compose_coordinator_prompt_returns_string():
-    """Smoke test: compose_coordinator_prompt returns a non-empty string."""
-    prompt = compose_coordinator_prompt()
-    assert isinstance(prompt, str)
-    assert len(prompt) > 500
-
-
-@pytest.mark.unit
-def test_compose_helm_operation_prompt_returns_string():
-    """Smoke test: compose_helm_operation_prompt returns a non-empty string."""
-    prompt = compose_helm_operation_prompt()
-    assert isinstance(prompt, str)
-    assert len(prompt) > 500
-
-
-@pytest.mark.unit
-def test_helm_operation_registry_has_expected_sections():
-    """Verify all critical sections are registered for helm-operation subagent."""
-    registry = create_helm_operation_registry()
-    expected = [
-        "identity", "context_recovery", "scope",
-        "read_only_fast_path", "mcp_resource_rules",
-        "workflow_state_modifying", "plan_locked_protocol",
-        "safety_rules", "output_contract",
-    ]
-    for section in expected:
-        assert registry.has(section), (
-            f"helm-operation registry missing section '{section}'"
-        )

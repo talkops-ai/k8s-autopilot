@@ -103,239 +103,6 @@ Use the pattern: "User requested X → routed to Y coordinator → outcome was Z
 """
 
 
-# ---------------------------------------------------------------------------
-# Layer 1: SupervisorContextMiddleware — domain summaries injection
-# ---------------------------------------------------------------------------
-
-class SupervisorContextMiddleware(AgentMiddleware):
-    """Re-injects cross-domain context before every supervisor model call.
-
-    Reads ``domain_summaries`` from ``MainSupervisorState`` and prepends a
-    compact SystemMessage so the supervisor always has awareness of what
-    each coordinator accomplished — even after older messages are summarized.
-
-    This follows the same pattern as ``OperationContextMiddleware`` in
-    ``helm_operator/middleware.py``, adapted for the supervisor layer.
-
-    Usage::
-
-        middleware = [SupervisorContextMiddleware(), ...]
-        agent = create_agent(middleware=middleware, ...)
-    """
-
-    def before_model(
-        self, state: AgentState, runtime: Any,
-    ) -> dict[str, Any] | None:
-        """Read domain summaries from state and inject as SystemMessage."""
-        raw = state.get("domain_summaries", [])
-        domain_summaries = raw if isinstance(raw, list) else []
-
-        if not domain_summaries:
-            return None
-
-        # Build compact summary from domain_summaries entries
-        lines: list[str] = []
-        for summary in domain_summaries:
-            if not isinstance(summary, dict):
-                continue
-            domain = summary.get("domain", "unknown")
-            outcome = summary.get("outcome", "completed")
-            detail = summary.get("detail", "")
-            if detail:
-                lines.append(f"- **{domain}**: {outcome} — {detail}")
-            else:
-                lines.append(f"- **{domain}**: {outcome}")
-
-        if not lines:
-            return None
-
-        context_text = (
-            "## Cross-Domain Context (auto-injected, survives "
-            "summarization)\n"
-            "Previous coordinator outcomes this session:\n"
-            + "\n".join(lines)
-            + "\n\nUse this context when routing follow-up requests."
-        )
-
-        logger.debug(
-            "SupervisorContextMiddleware: injecting domain summaries",
-            extra={
-                "summary_count": len(lines),
-                "context_length": len(context_text),
-            },
-        )
-
-        return {
-            "messages": [SystemMessage(content=context_text)],
-        }
-
-    async def abefore_model(
-        self, state: AgentState, runtime: Any,
-    ) -> dict[str, Any] | None:
-        """Async version — delegates to sync implementation."""
-        return self.before_model(state, runtime)
-
-
-# ---------------------------------------------------------------------------
-# Layer 0: ThoughtSignatureFixMiddleware — Gemini checkpoint resume fix
-# ---------------------------------------------------------------------------
-
-
-_FUNCTION_CALL_THOUGHT_SIGNATURES_MAP_KEY = (
-    "__gemini_function_call_thought_signatures__"
-)
-
-# The Gemini API accepts this special bypass value to skip strict
-# thought-signature validation on replayed tool-call history.
-_BYPASS_SIGNATURE = base64.b64encode(
-    b"skip_thought_signature_validator"
-).decode("utf-8")
-
-
-class ThoughtSignatureFixMiddleware(AgentMiddleware):
-    """Fix stale Gemini thought signatures on checkpoint resume.
-
-    Gemini 3.x models embed ``thought_signature`` bytes in function-call
-    parts.  These signatures are session-specific: when a LangGraph
-    checkpoint replays the message history on resume, the stale signatures
-    cause Gemini to reject with::
-
-        400 Bad Request — Thought signature is not valid.
-
-    This middleware patches **AIMessages that have tool_calls** by
-    injecting the ``skip_thought_signature_validator`` bypass string into
-    ``additional_kwargs``.  This tells the Gemini adapter to skip strict
-    signature validation during history replay.
-
-    **Provider-agnostic:** The middleware only patches messages whose
-    ``response_metadata["model_provider"]`` is ``"google_genai"`` (or
-    when tool calls are present and a Gemini model was used).  For
-    other providers (OpenAI, Anthropic, etc.) it is a no-op.
-
-    MUST be the **first** middleware so it runs before the model sees
-    the messages.
-    """
-
-    def before_model(
-        self, state: AgentState, runtime: Any,
-    ) -> dict[str, Any] | None:
-        messages = state.get("messages", [])
-        if not messages:
-            return None
-
-        patched: list[Any] = []
-        changed = False
-
-        for msg in messages:
-            if not isinstance(msg, AIMessage):
-                patched.append(msg)
-                continue
-
-            # Only patch AIMessages with tool calls
-            if not msg.tool_calls:
-                patched.append(msg)
-                continue
-
-            # Provider guard: only applies to Google GenAI models
-            provider = (msg.response_metadata or {}).get("model_provider", "")
-            model_name = (msg.response_metadata or {}).get("model_name", "")
-            is_google = (
-                provider == "google_genai"
-                or "gemini" in model_name.lower()
-            )
-            if not is_google:
-                patched.append(msg)
-                continue
-
-            # Check if we already have the bypass signature
-            existing_sigs = (msg.additional_kwargs or {}).get(
-                _FUNCTION_CALL_THOUGHT_SIGNATURES_MAP_KEY, {}
-            )
-            all_bypassed = existing_sigs and all(
-                v == _BYPASS_SIGNATURE for v in existing_sigs.values()
-            )
-            if all_bypassed:
-                patched.append(msg)
-                continue
-
-            # Build the bypass signature map for all tool calls
-            bypass_map = {}
-            for tc in msg.tool_calls:
-                tc_id = tc.get("id", "")
-                if tc_id:
-                    bypass_map[tc_id] = _BYPASS_SIGNATURE
-
-            if not bypass_map:
-                patched.append(msg)
-                continue
-
-            # Also strip thinking/reasoning signatures from content blocks
-            new_content: str | list[Any] = msg.content
-            if isinstance(msg.content, list):
-                new_content = []
-                for block in msg.content:
-                    if isinstance(block, dict):
-                        btype = block.get("type", "")
-                        if btype in ("thinking", "reasoning"):
-                            b = {
-                                k: v for k, v in block.items()
-                                if k != "signature"
-                            }
-                            extras = b.get("extras")
-                            if isinstance(extras, dict) and "signature" in extras:
-                                b["extras"] = {
-                                    k: v for k, v in extras.items()
-                                    if k != "signature"
-                                }
-                            new_content.append(b)
-                        elif btype == "text":
-                            extras = block.get("extras")
-                            if isinstance(extras, dict) and "signature" in extras:
-                                b = dict(block)
-                                b["extras"] = {
-                                    k: v for k, v in extras.items()
-                                    if k != "signature"
-                                }
-                                new_content.append(b)
-                            else:
-                                new_content.append(block)
-                        else:
-                            new_content.append(block)
-                    else:
-                        new_content.append(block)
-
-            new_kwargs = dict(msg.additional_kwargs or {})
-            new_kwargs[_FUNCTION_CALL_THOUGHT_SIGNATURES_MAP_KEY] = bypass_map
-
-            patched.append(
-                msg.model_copy(
-                    update={
-                        "additional_kwargs": new_kwargs,
-                        "content": new_content,
-                    },
-                ),
-            )
-            changed = True
-            logger.debug(
-                "ThoughtSignatureFixMiddleware: injected bypass signature",
-                extra={
-                    "tool_call_ids": list(bypass_map.keys()),
-                    "model_name": model_name,
-                },
-            )
-
-        if not changed:
-            return None
-
-        return {"messages": patched}
-
-    async def abefore_model(
-        self, state: AgentState, runtime: Any,
-    ) -> dict[str, Any] | None:
-        """Async version — delegates to sync implementation."""
-        return self.before_model(state, runtime)
-
-
 
 # ---------------------------------------------------------------------------
 # Factory: build_supervisor_middleware
@@ -348,43 +115,23 @@ def build_supervisor_middleware(
     summarization_keep_messages: int | None = None,
     model_call_limit: int | None = None,
 ) -> list[Any]:
-    """Assemble the middleware stack for the supervisor agent.
-
-    Uses the user's configured LLM provider for summarization (cheapest
-    available tier — ``llm_config`` / standard tier).  No hardcoded model
-    names.
-
-    Args:
-        config: Application config for dynamic model/threshold resolution.
-        summarization_trigger_tokens: Override token trigger threshold.
-        summarization_keep_messages: Override messages to keep.
-        model_call_limit: Override model call limit.
-
-    Returns:
-        A list of middleware instances for ``create_agent(middleware=...)``.
-    """
+    """Assemble the middleware stack for the supervisor agent."""
     from langchain.agents.middleware import (
         ModelCallLimitMiddleware,
         SummarizationMiddleware,
     )
+    from k8s_autopilot.core.middleware.registry import get_middleware_registry
 
     middleware: list[Any] = []
 
-    # ── 0. Strip stale Gemini thought signatures ──────────────────────
-    # MUST be first — runs before any model sees the messages.
-    middleware.append(ThoughtSignatureFixMiddleware())
-    logger.info("Middleware: ThoughtSignatureFixMiddleware (before_model)")
-
-    # ── 1. Domain context injection (survives summarization) ──────────
-    middleware.append(SupervisorContextMiddleware())
-    logger.info("Middleware: SupervisorContextMiddleware (before_model)")
+    # Load custom middlewares from central registry (ThoughtSignatureFix, SupervisorContext)
+    custom_mws = get_middleware_registry().build_middlewares(
+        ["thought_signature_fix", "supervisor_context"],
+        config=config,
+    )
+    middleware.extend(custom_mws)
 
     # ── 2. Summarization — auto-compress older messages ───────────────
-    #
-    # Resolve the summarization model from config.  The supervisor uses
-    # the standard LLM tier (llm_config) which is the cheapest configured
-    # model.  We pass the model string to SummarizationMiddleware which
-    # handles init_chat_model() internally.
     trigger_tokens = summarization_trigger_tokens
     keep_messages = summarization_keep_messages
     mc_limit_override = model_call_limit
@@ -415,9 +162,6 @@ def build_supervisor_middleware(
     if config is not None:
         try:
             llm_cfg = config.get_llm_config()
-            # Extract the model string (e.g. "google_genai:gemini-2.0-flash",
-            # "gpt-4o-mini", etc.) — SummarizationMiddleware accepts this
-            # directly via init_chat_model().
             summarization_model = llm_cfg.get("model")
         except Exception:  # noqa: BLE001
             logger.warning(

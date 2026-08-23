@@ -6,7 +6,9 @@ from langgraph.types import Command
 from langgraph.store.memory import InMemoryStore
 from langgraph.checkpoint.memory import InMemorySaver
 from langchain_core.tools import tool
-from k8s_autopilot.core.agents.helm_operator.middleware import build_helm_hitl_middleware
+from langchain.agents.middleware import HumanInTheLoopMiddleware
+from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
+from k8s_autopilot.core.agents.helm_operator.middleware import _build_approval_description
 
 # Mock tools
 @tool
@@ -59,7 +61,19 @@ async def test_destructive_tool_hitl(tool_name, tool_args, tool_func):
     agent = create_agent(
         model=fake_llm,
         tools=[tool_func],
-        middleware=[build_helm_hitl_middleware()],
+        middleware=[
+            HumanInTheLoopMiddleware(
+                interrupt_on={
+                    tool_name: InterruptOnConfig(
+                        allowed_decisions=["approve", "edit", "reject"] if tool_name in ["helm_install_chart", "helm_upgrade_release"] else ["approve", "reject"],
+                        description=lambda tool_call, state, runtime, tn=tool_name: _build_approval_description(
+                            tn, tool_call.get("args", {}),
+                        ),
+                    )
+                },
+                description_prefix="⚠️ Helm Cluster Operation — Approval Required",
+            )
+        ],
         checkpointer=InMemorySaver(),
         name="test-hitl-agent"
     )

@@ -349,6 +349,53 @@ class BaseDeepAgent(ABC):
         """
         return {}
 
+    def get_interaction_mode(self) -> "InteractionMode":
+        """Return the interaction mode for this deep agent session.
+
+        Override to switch between interactive (human-monitored A2A) and
+        headless (CI/CD batch, no human) modes. Affects prompt phrasing,
+        ambiguity handling, and todo workflow.
+
+        Default: ``InteractionMode.INTERACTIVE``.
+        """
+        from k8s_autopilot.core.prompts import InteractionMode
+        return InteractionMode.INTERACTIVE
+
+    def get_prompt_resolver(self) -> "PromptResolver | None":
+        """Return a configured PromptResolver for dynamic prompt resolution.
+
+        Override to enable ``.md`` template-based prompt resolution with
+        ``{slot}`` interpolation (dcode pattern). When ``None`` is returned,
+        the coordinator uses its static ``system_prompt`` property.
+
+        Default: ``None`` (static prompts — backward compatible).
+        """
+        return None
+
+    def get_prompt_context(self) -> "PromptContext":
+        """Build a PromptContext for the current session.
+
+        Override to populate model identity, sandbox info, and custom
+        context fields. Used by ``get_prompt_resolver().resolve(ctx)``
+        when dynamic resolution is enabled.
+
+        Default: constructs context from config values.
+        """
+        from k8s_autopilot.core.prompts import InteractionMode, PromptContext
+
+        mode = self.get_interaction_mode()
+        model_name = getattr(self._config, "LLM_DEEPAGENT_MODEL", "")
+        model_provider = getattr(self._config, "LLM_DEEPAGENT_PROVIDER", "")
+        sandbox_provider = getattr(self._config, "K8S_SANDBOX_PROVIDER", "local")
+
+        return PromptContext(
+            mode=mode,
+            model_name=model_name,
+            model_provider=model_provider,
+            sandbox_provider=sandbox_provider,
+            config=self._config,
+        )
+
     def input_transform(self, send_payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Transform Send() payload from deep agent to subgraph agent state.

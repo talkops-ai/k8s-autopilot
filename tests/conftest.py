@@ -71,6 +71,33 @@ from unittest.mock import MagicMock
 from langgraph.store.memory import InMemoryStore
 from langgraph.checkpoint.memory import MemorySaver
 
+class TestConfig(MagicMock):
+    def __getattr__(self, name):
+        import os
+        if name in (
+            "GITHUB_REPO",
+            "GITHUB_BRANCH",
+            "HELM_WORKSPACE",
+            "ORG_NAME",
+            "ENVIRONMENT",
+            "K8S_CONTEXT",
+            "KUBECONFIG",
+            "K8S_DEFAULT_NAMESPACE",
+            "AGENT_PROJECT_ROOT",
+        ):
+            val = os.getenv(name)
+            if val is not None:
+                return val
+            defaults = {
+                "GITHUB_BRANCH": "main",
+                "HELM_WORKSPACE": "./workspace/helm-charts",
+                "ORG_NAME": "default_org",
+                "ENVIRONMENT": "development",
+                "K8S_DEFAULT_NAMESPACE": "default",
+            }
+            return defaults.get(name)
+        return super().__getattr__(name)
+
 @pytest.fixture
 def mock_config():
     """
@@ -80,9 +107,9 @@ def mock_config():
     launched during integration tests.  The LLM config points to a fast model
     but is usually patched further by individual test fixtures.
     """
-    config = MagicMock()
-    config.get_llm_config.return_value = {"model": "google_genai:gemini-3.1-flash-lite-preview", "temperature": 0}
-    config.get_llm_deepagent_config.return_value = {"model": "google_genai:gemini-3.1-flash-lite-preview", "temperature": 0}
+    config = TestConfig()
+    config.get_llm_config.return_value = {"model": "google_genai:gemini-3.1-flash-lite", "temperature": 0}
+    config.get_llm_deepagent_config.return_value = {"model": "google_genai:gemini-3.1-flash-lite", "temperature": 0}
     # Return empty MCP config — prevents build_agent() from launching real MCP servers
     _empty_mcp = {"servers": [], "timeout": {"total": 10, "connect": 5}, "default_host": "localhost", "default_transport": "sse"}
     config.get_mcp_config.return_value = _empty_mcp
@@ -173,5 +200,7 @@ def mock_llm_creator_fallback():
                 return BindableFakeModel(responses=[AIMessage(content="Mocked response")])
         return original_init(model, **kwargs)
 
-    with patch("k8s_autopilot.utils.llm.init_chat_model", side_effect=fallback_init):
+    with patch("k8s_autopilot.utils.llm.init_chat_model", side_effect=fallback_init), \
+         patch("k8s_autopilot.utils.llm.has_provider_credentials", return_value=True), \
+         patch("k8s_autopilot.utils.model_result.has_provider_credentials", return_value=True):
         yield

@@ -42,56 +42,7 @@ _PRODUCTION_NAMESPACES = {"production", "prod", "live", "prd"}
 _SYSTEM_NAMESPACES = {"kube-system", "kube-public", "kube-node-lease"}
 
 
-# ---------------------------------------------------------------------------
-# Layer 2: K8sOperationContextMiddleware — survives summarization
-# ---------------------------------------------------------------------------
-
-class K8sOperationContextMiddleware(AgentMiddleware):
-    """Injects recent K8s operations context before every model call.
-
-    Reads ``/memories/k8s-operator/operations-log.md`` from the agent's
-    ``state["files"]`` and prepends a compact SystemMessage with recent
-    operation details. This context survives built-in summarization.
-    """
-
-    def before_model(
-        self, state: AgentState, runtime: Any,
-    ) -> Dict[str, Any] | None:
-        """Read operations journal and inject as SystemMessage."""
-        from k8s_autopilot.utils.operations_context import (
-            get_k8s_operations_context_from_state,
-        )
-
-        ops_context = get_k8s_operations_context_from_state(dict(state))
-        if not ops_context:
-            return None
-
-        logger.debug(
-            "K8sOperationContextMiddleware: injecting operations context",
-            extra={"context_length": len(ops_context)},
-        )
-
-        return {
-            "messages": [
-                SystemMessage(
-                    content=(
-                        "## Active K8s Operations Context (auto-injected, "
-                        "survives summarization)\n"
-                        "The following operations were performed in this "
-                        "session. Use this context for ANY follow-up "
-                        "requests. NEVER re-ask the user for details that are "
-                        "listed here.\n\n"
-                        f"{ops_context}"
-                    )
-                )
-            ],
-        }
-
-    async def abefore_model(
-        self, state: AgentState, runtime: Any,
-    ) -> Dict[str, Any] | None:
-        """Async version — delegates to sync."""
-        return self.before_model(state, runtime)
+# Custom middlewares migrated to k8s_autopilot/core/middleware/k8s_operator.py
 
 
 def _is_production_namespace(namespace: str) -> bool:
@@ -316,22 +267,30 @@ def build_k8s_operator_middleware(
         ToolCallLimitMiddleware,
         ToolRetryMiddleware,
     )
+    from k8s_autopilot.core.middleware.registry import get_middleware_registry
 
     middleware: List[Any] = []
 
-    # 0. Operations context injection (Layer 2 — survives summarization)
-    middleware.append(K8sOperationContextMiddleware())
-
-    # 0b. Plan lock enforcement (survives summarization)
-    # Re-injects the user-approved plan (from state["files"]["/plan/active-plan.md"])
-    # as a SystemMessage before every model call.  This is the LangChain-idiomatic
-    # approach to surviving summarization: data stored in state["files"] is persistent
-    # (filesystem-backed), and the before_model hook reconstructs it each turn.
-    # Pattern: Terraform plan→apply constraint, OPA admission control.
-    # Ref: https://docs.langchain.com/oss/python/langchain/middleware/custom#dynamic-prompt
-    from k8s_autopilot.core.agents.app_operator.middleware import PlanLockMiddleware
-    middleware.append(PlanLockMiddleware())
-    logger.info("Middleware: PlanLockMiddleware (before_model)")
+    # Load custom middlewares from central registry (K8sOperationContext, PlanLock)
+    custom_mws = get_middleware_registry().build_middlewares(
+        [
+            ("operation_context", {
+                "log_path": "/memories/k8s-operator/operations-log.md",
+                "prefix": "K8s",
+                "header": "Active K8s Operations Context",
+                "instructions": (
+                    "The following operations were performed in this session. "
+                    "Use this context for ANY follow-up requests. NEVER re-ask the "
+                    "user for details that are listed here."
+                )
+            }),
+            "plan_lock",
+        ],
+        config=config,
+        model=model,
+        backend=backend,
+    )
+    middleware.extend(custom_mws)
 
     # 1. Per-tool write_file guard
     wf_limit = write_file_limit or _WRITE_FILE_RUN_LIMIT
@@ -351,13 +310,6 @@ def build_k8s_operator_middleware(
             exit_behavior="end",
         )
     )
-
-    # 3. Model call guard — REMOVED
-    # ModelCallLimitMiddleware was silently terminating the deep agent
-    # (exit_behavior="end") before it could produce a final summary,
-    # causing the agent to appear "stuck" after completing operations.
-    # LangGraph's recursion_limit and the global ToolCallLimitMiddleware
-    # above provide sufficient safety nets against runaway loops.
 
     # 4. Tool retry (transient failures)
     should_retry = enable_tool_retry if enable_tool_retry is not None else _ENABLE_TOOL_RETRY

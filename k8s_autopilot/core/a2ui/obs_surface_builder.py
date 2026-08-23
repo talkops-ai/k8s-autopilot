@@ -39,7 +39,7 @@ Reference:
 from __future__ import annotations
 
 import json
-import logging
+from k8s_autopilot.utils.logger import AgentLogger
 import uuid
 from typing import Any
 
@@ -62,7 +62,7 @@ from k8s_autopilot.core.a2ui.view_models import (
     TracesViewModel,
 )
 
-logger = logging.getLogger(__name__)
+logger = AgentLogger("ObsSurfaceBuilder")
 
 # ── Load fixed schemas once at module import ──────────────────────────────
 
@@ -645,7 +645,7 @@ def build_obs_surface(
             overall_status_value=view_model.overall_status_value,
         )
     else:
-        logger.warning("Unknown view model kind: %s", type(view_model).__name__)
+        logger.warning(f"Unknown view model kind: {type(view_model).__name__}")
         return []
 
 

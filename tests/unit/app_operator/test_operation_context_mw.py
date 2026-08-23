@@ -1,11 +1,15 @@
 import pytest
 import asyncio
 from langchain_core.messages import SystemMessage
-from k8s_autopilot.core.agents.app_operator.middleware import AppOperationContextMiddleware
+from k8s_autopilot.core.middleware.operation_context import OperationContextMiddleware
 
 @pytest.fixture
 def middleware():
-    return AppOperationContextMiddleware()
+    return OperationContextMiddleware(
+        log_path="/memories/app-operator/operations-log.md",
+        prefix="App",
+        header="Active Operations Context",
+    )
 
 @pytest.mark.unit
 def test_injects_system_message_when_ops_log_exists(middleware, ops_log_files):

@@ -20,7 +20,7 @@ Reference:
 from __future__ import annotations
 
 import json
-import logging
+from k8s_autopilot.utils.logger import AgentLogger
 from typing import Any
 
 from copilotkit import a2ui
@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 
 from k8s_autopilot.utils.llm import create_model
 
-logger = logging.getLogger(__name__)
+logger = AgentLogger("A2UIDynamicSchema")
 
 # ── Constants ────────────────────────────────────────────────────────────
 
@@ -91,10 +91,7 @@ def build_a2ui_operations_from_tool_call(
     data = args.get("data")
 
     if not components:
-        logger.warning(
-            "build_a2ui_operations_from_tool_call: empty components for surface %s",
-            surface_id,
-        )
+        logger.warning(f"build_a2ui_operations_from_tool_call: empty components for surface {surface_id}")
 
     ops: list[dict[str, Any]] = [
         a2ui.create_surface(surface_id, catalog_id=catalog_id),

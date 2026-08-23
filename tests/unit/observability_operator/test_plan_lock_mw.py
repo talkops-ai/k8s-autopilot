@@ -6,7 +6,7 @@ with observability domain content (monitoring namespace, exporters).
 """
 import pytest
 from langchain_core.messages import SystemMessage
-from k8s_autopilot.core.agents.app_operator.middleware import PlanLockMiddleware
+from k8s_autopilot.core.middleware.plan_lock import PlanLockMiddleware
 
 @pytest.fixture
 def middleware():

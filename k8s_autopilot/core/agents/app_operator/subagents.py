@@ -403,6 +403,14 @@ def get_app_subagent_specs(
 
     coord_model = coordinator_model or ""
 
+    from k8s_autopilot.core.memory import get_memory_registry
+    registry = get_memory_registry()
+    memory_paths = []
+    memory_paths.extend(registry.get_memory_paths_for_domain("app-operator"))
+    memory_paths.extend(registry.get_memory_paths_for_domain("global"))
+    memory_paths.extend(registry.get_memory_paths_for_domain("project"))
+    memory_paths.extend(registry.get_memory_paths_for_domain("user"))
+
     return [
         # ArgoCD sub-agent — filesystem scoped to its own skill only
         build_mcp_subagent(
@@ -411,6 +419,7 @@ def get_app_subagent_specs(
             mcp_resource_server_name="argocd_mcp_server",
             include_filesystem=True,
             skill_paths=["/skills/app-operator/argocd-gitops/"],
+            memory_paths=memory_paths,
             hitl_builder=build_app_operator_hitl_middleware,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(
@@ -425,6 +434,7 @@ def get_app_subagent_specs(
             mcp_resource_server_name="argo_rollout_mcp_server",
             include_filesystem=True,
             skill_paths=["/skills/app-operator/argo-rollouts-gitops/"],
+            memory_paths=memory_paths,
             hitl_builder=build_argo_rollouts_hitl_middleware,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(
@@ -440,6 +450,7 @@ def get_app_subagent_specs(
             mcp_resource_server_name="traefik_mcp_server",
             include_filesystem=True,
             skill_paths=["/skills/app-operator/traefik-edge-routing/"],
+            memory_paths=memory_paths,
             hitl_builder=build_traefik_hitl_middleware,
             extra_middleware_builders=[
                 make_subagent_interpreter_builder(

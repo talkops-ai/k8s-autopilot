@@ -22,7 +22,7 @@ import pytest
 from unittest.mock import MagicMock
 from langchain_core.messages import SystemMessage, HumanMessage
 
-from k8s_autopilot.core.agents.helm_operator.middleware import (
+from k8s_autopilot.core.middleware.skill_shortcut import (
     _SKILL_PATTERN,
     _SKIP_WHEN_SKILLS_EXIST,
     _apply_skill_shortcut,

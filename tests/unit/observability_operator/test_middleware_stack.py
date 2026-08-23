@@ -11,11 +11,9 @@ import pytest
 from unittest.mock import MagicMock
 from langchain.agents.middleware import ModelCallLimitMiddleware, ToolCallLimitMiddleware, ToolRetryMiddleware
 from deepagents.middleware.summarization import SummarizationToolMiddleware
-from k8s_autopilot.core.agents.observability.middleware import (
-    build_obs_operator_middleware,
-    ObsOperationContextMiddleware,
-)
-from k8s_autopilot.core.agents.app_operator.middleware import PlanLockMiddleware
+from k8s_autopilot.core.agents.observability.middleware import build_obs_operator_middleware
+from k8s_autopilot.core.middleware.operation_context import OperationContextMiddleware
+from k8s_autopilot.core.middleware.plan_lock import PlanLockMiddleware
 
 @pytest.fixture
 def mock_backend():
@@ -24,7 +22,7 @@ def mock_backend():
 @pytest.mark.unit
 def test_includes_operation_context_first(mock_config, mock_backend):
     mw = build_obs_operator_middleware(config=mock_config, model=MagicMock(), backend=mock_backend)
-    assert mw[0].__class__.__name__ == "ObsOperationContextMiddleware"
+    assert mw[0].__class__.__name__ == "OperationContextMiddleware"
 
 @pytest.mark.unit
 def test_includes_plan_lock_second(mock_config, mock_backend):

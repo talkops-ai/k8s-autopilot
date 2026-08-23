@@ -1,7 +1,7 @@
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from k8s_autopilot.utils.memory import get_memories_namespace
+from k8s_autopilot.core.backend import get_memories_namespace
 
 @pytest.mark.unit
 def test_get_memories_namespace_fallback():

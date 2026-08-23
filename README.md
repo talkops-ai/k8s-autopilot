@@ -480,7 +480,7 @@ networks:
 # LLM Provider (choose one: google_genai, openai, anthropic, azure)
 GOOGLE_API_KEY=your_google_api_key_here
 LLM_PROVIDER=google_genai
-LLM_MODEL=gemini-3.1-flash-lite-preview
+LLM_MODEL=gemini-3.1-flash-lite
 LLM_HIGHER_PROVIDER=google_genai
 LLM_HIGHER_MODEL=gemini-3.1-pro-preview
 LLM_DEEPAGENT_PROVIDER=google_genai

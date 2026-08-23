@@ -9,11 +9,15 @@ Bug classes caught:
 import pytest
 import asyncio
 from langchain_core.messages import SystemMessage
-from k8s_autopilot.core.agents.observability.middleware import ObsOperationContextMiddleware
+from k8s_autopilot.core.middleware.operation_context import OperationContextMiddleware
 
 @pytest.fixture
 def middleware():
-    return ObsOperationContextMiddleware()
+    return OperationContextMiddleware(
+        log_path="/memories/observability/operations-log.md",
+        prefix="Observability",
+        header="Active Observability Operations Context",
+    )
 
 @pytest.mark.unit
 def test_injects_system_message_when_ops_log_exists(middleware, obs_ops_log_files):
