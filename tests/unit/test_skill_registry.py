@@ -1,60 +1,67 @@
-"""
-Unit tests for SkillRegistry dynamic discovery and virtual path resolution (dcode-aligned).
+"""Unit tests for multi-tier SkillRegistry (Phase 13)."""
 
-Verifies that:
-- Standard skills and plugin skills are discovered from plugins/ directory structure.
-- Virtual paths are mapped correctly (e.g., /skills/helm-operator/helm-operation).
-- Seeding maps virtual paths correctly inside virtual filesystem backend.
-"""
+from __future__ import annotations
 
 from pathlib import Path
 import pytest
 
-from k8s_autopilot.core.skills.registry import get_skill_registry
+from k8s_autopilot.skills.registry import SkillRegistry, SkillSource, get_skill_registry
 
 
-def test_discover_plugin_skills():
-    """Verify that coordinator and agent skills are discovered from plugins/."""
-    registry = get_skill_registry()
-    registry.discover_skills(force=True)
-
-    # 1. Coordinator skill should be discovered
-    coordinator_skill = registry.get_skill("helm-operator-coordinator")
-    if not coordinator_skill:
-        # Fallback search by virtual path
-        coordinator_skill = next(
-            (s for s in registry.list_skills() if s["virtual_path"] == "/skills/helm-operator/coordinator"),
-            None
-        )
-    assert coordinator_skill is not None
-    assert coordinator_skill["domain"] == "helm-operator"
-    assert coordinator_skill["virtual_path"] == "/skills/helm-operator/coordinator"
-
-    # 2. Subagent skill should be discovered
-    operation_skill = registry.get_skill("helm-operation")
-    if not operation_skill:
-        operation_skill = next(
-            (s for s in registry.list_skills() if s["virtual_path"] == "/skills/helm-operator/helm-operation"),
-            None
-        )
-    assert operation_skill is not None
-    assert operation_skill["domain"] == "helm-operator"
-    assert operation_skill["virtual_path"] == "/skills/helm-operator/helm-operation"
+def test_skill_registry_singleton() -> None:
+    """Verify get_skill_registry returns a singleton instance."""
+    reg1 = get_skill_registry()
+    reg2 = SkillRegistry.get_instance()
+    assert reg1 is reg2
 
 
-def test_seed_skills_files():
-    """Verify that seed_skills_files maps physical files to the correct virtual path layout."""
-    registry = get_skill_registry()
-    registry.discover_skills(force=True)
+def test_register_and_get_skill(tmp_path: Path) -> None:
+    """Verify manual registration and lookup in SkillRegistry."""
+    registry = SkillRegistry()
+    skill_path = tmp_path / "k8s-diagnostics"
+    skill_path.mkdir()
 
-    # Seed the helm-operation skill path
-    files = registry.seed_skills_files(["/skills/helm-operator/helm-operation"])
+    source = SkillSource(
+        name="k8s-diagnostics",
+        path=skill_path,
+        tier="builtin",
+        description="Kubernetes diagnostics skill",
+        tags=("k8s", "debug"),
+    )
+    registry.register(source)
 
-    # Verify we seeded the SKILL.md file at the correct virtual path prefix
-    vpath_skill = "/skills/helm-operator/helm-operation/SKILL.md"
-    assert vpath_skill in files
-    assert files[vpath_skill]["content"] is not None
+    retrieved = registry.get("k8s-diagnostics")
+    assert retrieved is not None
+    assert retrieved.name == "k8s-diagnostics"
+    assert retrieved.tier == "builtin"
+    assert "debug" in retrieved.tags
 
-    # Verify we seeded troubleshooting and reference workflow files
-    vpath_trouble = "/skills/helm-operator/helm-operation/TROUBLESHOOTING.md"
-    assert vpath_trouble in files
+    assert len(registry.list_skills(tier="builtin")) == 1
+    assert len(registry.list_skills(tier="user")) == 0
+
+
+def test_discover_skills_from_directory(tmp_path: Path) -> None:
+    """Verify filesystem discovery of skills with frontmatter."""
+    registry = SkillRegistry()
+
+    skill_dir = tmp_path / "helm-deploy"
+    skill_dir.mkdir()
+    skill_md = skill_dir / "SKILL.md"
+    skill_md.write_text(
+        "---\n"
+        "description: Automated Helm deployments\n"
+        "tags:\n"
+        "  - helm\n"
+        "  - deploy\n"
+        "---\n\n"
+        "# Helm Deploy Skill\n",
+        encoding="utf-8",
+    )
+
+    count = registry.discover(builtin_dir=tmp_path)
+    assert count == 1
+
+    skill = registry.get("helm-deploy")
+    assert skill is not None
+    assert skill.description == "Automated Helm deployments"
+    assert "helm" in skill.tags

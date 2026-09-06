@@ -1,6 +1,6 @@
 import os
 from unittest import mock
-from k8s_autopilot.core.sandbox.config import SandboxConfig
+from k8s_autopilot.backend.sandbox_config import SandboxConfig
 
 def test_sandbox_config_defaults():
     # Clear environment variables to test defaults

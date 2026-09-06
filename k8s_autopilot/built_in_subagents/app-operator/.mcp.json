@@ -1,0 +1,35 @@
+{
+  "mcpServers": {
+    "talkops-argo-rollout-mcp-server": {
+      "type": "stdio",
+      "command": "argo-rollout-mcp-server",
+      "args": [],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "PROMETHEUS_URL": "${PROMETHEUS_URL:-http://prometheus-operated.monitoring.svc:9090}",
+        "K8S_KUBECONFIG": "${K8S_KUBECONFIG:-}"
+      }
+    },
+    "talkops-argocd-mcp-server": {
+      "type": "stdio",
+      "command": "argocd-mcp-server",
+      "args": [],
+      "env": {
+        "MCP_ALLOW_WRITE": "true",
+        "MCP_TRANSPORT": "stdio",
+        "ARGOCD_SERVER_URL": "${ARGOCD_SERVER_URL:-https://argocd-server.argocd.svc:443}",
+        "ARGOCD_AUTH_TOKEN": "${ARGOCD_AUTH_TOKEN:-}",
+        "ARGOCD_INSECURE": "${ARGOCD_INSECURE:-true}"
+      }
+    },
+    "talkops-traefik-mcp-server": {
+      "type": "stdio",
+      "command": "traefik-mcp-server",
+      "args": [],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "K8S_KUBECONFIG": "${K8S_KUBECONFIG:-}"
+      }
+    }
+  }
+}

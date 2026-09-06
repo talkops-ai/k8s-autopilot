@@ -1,1 +1,0 @@
-This will be the workspace path where the helm charts will be generated.

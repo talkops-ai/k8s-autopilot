@@ -40,12 +40,7 @@ def create_thread_routes() -> list[Route]:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
             
         thread_id_str = request.path_params["thread_id"]
-        try:
-            thread_id = uuid.UUID(thread_id_str)
-        except ValueError:
-            return JSONResponse({"detail": "Invalid thread_id format"}, status_code=422)
-
-        resp = await service.get_thread(thread_id)
+        resp = await service.get_thread(thread_id_str)
         if not resp:
             return JSONResponse({"detail": "Thread not found"}, status_code=404)
         return JSONResponse(resp.model_dump(mode="json"))
@@ -56,14 +51,9 @@ def create_thread_routes() -> list[Route]:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
             
         thread_id_str = request.path_params["thread_id"]
-        try:
-            thread_id = uuid.UUID(thread_id_str)
-        except ValueError:
-            return JSONResponse({"detail": "Invalid thread_id format"}, status_code=422)
-
         data = await request.json()
         req = ThreadUpdate(**data)
-        resp = await service.update_thread(thread_id, req)
+        resp = await service.update_thread(thread_id_str, req)
         if not resp:
             return JSONResponse({"detail": "Thread not found"}, status_code=404)
         return JSONResponse(resp.model_dump(mode="json"))
@@ -74,12 +64,7 @@ def create_thread_routes() -> list[Route]:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
             
         thread_id_str = request.path_params["thread_id"]
-        try:
-            thread_id = uuid.UUID(thread_id_str)
-        except ValueError:
-            return JSONResponse({"detail": "Invalid thread_id format"}, status_code=422)
-
-        deleted = await service.delete_thread(thread_id)
+        deleted = await service.delete_thread(thread_id_str)
         if not deleted:
             return JSONResponse({"detail": "Thread not found"}, status_code=404)
         return JSONResponse({"detail": "Thread deleted"})
@@ -90,12 +75,7 @@ def create_thread_routes() -> list[Route]:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
             
         thread_id_str = request.path_params["thread_id"]
-        try:
-            thread_id = uuid.UUID(thread_id_str)
-        except ValueError:
-            return JSONResponse({"detail": "Invalid thread_id format"}, status_code=422)
-
-        resp = await service.get_thread_state(thread_id)
+        resp = await service.get_thread_state(thread_id_str)
         if not resp:
             return JSONResponse({"detail": "Thread not found"}, status_code=404)
         return JSONResponse(resp.model_dump(mode="json"))
@@ -106,15 +86,20 @@ def create_thread_routes() -> list[Route]:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
             
         thread_id_str = request.path_params["thread_id"]
-        try:
-            thread_id = uuid.UUID(thread_id_str)
-        except ValueError:
-            return JSONResponse({"detail": "Invalid thread_id format"}, status_code=422)
-
-        # Allow query param for limit
         limit = int(request.query_params.get("limit", 10))
 
-        resp = await service.get_thread_history(thread_id, limit)
+        resp = await service.get_thread_history(thread_id_str, limit)
+        if not resp:
+            return JSONResponse({"detail": "Thread not found"}, status_code=404)
+        return JSONResponse(resp.model_dump(mode="json"))
+
+    async def get_thread_telemetry(request: Request) -> JSONResponse:
+        service = get_thread_service()
+        if not service:
+            return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
+
+        thread_id_str = request.path_params["thread_id"]
+        resp = await service.get_thread_telemetry(thread_id_str)
         if not resp:
             return JSONResponse({"detail": "Thread not found"}, status_code=404)
         return JSONResponse(resp.model_dump(mode="json"))
@@ -127,4 +112,5 @@ def create_thread_routes() -> list[Route]:
         Route("/threads/{thread_id}", delete_thread, methods=["DELETE"]),
         Route("/threads/{thread_id}/state", get_thread_state, methods=["GET"]),
         Route("/threads/{thread_id}/history", get_thread_history, methods=["GET"]),
+        Route("/threads/{thread_id}/telemetry", get_thread_telemetry, methods=["GET"]),
     ]

@@ -1,6 +1,6 @@
 import pytest
 import uuid
-from k8s_autopilot.core.integration.thread_store import ThreadStore
+from k8s_autopilot.integrations.thread_store import ThreadStore
 
 @pytest.mark.unit
 def test_thread_store_deterministic_resolution():

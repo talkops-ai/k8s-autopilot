@@ -9,22 +9,28 @@ dependencies = [
     "a2ui-agent",
     "colorama>=0.4.6",
     "copilotkit>=0.1.0",
-    "deepagents>=0.6.7",
+    "deepagents[quickjs]>=0.7.2",
     "langchain>=1.3.2",
     "langchain-anthropic>=1.4.4",
     "langchain-aws>=1.5.0",
     "langchain-core>=1.4.0",
     "langchain-google-genai>=4.2.4",
-    "langchain-mcp-adapters>=0.2.2",
+    "langchain-mcp-adapters>=0.3.0",
     "langchain-openai>=1.2.2",
     "langgraph>=1.2.2",
     "langgraph-checkpoint-postgres>=3.1.0",
+    "langgraph-checkpoint-sqlite>=3.1.0",
+    "aiosqlite>=0.22.1",
     "psycopg[binary,pool]>=3.1.0",
     "loguru>=0.7.3",
     "pydantic>=2.12.5",
     "uvicorn>=0.42.0",
     "tavily-python>=0.7.26",
     "markdownify>=1.2.3",
+    "filelock>=3.32.3",
+    "genai-prices>=0.1.0",
+    "langchain-quickjs>=0.3.3",
+    "bashlex>=0.18",
 ]
 
 license = {text = "Apache-2.0"}
@@ -74,7 +80,7 @@ repository = "https://github.com/talkops-ai/k8s-autopilot.git"
 documentation = "https://github.com/talkops-ai/k-autopilot/blob/main/README.md"
 
 [project.scripts]
-k8s-autopilot = "k8s_autopilot.server:main"
+k8s-autopilot = "k8s_autopilot.server.app:main"
 
 [dependency-groups]
 dev = [
@@ -87,6 +93,7 @@ dev = [
     "rich>=14.2.0",
     "asyncclick>=8.3.0.7",
     "agentevals>=0.0.9",
+    "types-protobuf>=7.35.1.20260827",
 ]
 
 [build-system]
@@ -129,6 +136,11 @@ addopts = "-v --tb=short"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
+    "unit: deterministic tests for pure functions, schemas, and node logic",
+    "eval: trajectory and semantic evaluation tests",
+    "sandbox: ephemeral Kubernetes sandbox tests",
+    "hitl: human-in-the-loop interaction tests",
+    "timeout: test timeout in seconds",
 ]
 
 [tool.uv.sources]

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class ThreadCreate(BaseModel):
     """POST /threads — request body."""
 
-    thread_id: Optional[UUID] = None
+    thread_id: Optional[UUID | str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     title: str = ""
 
@@ -35,7 +35,7 @@ class ThreadSearch(BaseModel):
 class ThreadResponse(BaseModel):
     """Standard thread metadata response."""
 
-    thread_id: UUID
+    thread_id: UUID | str
     title: str
     status: str
     user_id: str
@@ -52,7 +52,7 @@ class ThreadStateResponse(BaseModel):
     Phase 3: interrupts (persisted HITL payloads for history replay)
     """
 
-    thread_id: UUID
+    thread_id: UUID | str
     title: str
     status: str
     messages: list[dict[str, Any]]
@@ -71,5 +71,66 @@ class ThreadStateResponse(BaseModel):
 class ThreadHistoryResponse(BaseModel):
     """GET /threads/{thread_id}/history — response."""
 
-    thread_id: UUID
+    thread_id: UUID | str
     states: list[dict[str, Any]]
+
+
+# ── Status Bar & Telemetry Models ─────────────────────────────────────────
+
+class GoalTelemetry(BaseModel):
+    """Goal & Rubric telemetry state."""
+
+    objective: Optional[str] = None
+    status: Optional[str] = None
+    rubric_label: Optional[str] = None
+    rubric: Optional[str] = None
+
+
+class UsageTelemetry(BaseModel):
+    """Token and cost usage metrics."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+class ModelTelemetry(BaseModel):
+    """Active model and reasoning profile."""
+
+    spec: str
+    provider: str
+    name: str
+    reasoning_effort: str = "medium"
+
+
+class SubagentTelemetry(BaseModel):
+    """Registered subagent status."""
+
+    name: str
+    status: str = "idle"
+
+
+class ThreadTelemetryResponse(BaseModel):
+    """GET /threads/{thread_id}/telemetry — response."""
+
+    thread_id: UUID | str
+    approval_mode: str = "manual"
+    goal: Optional[GoalTelemetry] = None
+    usage: UsageTelemetry = Field(default_factory=UsageTelemetry)
+    model: ModelTelemetry
+    subagents: list[SubagentTelemetry] = Field(default_factory=list)
+
+
+class ApprovalModeUpdateRequest(BaseModel):
+    """POST /api/settings/approval-mode — request body."""
+
+    mode: str
+    thread_id: Optional[str] = None
+
+
+class ApprovalModeResponse(BaseModel):
+    """POST /api/settings/approval-mode — response."""
+
+    status: str = "success"
+    approval_mode: str

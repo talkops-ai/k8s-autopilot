@@ -2,7 +2,7 @@ import os
 import pytest
 from unittest import mock
 from pathlib import Path
-from k8s_autopilot.core.sandbox.factory import (
+from k8s_autopilot.backend.sandbox_factory import (
     get_sandbox_backend,
     _active_sandboxes,
     _active_providers,
@@ -28,8 +28,8 @@ def test_sandbox_caching():
     mock_backend = mock.MagicMock()
     mock_backend.id = "mock-sb-id"
     
-    with mock.patch("k8s_autopilot.core.sandbox.factory._create_langsmith_sandbox") as mock_create, \
-         mock.patch("k8s_autopilot.core.sandbox.factory._sync_workspace_to_sandbox") as mock_sync:
+    with mock.patch("k8s_autopilot.backend.sandbox_factory._create_langsmith_sandbox") as mock_create, \
+         mock.patch("k8s_autopilot.backend.sandbox_factory._sync_workspace_to_sandbox") as mock_sync:
         mock_create.return_value = mock_backend
         
         env = {

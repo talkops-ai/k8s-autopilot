@@ -178,29 +178,54 @@ def fake_model_conversational():
 @pytest.fixture(autouse=True)
 def mock_llm_creator_fallback():
     """
-    Autouse fixture that intercepts utils.llm.init_chat_model call.
+    Autouse fixture that intercepts langchain init_chat_model calls.
     If the requested model is a Google/Gemini model and no GOOGLE_API_KEY / GEMINI_API_KEY
     is set in the environment, it returns a FakeMessagesListChatModel to prevent validation errors.
     """
     from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
     from langchain_core.messages import AIMessage
+    from langchain.chat_models import init_chat_model as _original_init
     from unittest.mock import patch
     import os
-    import k8s_autopilot.utils.llm as llm_module
-
-    original_init = llm_module.init_chat_model
 
     def fallback_init(model, **kwargs):
-        provider = kwargs.get("provider") or (model.split(":")[0] if ":" in model else "")
-        if provider == "google_genai" or "gemini" in model.lower():
-            if not os.environ.get("GOOGLE_API_KEY") and not os.environ.get("GEMINI_API_KEY"):
-                class BindableFakeModel(FakeMessagesListChatModel):
-                    def bind_tools(self, tools, **kwargs):
-                        return self
-                return BindableFakeModel(responses=[AIMessage(content="Mocked response")])
-        return original_init(model, **kwargs)
+        class BindableFakeModel(FakeMessagesListChatModel):
+            thinking_level: str | None = None
+            thinking_budget: int | None = None
+            reasoning_effort: str | None = None
 
-    with patch("k8s_autopilot.utils.llm.init_chat_model", side_effect=fallback_init), \
-         patch("k8s_autopilot.utils.llm.has_provider_credentials", return_value=True), \
-         patch("k8s_autopilot.utils.model_result.has_provider_credentials", return_value=True):
+            def bind_tools(self, tools, **kwargs):
+                return self
+
+        return BindableFakeModel(
+            responses=[AIMessage(content="Mocked response")],
+            thinking_level=kwargs.get("thinking_level"),
+            thinking_budget=kwargs.get("thinking_budget"),
+            reasoning_effort=kwargs.get("reasoning_effort"),
+        )
+
+    with patch("langchain.chat_models.init_chat_model", side_effect=fallback_init):
         yield
+
+
+@pytest.fixture(autouse=True)
+def isolate_test_data_dir(tmp_path_factory, monkeypatch):
+    """Ensure tests run against an isolated temporary data dir and NEVER pollute ~/.k8s_autopilot/ or ~/.k8s_autopilot/.env."""
+    test_data = tmp_path_factory.mktemp(".k8s_autopilot_data")
+    test_state = test_data / ".state"
+    test_env = test_data / ".env"
+
+    import k8s_autopilot.config.paths as p
+
+    monkeypatch.setattr(p, "DATA_DIR", test_data)
+    monkeypatch.setattr(p, "STATE_DIR", test_state)
+    monkeypatch.setattr(p, "GLOBAL_ENV_PATH", test_env)
+    monkeypatch.setattr(p, "CONFIG_PATH", test_data / "config.toml")
+    monkeypatch.setattr(p, "GLOBAL_MCP_PATH", test_data / ".mcp.json")
+    monkeypatch.setattr(p, "CONVERSATION_HISTORY_DIR", test_data / "conversation_history")
+    monkeypatch.setattr(p, "PLUGINS_DIR", test_data / "plugins")
+    monkeypatch.setattr(p, "SESSIONS_DB_PATH", test_state / "sessions.db")
+    monkeypatch.setattr(p, "HISTORY_PATH", test_state / "history.jsonl")
+    monkeypatch.setattr(p, "MCP_TRUST_PATH", test_state / "mcp_trust.json")
+    monkeypatch.setattr(p, "SKILL_TRUST_PATH", test_state / "skill_trust.json")
+
