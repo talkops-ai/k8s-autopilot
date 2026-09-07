@@ -1,7 +1,4 @@
-"""CLI and API commands for managing K8s Autopilot skills.
-
-Ported from ``reference/opscode/src/opscode/skills/commands.py``.
-"""
+"""CLI and API commands for managing K8s Autopilot skills."""
 
 from __future__ import annotations
 

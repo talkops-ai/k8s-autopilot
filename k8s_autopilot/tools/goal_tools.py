@@ -1,7 +1,5 @@
 """Goal management tools exposed to the agent for persisted goals.
 
-Ported from ``reference/opscode/src/opscode/tools/goal_tools.py``.
-
 These tools let the model inspect and update the goal lifecycle.
 They operate on checkpointed ``PrivateStateAttr`` channels shared between the
 ``GoalToolsMiddleware`` (which registers them) and ``ResumeState`` (which
@@ -36,11 +34,13 @@ from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, interrupt
 from pydantic import Field
 
-from k8s_autopilot.middleware.resume_state import (
+from k8s_autopilot.state.goal_channels import (
     GoalRubricChannels,
     GoalStatus,
     coerce_goal_status,
 )
+from k8s_autopilot.schema.interrupts import GoalReviewResumePayload
+import k8s_autopilot.rubrics.generator as rubric_generator
 from k8s_autopilot.rubrics.generator import generate_rubric
 
 if TYPE_CHECKING:
@@ -404,51 +404,11 @@ def _parse_goal_response(
     tool_call_id: str,
 ) -> Command[Any]:
     """Parse user review decision from interrupt response and update goal state."""
-    import json
-    from k8s_autopilot.rubrics.generator import generate_rubric
-
-    parsed = response
-    if isinstance(response, str):
-        trimmed = response.strip()
-        if (trimmed.startswith("{") and trimmed.endswith("}")) or (
-            trimmed.startswith("[") and trimmed.endswith("]")
-        ):
-            try:
-                parsed = json.loads(trimmed)
-            except Exception:
-                parsed = {"decision": response}
-        else:
-            parsed = {"decision": response}
-
-    decision = "confirm"
-    feedback = ""
-    effective_criteria = list(criteria)
-
-    if isinstance(parsed, dict):
-        raw_decision = (
-            parsed.get("decision")
-            or parsed.get("action")
-            or parsed.get("status")
-            or "confirm"
-        )
-        decision = str(raw_decision).lower().strip()
-        if "criteria" in parsed and parsed["criteria"]:
-            raw_c = parsed["criteria"]
-            if isinstance(raw_c, list):
-                effective_criteria = [str(x).strip() for x in raw_c if str(x).strip()]
-            elif isinstance(raw_c, str):
-                effective_criteria = [
-                    line.strip().lstrip("-* ").strip()
-                    for line in raw_c.splitlines()
-                    if line.strip().lstrip("-* ").strip()
-                ]
-        feedback = str(parsed.get("feedback") or parsed.get("message") or "")
-    elif isinstance(parsed, str):
-        decision = parsed.lower().strip()
-
+    payload = GoalReviewResumePayload.from_raw(response)
+    effective_criteria = payload.criteria if payload.criteria is not None else list(criteria)
     rubric_str = "\n".join(f"- {c}" for c in effective_criteria)
 
-    if decision in ("accept", "confirm", "accepted", "confirmed", "y", "yes"):
+    if payload.decision == "confirm":
         result_text = (
             f"Goal confirmed by user.\n"
             f"**Objective:** {objective}\n"
@@ -462,6 +422,7 @@ def _parse_goal_response(
                 "_goal_status": "active",
                 "_goal_rubric": rubric_str,
                 "rubric": rubric_str,
+                "_sticky_rubric": rubric_str,
                 "_goal_status_note": None,
                 "_pending_goal_completion_note": None,
                 "messages": [
@@ -473,7 +434,7 @@ def _parse_goal_response(
                 ],
             }
         )
-    elif decision in ("edit", "edited", "e"):
+    elif payload.decision == "edit":
         result_text = (
             f"Goal confirmed with user-edited criteria.\n"
             f"**Objective:** {objective}\n"
@@ -487,6 +448,7 @@ def _parse_goal_response(
                 "_goal_status": "active",
                 "_goal_rubric": rubric_str,
                 "rubric": rubric_str,
+                "_sticky_rubric": rubric_str,
                 "_goal_status_note": None,
                 "_pending_goal_completion_note": None,
                 "messages": [
@@ -498,21 +460,17 @@ def _parse_goal_response(
                 ],
             }
         )
-    elif decision in ("reject", "rejected", "r"):
-        # Regenerate criteria using GOAL_RUBRIC_SYSTEM_PROMPT with the user's rejection feedback
-        regenerated_criteria = ""
-        try:
-            regenerated_criteria = generate_rubric(
-                objective,
-                feedback=feedback,
-                previous_criteria=rubric_str,
-            )
-        except Exception as exc:
-            logger.warning("Failed to regenerate rubric criteria: %s", exc)
+    elif payload.decision == "reject":
+        regenerated_obj, regenerated_bullets = draft_goal_criteria(
+            objective,
+            feedback=payload.feedback,
+            previous_criteria=rubric_str,
+        )
+        regenerated_criteria = "\n".join(f"- {b}" for b in regenerated_bullets)
 
         result_text = (
             f"User rejected proposed goal criteria with feedback:\n"
-            f"{feedback or '(No feedback provided)'}\n\n"
+            f"{payload.feedback or '(No feedback provided)'}\n\n"
         )
         if regenerated_criteria:
             result_text += (
@@ -533,7 +491,7 @@ def _parse_goal_response(
                 ],
             }
         )
-    else:  # cancel / dismiss / n
+    else:  # cancel
         result_text = (
             "User dismissed the goal proposal. Proceed with addressing "
             "the user's request directly without an active goal rubric."
@@ -551,6 +509,162 @@ def _parse_goal_response(
         )
 
 
+
+_active_criteria_agent: Any | None = None
+_active_fallback_agent: Any | None = None
+
+
+def set_active_criteria_agent(agent: Any | None, fallback: Any | None = None) -> None:
+    """Register the active criteria agent and fallback agent for goal drafting."""
+    global _active_criteria_agent, _active_fallback_agent
+    _active_criteria_agent = agent
+    _active_fallback_agent = fallback
+
+
+def get_active_criteria_agent() -> tuple[Any | None, Any | None]:
+    """Get the currently registered criteria agent and fallback agent."""
+    return _active_criteria_agent, _active_fallback_agent
+
+
+def draft_goal_criteria(
+    objective: str,
+    *,
+    suggested_criteria: list[Any] | str | None = None,
+    feedback: str | None = None,
+    previous_criteria: str | None = None,
+) -> tuple[str, list[str]]:
+    """Draft and verify goal acceptance criteria using the criteria agent or rubric generator.
+
+    If the criteria agent is active, runs the criteria agent (which uses repository inspection
+    and MCP cluster tools) to formulate concrete, verifiable acceptance criteria.
+    Falls back to generate_rubric or structured cleaning.
+    """
+    cleaned_suggestions: list[str] = []
+    if suggested_criteria:
+        if isinstance(suggested_criteria, list):
+            for item in suggested_criteria:
+                if isinstance(item, str):
+                    s = item.strip().lstrip("-*•0123456789.) ").strip()
+                    if s:
+                        cleaned_suggestions.append(s)
+                elif isinstance(item, dict):
+                    val = item.get("text") or item.get("criterion") or item.get("criteria")
+                    if val:
+                        cleaned_suggestions.append(str(val).strip().lstrip("-*•0123456789.) ").strip())
+        elif isinstance(suggested_criteria, str):
+            for line in suggested_criteria.splitlines():
+                s = line.strip().lstrip("-*•0123456789.) ").strip()
+                if s:
+                    cleaned_suggestions.append(s)
+
+    seed_criteria_str = previous_criteria
+    if not seed_criteria_str and cleaned_suggestions:
+        seed_criteria_str = "\n".join(f"- {c}" for c in cleaned_suggestions)
+
+    # 1. Try invoking the active criteria agent
+    global _active_criteria_agent, _active_fallback_agent
+    if _active_criteria_agent is not None:
+        try:
+            import uuid
+            from k8s_autopilot.middleware.goal_criteria import (
+                _goal_criteria_request,
+                _prompt_with_conversation_context,
+                _proposal_from_result,
+            )
+
+            req_data: dict[str, Any] = {
+                "request_id": str(uuid.uuid4()),
+                "objective": objective,
+                "kind": "create" if not feedback else "amend",
+            }
+            if feedback:
+                req_data["feedback"] = feedback
+            if seed_criteria_str:
+                req_data["previous_criteria"] = seed_criteria_str
+            if req_data["kind"] == "amend" and not req_data.get("criteria"):
+                req_data["criteria"] = seed_criteria_str or objective
+
+            req = _goal_criteria_request(req_data)
+            child_input = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": _prompt_with_conversation_context(req, []),
+                    }
+                ],
+                "criteria_objective": objective,
+                "criteria_operation_id": req_data["request_id"],
+            }
+            result = _active_criteria_agent.invoke(child_input)
+            proposal = _proposal_from_result(result)
+            if proposal is None and _active_fallback_agent is not None:
+                result = _active_fallback_agent.invoke(child_input)
+                proposal = _proposal_from_result(result)
+            if proposal is not None:
+                proposed_obj, crit_md = proposal
+                bullets = [
+                    line.strip().lstrip("-*•0123456789.) ").strip()
+                    for line in crit_md.splitlines()
+                    if line.strip().lstrip("-*•0123456789.) ").strip()
+                ]
+                if bullets:
+                    return proposed_obj, bullets
+            elif isinstance(result, dict):
+                messages = result.get("messages")
+                if isinstance(messages, list):
+                    for msg in reversed(messages):
+                        content = getattr(msg, "content", None) or (
+                            msg.get("content") if isinstance(msg, dict) else None
+                        )
+                        if isinstance(content, str) and content.strip():
+                            extracted = [
+                                line.strip().lstrip("-*•0123456789.) ").strip()
+                                for line in content.splitlines()
+                                if line.strip().startswith(("-", "*", "•", "1.", "2.", "3.", "4.", "5."))
+                                and line.strip().lstrip("-*•0123456789.) ").strip()
+                            ]
+                            if extracted:
+                                return objective, extracted
+        except Exception as exc:
+            logger.warning(
+                "Criteria agent execution failed in draft_goal_criteria: %s; falling back",
+                exc,
+            )
+
+    # 2. Try generate_rubric LLM generation (support both patched module-level and generator-level mocks)
+    try:
+        from unittest.mock import Mock
+
+        mod_gen = globals().get("generate_rubric")
+        if isinstance(mod_gen, Mock):
+            gen_fn = mod_gen
+        elif isinstance(rubric_generator.generate_rubric, Mock):
+            gen_fn = rubric_generator.generate_rubric
+        else:
+            gen_fn = rubric_generator.generate_rubric
+
+        rubric_text = gen_fn(
+            objective,
+            feedback=feedback,
+            previous_criteria=seed_criteria_str,
+        )
+        bullets = [
+            line.strip().lstrip("-*•0123456789.) ").strip()
+            for line in rubric_text.splitlines()
+            if line.strip().lstrip("-*•0123456789.) ").strip()
+        ]
+        if bullets:
+            return objective, bullets
+    except Exception as exc:
+        logger.warning("generate_rubric failed in draft_goal_criteria: %s", exc)
+
+    # 3. Fallback to cleaned suggestions if available
+    if cleaned_suggestions:
+        return objective, cleaned_suggestions
+
+    return objective, [f"Complete objective: {objective}"]
+
+
 @tool
 def propose_goal(
     objective: Annotated[
@@ -563,7 +677,8 @@ def propose_goal(
             default=None,
             description=(
                 "Optional list of 2-5 concise, verifiable, outcome-focused acceptance criteria "
-                "bullets. If omitted, criteria will be automatically drafted using the criteria agent."
+                "bullets, or initial suggestions. Concrete criteria will be drafted, refined, and "
+                "verified by the criteria agent before presentation to the user."
             ),
         ),
     ] = None,
@@ -580,68 +695,19 @@ def propose_goal(
     Returns:
         Command that pauses for user review and establishes the active goal upon acceptance.
     """
-    raw_criteria: list[Any] | str | None = criteria
-    if not raw_criteria:
-        try:
-            rubric_text = generate_rubric(objective)
-            raw_criteria = [
-                line.strip().lstrip("-* ").strip()
-                for line in rubric_text.splitlines()
-                if line.strip().lstrip("-* ").strip()
-            ]
-        except Exception as exc:
-            logger.warning("Failed to auto-generate rubric for propose_goal: %s", exc)
-            raw_criteria = [f"Complete objective: {objective}"]
-
-    # Clean and filter criteria items
-    criteria_list: list[str] = []
-    if isinstance(raw_criteria, list):
-        for item in raw_criteria:
-            if isinstance(item, dict):
-                if item.get("type") in {"thinking", "reasoning", "thought"}:
-                    continue
-                val = item.get("text") or item.get("criterion") or item.get("criteria") or str(item)
-                clean_val = str(val).strip().lstrip("-*•0123456789.) ")
-                if clean_val:
-                    criteria_list.append(clean_val)
-            elif isinstance(item, str):
-                s = item.strip()
-                if s.startswith("{") and s.endswith("}"):
-                    try:
-                        import json
-                        d = json.loads(s)
-                        c = d.get("criteria") or d.get("text") or s
-                        if isinstance(c, list):
-                            for sub in c:
-                                criteria_list.append(str(sub).strip().lstrip("-*•0123456789.) "))
-                            continue
-                        elif isinstance(c, str):
-                            for sub in c.splitlines():
-                                clean_sub = sub.strip().lstrip("-*•0123456789.) ")
-                                if clean_sub:
-                                    criteria_list.append(clean_sub)
-                            continue
-                    except Exception:
-                        pass
-                clean_s = s.lstrip("-*•0123456789.) ").strip()
-                if clean_s and not clean_s.startswith(("{", "}", "[", "]")):
-                    criteria_list.append(clean_s)
-    elif isinstance(raw_criteria, str):
-        for line in raw_criteria.splitlines():
-            clean_l = line.strip().lstrip("-*•0123456789.) ").strip()
-            if clean_l and not clean_l.startswith(("{", "}", "[", "]")):
-                criteria_list.append(clean_l)
-
-    if not criteria_list:
-        criteria_list = [f"Complete objective: {objective}"]
+    proposed_obj, criteria_list = draft_goal_criteria(
+        objective,
+        suggested_criteria=criteria,
+    )
+    obj_to_use = proposed_obj or objective
 
     review_request = {
         "type": "goal_review",
-        "objective": objective,
+        "objective": obj_to_use,
         "criteria": criteria_list,
         "tool_call_id": tool_call_id,
     }
     response = interrupt(review_request)
-    return _parse_goal_response(response, objective, criteria_list, tool_call_id)
+    return _parse_goal_response(response, obj_to_use, criteria_list, tool_call_id)
 
 

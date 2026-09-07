@@ -1,8 +1,5 @@
 # pyright: reportAttributeAccessIssue=false, reportMissingImports=false
-"""Catalog of built-in tools for K8s Autopilot.
-
-Ported from ``reference/opscode/src/opscode/tools/catalog.py``.
-"""
+"""Catalog of built-in tools for K8s Autopilot."""
 
 from __future__ import annotations
 

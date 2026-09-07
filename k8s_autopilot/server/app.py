@@ -1,6 +1,6 @@
 """K8s Autopilot A2A Server entry point.
 
-Wires the unified Deep Agent graph into the A2A JSONRPC, REST, and Thread routes.
+Wires the unified agent graph into the A2A JSONRPC, REST, and Thread routes.
 """
 
 from __future__ import annotations

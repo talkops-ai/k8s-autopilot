@@ -1,7 +1,5 @@
 """Auto-mode HITL middleware — autonomous execution with safety gates.
 
-Ported from ``reference/opscode/src/opscode/middleware/auto_mode_hitl.py``.
-
 End-to-end classifier-backed approval policy for K8s Autopilot.
 
 The middleware has a three-tier decision architecture:
@@ -112,17 +110,14 @@ def _async_routing_mode(state: object) -> Any | None:
     return None
 
 
-READONLY_SAFE_TOOLS: frozenset[str] = frozenset({
-    "read_file",
-    "view_file",
-    "read_url_content",
-    "ask_user",
-    "read_mcp_resource",
-    "ls",
-    "list_dir",
-    "glob",
-    "file_search",
-})
+from k8s_autopilot._constants import READONLY_FS_TOOLS
+
+READONLY_SAFE_TOOLS: frozenset[str] = frozenset(
+    READONLY_FS_TOOLS | {
+        "ask_user",
+        "read_mcp_resource",
+    }
+)
 
 
 class DynamicInterruptMapping(dict):
@@ -162,18 +157,30 @@ class DynamicInterruptMapping(dict):
     def is_readonly_tool(self, tool_name: str) -> bool:
         if tool_name in self._readonly_tools:
             return True
+
+        if tool_name.startswith("mcp__"):
+            parts = tool_name[5:].split("__", 1)
+            server_name = parts[0]
+            raw_name = parts[1] if len(parts) > 1 else tool_name
+        elif ":" in tool_name:
+            server_name, raw_name = tool_name.split(":", 1)
+        else:
+            server_name = ""
+            raw_name = tool_name
+
+        if raw_name in self._readonly_tools:
+            return True
+
         try:
             from k8s_autopilot.mcp.semantic_profiler import MCPSemanticProfiler
 
-            server_name = tool_name.split(":", 1)[0] if ":" in tool_name else ""
-            raw_name = tool_name.split(":", 1)[1] if ":" in tool_name else tool_name
             profile = MCPSemanticProfiler.get_instance().get_profile(server_name, raw_name)
             if profile is not None:
                 return profile.read_only_hint or profile.inferred_tier == 1
         except Exception:
             pass
 
-        lower = tool_name.lower()
+        lower = raw_name.lower()
         name_tokens = set(re.findall(r"[a-z0-9]+", lower))
         destructive_verbs = {
             "delete", "destroy", "drop", "drain", "evict", "prune",

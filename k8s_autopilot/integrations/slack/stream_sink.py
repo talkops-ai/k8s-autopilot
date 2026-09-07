@@ -281,7 +281,7 @@ class SlackStreamSink:
         namespace: tuple[str, ...],
         data: dict[str, Any],
     ) -> None:
-        """Handle deep-agent / coordinator subgraph activity.
+        """Handle agent / coordinator subgraph activity.
 
         Posts a context block with the coordinator name and status.
         Enabled via ``config.SLACK_SHOW_THINKING_STEPS`` (default: True).

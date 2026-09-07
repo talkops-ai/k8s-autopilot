@@ -1,4 +1,4 @@
-"""Middleware stack for K8s Autopilot deep agent.
+"""Middleware stack for K8s Autopilot agent.
 
 All middleware implement the AgentMiddleware protocol from LangChain:
 - before_agent / abefore_agent

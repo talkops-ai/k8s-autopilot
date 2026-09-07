@@ -149,6 +149,13 @@ def _enhance_mcp_error_diagnostics(error_text: str) -> str:
         )
         if hint not in error_text:
             return f"{error_text}{hint}"
+    elif "connection closed" in lower:
+        hint = (
+            "\n[Diagnostic Hint: The MCP server process terminated unexpectedly. "
+            "Ensure any required Kubernetes CRDs, CLI dependencies, or configuration values are installed.]"
+        )
+        if hint not in error_text:
+            return f"{error_text}{hint}"
     return error_text
 
 

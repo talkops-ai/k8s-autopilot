@@ -94,3 +94,13 @@ class TestSystemPromptTemplate:
         assert "Kubernetes & Cloud-Native Platform Engineering Conventions" in content
         assert "Safety, Git & Security Protocols" in content
         assert "Anti-Looping Circuit Breaker" in content
+        assert "Stateful Planning & Goal-Driven Execution" in content
+
+    def test_get_base_system_prompt_includes_goal_planning(self) -> None:
+        from k8s_autopilot.prompts.system import get_base_system_prompt
+
+        prompt = get_base_system_prompt()
+        assert "propose_goal" in prompt
+        assert "Stateful Planning & Goal-Driven Execution" in prompt
+        assert "write_todos" in prompt
+

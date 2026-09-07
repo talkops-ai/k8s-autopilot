@@ -1,7 +1,5 @@
 """Canonical internal messages for goal state and work continuation.
 
-Ported from ``reference/opscode/src/opscode/middleware/goal_state_notice.py``.
-
 Provides the goal-state notice system used by ``GoalToolsMiddleware`` to keep
 the model oriented on goal/rubric changes across conversation turns. Notices
 are append-only ``HumanMessage``s with structured metadata that allow later

@@ -1,7 +1,4 @@
-"""SSRF-protected URL fetcher converting HTML to clean markdown.
-
-Ported from ``reference/opscode/src/opscode/tools/fetch_url.py``.
-"""
+"""SSRF-protected URL fetcher converting HTML to clean markdown."""
 
 from __future__ import annotations
 

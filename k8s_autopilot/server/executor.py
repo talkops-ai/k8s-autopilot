@@ -1,5 +1,5 @@
 """
-A2A Executor for the K8s Autopilot Deep Agent.
+A2A Executor for the K8s Autopilot Agent.
 
 Orchestrates the A2A protocol lifecycle:
   1. Extract query from incoming context (text or A2UI userAction)
@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 import uuid
 from collections.abc import Sequence
@@ -245,6 +246,7 @@ class _StreamTelemetryState:
     cumulative_input_tokens: int = 0
     cumulative_output_tokens: int = 0
     cumulative_cost_usd: float = 0.0
+    processed_message_tokens: dict[str, tuple[int, int]] = field(default_factory=dict)
     current_goal_status: str | None = None
     current_goal_objective: str | None = None
     current_rubric: str | None = None
@@ -292,7 +294,7 @@ class _StreamContext:
 # ---------------------------------------------------------------------------
 
 class A2AAutoPilotExecutor(AgentExecutor):
-    """A2A protocol executor for K8s Autopilot Deep Agent.
+    """A2A protocol executor for K8s Autopilot Agent.
 
     Responsibilities:
     * **Query extraction** — ``_extract_query``, ``_extract_user_action``
@@ -656,7 +658,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         updater = TaskUpdater(event_queue, task.id, ctx_id)
 
         try:
-            # 6. Stream deep agent graph → dispatch response handlers
+            # 6. Stream agent graph → dispatch response handlers
             await self._stream_agent(
                 query,
                 task,
@@ -893,6 +895,87 @@ class A2AAutoPilotExecutor(AgentExecutor):
     # ── Step 3: Resume wrapping ───────────────────────────────────────
 
     @staticmethod
+    async def _get_pending_interrupts(
+        agent_graph: Any,
+        config: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Extract all pending interrupts from top-level state, tasks, and nested subgraphs."""
+        pending_interrupts: dict[str, Any] = {}
+        if agent_graph is None or not hasattr(agent_graph, "aget_state"):
+            return pending_interrupts
+
+        try:
+            try:
+                graph_state = await agent_graph.aget_state(config, subgraphs=True)
+            except TypeError:
+                graph_state = await agent_graph.aget_state(config)
+            if graph_state:
+                # Top-level interrupts
+                for int_obj in getattr(graph_state, "interrupts", ()) or ():
+                    int_id = getattr(int_obj, "id", None) or (
+                        int_obj.get("id") if isinstance(int_obj, dict) else None
+                    )
+                    int_val = getattr(int_obj, "value", None) or (
+                        int_obj.get("value") if isinstance(int_obj, dict) else None
+                    )
+                    if int_id and int_val:
+                        pending_interrupts[int_id] = int_val
+
+                # Nested tasks and subgraphs
+                tasks_to_check = list(getattr(graph_state, "tasks", ()) or ())
+                while tasks_to_check:
+                    t = tasks_to_check.pop(0)
+                    for int_obj in getattr(t, "interrupts", ()) or ():
+                        int_id = getattr(int_obj, "id", None) or (
+                            int_obj.get("id") if isinstance(int_obj, dict) else None
+                        )
+                        int_val = getattr(int_obj, "value", None) or (
+                            int_obj.get("value") if isinstance(int_obj, dict) else None
+                        )
+                        if int_id and int_val:
+                            pending_interrupts[int_id] = int_val
+                    sub_state = getattr(t, "state", None)
+                    if sub_state and getattr(sub_state, "tasks", None):
+                        tasks_to_check.extend(sub_state.tasks)
+        except Exception as exc:
+            logger.debug(f"Graph state check for interrupts failed: {exc}")
+
+        return pending_interrupts
+
+    @staticmethod
+    async def _persist_auto_mode(agent_graph: Any, config: dict[str, Any], task: Task) -> None:
+        """Persist auto approval mode to thread store and runtime settings."""
+        tid = (
+            config.get("configurable", {}).get("thread_id")
+            or getattr(task, "context_id", None)
+            or getattr(task, "id", None)
+        )
+        if tid:
+            try:
+                from k8s_autopilot.security.approval_mode import awrite_approval_mode
+
+                await awrite_approval_mode(agent_graph, str(tid), mode="auto")
+            except Exception as exc:
+                logger.debug(f"Failed to persist auto mode to LangGraph store: {exc}")
+
+        try:
+            from k8s_autopilot.api.settings_routes import get_config_store
+            from k8s_autopilot.config.store import ConfigCategory
+
+            cfg_store = await get_config_store()
+            await cfg_store.set(
+                key="APPROVAL_MODE",
+                value="auto",
+                category=ConfigCategory.SECURITY,
+                display_name="Approval Mode",
+            )
+        except Exception as exc:
+            logger.debug(f"Failed to persist auto mode to ConfigStore: {exc}")
+
+        from k8s_autopilot.config.settings import get_settings
+        get_settings().approval_mode = "auto"
+
+    @staticmethod
     async def _wrap_resume(
         agent_graph: Any,
         config: dict[str, Any],
@@ -903,43 +986,13 @@ class A2AAutoPilotExecutor(AgentExecutor):
         if isinstance(query, Command):
             return query
 
-        pending_interrupts: dict[str, Any] = {}
-        if agent_graph is not None and hasattr(agent_graph, "aget_state"):
-            try:
-                try:
-                    graph_state = await agent_graph.aget_state(config, subgraphs=True)
-                except TypeError:
-                    graph_state = await agent_graph.aget_state(config)
-                if graph_state:
-                    # Check top-level interrupts
-                    for int_obj in getattr(graph_state, "interrupts", ()) or ():
-                        int_id = getattr(int_obj, "id", None) or (
-                            int_obj.get("id") if isinstance(int_obj, dict) else None
-                        )
-                        int_val = getattr(int_obj, "value", None) or (
-                            int_obj.get("value") if isinstance(int_obj, dict) else None
-                        )
-                        if int_id and int_val:
-                            pending_interrupts[int_id] = int_val
+        from k8s_autopilot.schema.interrupts import (
+            AskUserResumePayload,
+            GoalReviewResumePayload,
+            HitlResumePayload,
+        )
 
-                    # Check tasks and nested subgraphs
-                    tasks_to_check = list(getattr(graph_state, "tasks", ()) or ())
-                    while tasks_to_check:
-                        t = tasks_to_check.pop(0)
-                        for int_obj in getattr(t, "interrupts", ()) or ():
-                            int_id = getattr(int_obj, "id", None) or (
-                                int_obj.get("id") if isinstance(int_obj, dict) else None
-                            )
-                            int_val = getattr(int_obj, "value", None) or (
-                                int_obj.get("value") if isinstance(int_obj, dict) else None
-                            )
-                            if int_id and int_val:
-                                pending_interrupts[int_id] = int_val
-                        sub_state = getattr(t, "state", None)
-                        if sub_state and getattr(sub_state, "tasks", None):
-                            tasks_to_check.extend(sub_state.tasks)
-            except Exception as exc:
-                logger.debug(f"Graph state check for interrupts failed: {exc}")
+        pending_interrupts = await A2AAutoPilotExecutor._get_pending_interrupts(agent_graph, config)
 
         # Parse user query if JSON encoded
         parsed_query: Any = query
@@ -968,129 +1021,19 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 # 1. ask_user interrupt
                 if int_val.get("type") == "ask_user" or "questions" in int_val:
                     questions = int_val.get("questions", [])
-                    if isinstance(parsed_query, dict):
-                        if "status" in parsed_query and parsed_query["status"] == "cancelled":
-                            resume_payload[int_id] = {
-                                "status": "cancelled",
-                                "answers": ["(cancelled)" for _ in questions],
-                            }
-                        elif "answers" in parsed_query:
-                            raw_answers = parsed_query["answers"]
-                            resume_payload[int_id] = {
-                                "status": parsed_query.get("status", "answered"),
-                                "answers": (
-                                    raw_answers
-                                    if isinstance(raw_answers, list)
-                                    else [str(raw_answers)]
-                                ),
-                            }
-                        elif "choice" in parsed_query:
-                            resume_payload[int_id] = {
-                                "status": "answered",
-                                "answers": [str(parsed_query["choice"])],
-                            }
-                        elif "text" in parsed_query:
-                            resume_payload[int_id] = {
-                                "status": "answered",
-                                "answers": [str(parsed_query["text"])],
-                            }
-                        else:
-                            resume_payload[int_id] = parsed_query
-                    elif isinstance(parsed_query, list):
-                        resume_payload[int_id] = {
-                            "status": "answered",
-                            "answers": [str(x) for x in parsed_query],
-                        }
-                    elif isinstance(parsed_query, str):
-                        resume_payload[int_id] = {
-                            "status": "answered",
-                            "answers": [parsed_query],
-                        }
-                    else:
-                        resume_payload[int_id] = {
-                            "status": "answered",
-                            "answers": [str(parsed_query)],
-                        }
+                    payload = AskUserResumePayload.from_raw(parsed_query, questions=questions)
+                    resume_payload[int_id] = payload.model_dump()
                     continue
 
                 # 2. HITL tool authorization interrupt
                 if "action_requests" in int_val or int_val.get("type") == "hitl":
-                    if isinstance(parsed_query, dict) and "decisions" in parsed_query:
-                        resume_payload[int_id] = {"decisions": parsed_query["decisions"]}
-                    elif isinstance(parsed_query, dict) and "decision" in parsed_query:
-                        choice = str(parsed_query["decision"]).lower().strip()
-                        if choice in ("auto_approve_all", "enable_auto", "auto", "a"):
-                            action_type = "approve"
-                            # Persist auto mode for this thread
-                            tid = (
-                                config.get("configurable", {}).get("thread_id")
-                                or getattr(task, "context_id", None)
-                                or getattr(task, "id", None)
-                            )
-                            if tid:
-                                try:
-                                    from k8s_autopilot.security.approval_mode import awrite_approval_mode
-
-                                    await awrite_approval_mode(agent_graph, str(tid), mode="auto")
-                                except Exception as exc:
-                                    logger.debug(f"Failed to persist auto mode to LangGraph store: {exc}")
-
-                            try:
-                                from k8s_autopilot.api.settings_routes import get_config_store
-                                from k8s_autopilot.config.store import ConfigCategory
-
-                                cfg_store = await get_config_store()
-                                await cfg_store.set(
-                                    key="APPROVAL_MODE",
-                                    value="auto",
-                                    category=ConfigCategory.SECURITY,
-                                    display_name="Approval Mode",
-                                )
-                            except Exception as exc:
-                                logger.debug(f"Failed to persist auto mode to ConfigStore: {exc}")
-
-                            from k8s_autopilot.config.settings import get_settings
-                            get_settings().approval_mode = "auto"
-                            resume_payload[int_id] = {"decisions": [{"type": action_type}]}
-                        elif choice in ("approve", "yes", "confirm", "y"):
-                            action_type = "approve"
-                            resume_payload[int_id] = {"decisions": [{"type": action_type}]}
-                        else:
-                            action_type = "reject"
-                            msg_text = str(
-                                parsed_query.get("message")
-                                or parsed_query.get("feedback")
-                                or ""
-                            ).strip()
-                            dec_dict: dict[str, Any] = {"type": action_type}
-                            if msg_text:
-                                dec_dict["message"] = msg_text
-                            resume_payload[int_id] = {"decisions": [dec_dict]}
-                    elif isinstance(parsed_query, str):
-                        choice = parsed_query.lower().strip()
-                        if choice in ("auto_approve_all", "enable_auto", "auto", "a"):
-                            action_type = "approve"
-                            tid = (
-                                config.get("configurable", {}).get("thread_id")
-                                or getattr(task, "context_id", None)
-                                or getattr(task, "id", None)
-                            )
-                            if tid:
-                                try:
-                                    from k8s_autopilot.security.approval_mode import awrite_approval_mode
-
-                                    await awrite_approval_mode(agent_graph, str(tid), mode="auto")
-                                except Exception as exc:
-                                    logger.debug(f"Failed to persist auto mode to store: {exc}")
-                            from k8s_autopilot.config.settings import get_settings
-                            get_settings().approval_mode = "auto"
-                        elif choice in ("approve", "yes", "confirm", "y"):
-                            action_type = "approve"
-                        else:
-                            action_type = "reject"
-                        resume_payload[int_id] = {"decisions": [{"type": action_type}]}
-                    else:
-                        resume_payload[int_id] = parsed_query
+                    req_count = len(int_val.get("action_requests", [])) or 1
+                    hitl_payload = HitlResumePayload.from_raw(parsed_query, count=req_count)
+                    if hitl_payload.auto_approve_requested:
+                        await A2AAutoPilotExecutor._persist_auto_mode(agent_graph, config, task)
+                    resume_payload[int_id] = {
+                        "decisions": [d.model_dump(exclude_none=True) for d in hitl_payload.decisions]
+                    }
                     continue
 
                 # 3. Goal review / confirmation interrupt
@@ -1099,7 +1042,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
                     or ("objective" in int_val and "criteria" in int_val)
                     or "goal" in int_val
                 ):
-                    resume_payload[int_id] = parsed_query
+                    goal_payload = GoalReviewResumePayload.from_raw(parsed_query)
+                    resume_payload[int_id] = goal_payload.model_dump(exclude_none=True)
                     continue
 
                 # 4. Default fallback for other interrupts
@@ -1136,41 +1080,14 @@ class A2AAutoPilotExecutor(AgentExecutor):
             if choice in ("approve", "yes", "confirm", "auto", "auto_approve_all", "reject", "deny", "cancel"):
                 is_interrupted = True
                 if choice in ("auto", "auto_approve_all"):
-                    tid = (
-                        config.get("configurable", {}).get("thread_id")
-                        or getattr(task, "context_id", None)
-                        or getattr(task, "id", None)
-                    )
-                    if tid:
-                        try:
-                            from k8s_autopilot.security.approval_mode import awrite_approval_mode
-
-                            await awrite_approval_mode(agent_graph, str(tid), mode="auto")
-                        except Exception:
-                            pass
-                    from k8s_autopilot.config.settings import get_settings
-                    get_settings().approval_mode = "auto"
+                    await A2AAutoPilotExecutor._persist_auto_mode(agent_graph, config, task)
                     parsed_query = "approve"
 
         if is_interrupted:
-            # Also persist auto mode if parsed_query is dict with auto choice
             if isinstance(parsed_query, dict) and "decision" in parsed_query:
                 dec_str = str(parsed_query["decision"]).lower().strip()
                 if dec_str in ("auto_approve_all", "enable_auto", "auto", "a"):
-                    tid = (
-                        config.get("configurable", {}).get("thread_id")
-                        or getattr(task, "context_id", None)
-                        or getattr(task, "id", None)
-                    )
-                    if tid:
-                        try:
-                            from k8s_autopilot.security.approval_mode import awrite_approval_mode
-
-                            await awrite_approval_mode(agent_graph, str(tid), mode="auto")
-                        except Exception:
-                            pass
-                    from k8s_autopilot.config.settings import get_settings
-                    get_settings().approval_mode = "auto"
+                    await A2AAutoPilotExecutor._persist_auto_mode(agent_graph, config, task)
             logger.info(
                 "Resuming graph from interrupt (fallback) — wrapping as Command(resume=...)",
                 extra={
@@ -1309,11 +1226,96 @@ class A2AAutoPilotExecutor(AgentExecutor):
         except Exception as exc:
             logger.debug(f"Failed to persist live approval mode to store in _init_stream_telemetry: {exc}")
 
+        # 5. Load historical thread baseline tokens and cost from SessionManager
+        init_in = 0
+        init_out = 0
+        init_cost = 0.0
+        seen_msg_tokens: dict[str, tuple[int, int]] = {}
+        try:
+            from k8s_autopilot.state.session import SessionManager
+
+            sm_in, sm_out, sm_cost, msg_ids = await SessionManager().get_thread_token_usage_and_cost(context_id)
+            init_in = sm_in
+            init_out = sm_out
+            init_cost = sm_cost
+            for mid in msg_ids:
+                seen_msg_tokens[mid] = (-1, -1)
+        except Exception as exc:
+            logger.debug(f"Failed loading thread telemetry baseline in _init_stream_telemetry: {exc}")
+
+        # 6. Restore authoritative goal and rubric state from checkpoint snapshot
+        init_goal_status: str | None = None
+        init_goal_obj: str | None = None
+        init_rubric: str | None = None
+        if agent_graph is not None and hasattr(agent_graph, "aget_state"):
+            try:
+                config = {"configurable": {"thread_id": context_id}}
+                try:
+                    state_snapshot = await agent_graph.aget_state(config, subgraphs=True)
+                except TypeError:
+                    state_snapshot = await agent_graph.aget_state(config)
+                if state_snapshot and state_snapshot.values:
+                    vals = state_snapshot.values
+                    if vals.get("_session_cost_usd") is not None:
+                        try:
+                            val = float(vals["_session_cost_usd"])
+                            if math.isfinite(val) and val >= 0:
+                                init_cost = val
+                        except Exception:
+                            pass
+                    if "_goal_status" in vals and vals["_goal_status"]:
+                        init_goal_status = str(vals["_goal_status"])
+                    if "_rubric_status" in vals and vals["_rubric_status"]:
+                        r_stat = str(vals["_rubric_status"]).lower()
+                        if r_stat in ("satisfied", "passed", "complete"):
+                            init_goal_status = "complete"
+                        elif r_stat in ("max_iterations_reached", "failed", "blocked") and init_goal_status != "complete":
+                            init_goal_status = "blocked"
+                    if "_goal_objective" in vals and vals["_goal_objective"]:
+                        init_goal_obj = str(vals["_goal_objective"])
+                    raw_rubric = (
+                        vals.get("rubric")
+                        or vals.get("_goal_rubric")
+                        or vals.get("_sticky_rubric")
+                        or vals.get("criteria")
+                    )
+                    if isinstance(raw_rubric, list):
+                        init_rubric = "\n".join(f"- {c}" for c in raw_rubric if c)
+                    elif isinstance(raw_rubric, str) and raw_rubric.strip():
+                        init_rubric = raw_rubric.strip()
+            except Exception as exc:
+                logger.debug(f"Failed loading thread goal state in _init_stream_telemetry: {exc}")
+
+        # Fallback to direct DB read via SessionManager if snapshot didn't have goal
+        if not init_goal_obj or not init_rubric:
+            try:
+                from k8s_autopilot.state.session import SessionManager
+
+                db_goal = await SessionManager().get_thread_goal_state(context_id)
+                if not init_goal_obj and db_goal.get("objective"):
+                    init_goal_obj = db_goal["objective"]
+                if not init_goal_status and db_goal.get("status"):
+                    init_goal_status = db_goal["status"]
+                if not init_rubric and db_goal.get("rubric"):
+                    init_rubric = db_goal["rubric"]
+            except Exception as exc:
+                logger.debug(f"Failed fallback DB read for goal state in _init_stream_telemetry: {exc}")
+
+        if init_rubric and not init_goal_status:
+            init_goal_status = "active"
+
         return _StreamTelemetryState(
+            cumulative_input_tokens=init_in,
+            cumulative_output_tokens=init_out,
+            cumulative_cost_usd=init_cost,
+            processed_message_tokens=seen_msg_tokens,
             current_approval_mode=approval_mode,
             approval_mode_key=live_key,
             active_model=active_model,
             active_effort=active_effort,
+            current_goal_status=init_goal_status,
+            current_goal_objective=init_goal_obj,
+            current_rubric=init_rubric,
         )
 
     def _attach_stream_trace(self, msg_obj: Message, event_type: str, ctx: _StreamContext) -> None:
@@ -1326,6 +1328,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
             event_type,
             approval_mode=t.current_approval_mode,
             goal_status=t.current_goal_status,
+            goal_objective=t.current_goal_objective,
+            goal_rubric=t.current_rubric,
             rubric_active=bool(t.current_rubric),
             rubric_label=t.derive_rubric_label(),
             input_tokens=t.cumulative_input_tokens,
@@ -1366,6 +1370,38 @@ class A2AAutoPilotExecutor(AgentExecutor):
             ctx.telemetry.step_index += 1
         ctx.active_tool_surfaces.clear()
 
+    def _process_message_telemetry(self, msg: Any, ctx: _StreamContext) -> None:
+        """Accumulate token counts and estimate cost for a message if not already processed."""
+        if not msg:
+            return
+        t = ctx.telemetry
+        mid = getattr(msg, "id", None)
+        if mid and mid in t.processed_message_tokens and t.processed_message_tokens[mid] == (-1, -1):
+            return
+
+        usage = (
+            getattr(msg, "usage_metadata", None)
+            or getattr(msg, "response_metadata", {}).get("token_usage")
+            or getattr(msg, "response_metadata", {}).get("usage")
+        )
+        if not isinstance(usage, dict):
+            return
+
+        new_in = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+        new_out = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+        if not new_in and not new_out:
+            return
+
+        prev_in, prev_out = t.processed_message_tokens.get(mid, (0, 0)) if mid else (0, 0)
+        delta_in = max(0, new_in - prev_in)
+        delta_out = max(0, new_out - prev_out)
+
+        if delta_in > 0 or delta_out > 0:
+            t.cumulative_input_tokens += delta_in
+            t.cumulative_output_tokens += delta_out
+            if mid:
+                t.processed_message_tokens[mid] = (max(prev_in, new_in), max(prev_out, new_out))
+
     async def _handle_messages_chunk(self, payload: Any, ctx: _StreamContext) -> None:
         """Handle a chunk from mode == 'messages'."""
         if isinstance(payload, tuple) and len(payload) >= 1:
@@ -1378,25 +1414,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         if is_conversation_control_message(msg):
             return
 
-        usage = (
-            getattr(msg, "usage_metadata", None)
-            or getattr(msg, "response_metadata", {}).get("token_usage")
-            or getattr(msg, "response_metadata", {}).get("usage")
-            or (meta.get("usage") if isinstance(meta, dict) else None)
-        )
-        if isinstance(usage, dict):
-            inp = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
-            outp = usage.get("output_tokens") or usage.get("completion_tokens") or 0
-            if inp or outp:
-                ctx.telemetry.cumulative_input_tokens = int(inp)
-                ctx.telemetry.cumulative_output_tokens = int(outp)
-            try:
-                from k8s_autopilot.middleware.cost_tracking import estimate_cost
-                est = estimate_cost(usage, ctx.telemetry.active_model)
-                if est and not ctx.telemetry.cumulative_cost_usd:
-                    ctx.telemetry.cumulative_cost_usd = est
-            except Exception:
-                pass
+        self._process_message_telemetry(msg, ctx)
 
         if isinstance(msg, (AIMessage, AIMessageChunk)):
             await self._handle_aimessage_chunk(msg, meta, ctx)
@@ -1531,6 +1549,10 @@ class A2AAutoPilotExecutor(AgentExecutor):
                             await ctx.updater.update_status(TaskState.TASK_STATE_WORKING, msg_out)
                             ctx.telemetry.step_index += 1
                             await asyncio.sleep(0)
+                elif tc_name in ("propose_goal", "get_goal", "get_rubric", "update_goal"):
+                    # Goal lifecycle tools have their own specialized interrupt surfaces
+                    # or are internal queries. Do not emit generic terminal execution cards.
+                    pass
                 else:
                     display_name = _humanize_tool_name(tc_name)
                     surface_id = f"tool-{tc_id}" if tc_id else f"tool-{tc_name}-{uuid.uuid4().hex[:8]}"
@@ -1566,6 +1588,21 @@ class A2AAutoPilotExecutor(AgentExecutor):
         content_out = str(getattr(msg, "content", ""))
         status_str = getattr(msg, "status", "success")
         is_error = status_str == "error" or (isinstance(content_out, str) and content_out.startswith("Error:"))
+
+        if tool_name == "propose_goal":
+            if content_out and not is_error:
+                # Update status bar telemetry for goal confirmation without emitting an intermediate agent chat message.
+                meta_msg = self._make_stream_message_parts(
+                    [],
+                    ctx.renderer.message_id,
+                    ctx.context_id,
+                    ctx.task.id,
+                )
+                self._attach_stream_trace(meta_msg, "goal_confirmed", ctx)
+                await ctx.updater.update_status(TaskState.TASK_STATE_WORKING, meta_msg)
+                ctx.telemetry.step_index += 1
+                await asyncio.sleep(0)
+            return
 
         if ctx.use_ui:
             tracked = ctx.active_tool_surfaces.pop(tool_call_id, None) or ctx.active_tool_surfaces.pop(tool_name, None)
@@ -1656,19 +1693,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
         subagent_name = self._resolve_subagent_name(namespace, meta, ctx)
 
-        # Track token usage from subagent message if available
-        usage = (
-            getattr(msg, "usage_metadata", None)
-            or getattr(msg, "response_metadata", {}).get("token_usage")
-            or getattr(msg, "response_metadata", {}).get("usage")
-            or (meta.get("usage") if isinstance(meta, dict) else None)
-        )
-        if isinstance(usage, dict):
-            inp = usage.get("input_tokens") or usage.get("prompt_tokens") or 0
-            outp = usage.get("output_tokens") or usage.get("completion_tokens") or 0
-            if inp or outp:
-                ctx.telemetry.cumulative_input_tokens += int(inp)
-                ctx.telemetry.cumulative_output_tokens += int(outp)
+        # Track token usage and step cost from subagent message if available
+        self._process_message_telemetry(msg, ctx)
 
         if isinstance(msg, (AIMessage, AIMessageChunk)):
             text, thinking = _extract_text_and_thinking(
@@ -1737,22 +1763,39 @@ class A2AAutoPilotExecutor(AgentExecutor):
         for node_name, node_val in payload.items():
             if isinstance(node_val, dict):
                 if "_goal_status" in node_val:
-                    t.current_goal_status = node_val["_goal_status"]
+                    t.current_goal_status = str(node_val["_goal_status"])
+                if "_rubric_status" in node_val:
+                    rubric_stat = str(node_val["_rubric_status"]).lower()
+                    if rubric_stat in ("satisfied", "passed", "complete"):
+                        t.current_goal_status = "complete"
+                    elif rubric_stat in ("max_iterations_reached", "failed", "blocked"):
+                        t.current_goal_status = "blocked"
                 if "_goal_objective" in node_val:
-                    t.current_goal_objective = node_val["_goal_objective"]
-                if "rubric" in node_val:
+                    t.current_goal_objective = str(node_val["_goal_objective"])
+                if "rubric" in node_val and node_val["rubric"]:
                     t.current_rubric = node_val["rubric"]
-                elif "_goal_rubric" in node_val:
+                elif "_goal_rubric" in node_val and node_val["_goal_rubric"]:
                     t.current_rubric = node_val["_goal_rubric"]
+                elif "_sticky_rubric" in node_val and node_val["_sticky_rubric"]:
+                    t.current_rubric = node_val["_sticky_rubric"]
+                elif "criteria" in node_val and node_val["criteria"]:
+                    t.current_rubric = node_val["criteria"]
+
+                if isinstance(t.current_rubric, list):
+                    t.current_rubric = "\n".join(f"- {c}" for c in t.current_rubric if c)
+                elif isinstance(t.current_rubric, str):
+                    t.current_rubric = t.current_rubric.strip()
+
+                if t.current_rubric and not t.current_goal_status:
+                    t.current_goal_status = "active"
+
                 if "_session_cost_usd" in node_val and node_val["_session_cost_usd"] is not None:
                     try:
-                        t.cumulative_cost_usd = float(node_val["_session_cost_usd"])
+                        val = float(node_val["_session_cost_usd"])
+                        if math.isfinite(val) and val >= 0:
+                            t.cumulative_cost_usd = val
                     except Exception:
                         pass
-                if "_context_tokens" in node_val and node_val["_context_tokens"]:
-                    ctx_toks = int(node_val["_context_tokens"])
-                    if ctx_toks > (t.cumulative_input_tokens + t.cumulative_output_tokens):
-                        t.cumulative_input_tokens = ctx_toks - t.cumulative_output_tokens
                 if "approval_mode" in node_val:
                     t.current_approval_mode = str(node_val["approval_mode"])
 
@@ -1760,20 +1803,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 if node_msgs:
                     node_msg_list = node_msgs if isinstance(node_msgs, list) else [node_msgs]
                     for m in node_msg_list:
-                        u = getattr(m, "usage_metadata", None) or getattr(m, "response_metadata", {}).get("usage")
-                        if isinstance(u, dict):
-                            inp = u.get("input_tokens") or u.get("prompt_tokens") or 0
-                            outp = u.get("output_tokens") or u.get("completion_tokens") or 0
-                            if inp or outp:
-                                t.cumulative_input_tokens = int(inp)
-                                t.cumulative_output_tokens = int(outp)
-                            try:
-                                from k8s_autopilot.middleware.cost_tracking import estimate_cost
-                                est = estimate_cost(u, t.active_model)
-                                if est and not t.cumulative_cost_usd:
-                                    t.cumulative_cost_usd = est
-                            except Exception:
-                                pass
+                        self._process_message_telemetry(m, ctx)
 
         interrupt_val = payload.get("__interrupt__")
         if interrupt_val:
@@ -1796,6 +1826,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
                     step_index=t.step_index,
                     approval_mode=t.current_approval_mode,
                     goal_status=t.current_goal_status,
+                    goal_objective=t.current_goal_objective,
+                    goal_rubric=t.current_rubric,
                     rubric_active=bool(t.current_rubric),
                     rubric_label=t.derive_rubric_label(),
                     input_tokens=t.cumulative_input_tokens,
@@ -1815,19 +1847,80 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 await ctx.event_queue.enqueue_event(getattr(payload, payload_field))
         elif isinstance(payload, dict):
             if payload.get("type") == "session_cost" or payload.get("event") == "session_cost":
-                cost_val = payload.get("total") or payload.get("cost_usd") or payload.get("total_cost_usd")
-                if cost_val is not None:
-                    try:
-                        ctx.telemetry.cumulative_cost_usd = float(cost_val)
-                    except Exception:
-                        pass
+                evt_tid = payload.get("thread_id")
+                if not evt_tid or str(evt_tid) == ctx.context_id:
+                    cost_val = payload.get("total") or payload.get("cost_usd") or payload.get("total_cost_usd")
+                    if cost_val is not None and not isinstance(cost_val, bool):
+                        try:
+                            val = float(cost_val)
+                            if math.isfinite(val) and val >= 0:
+                                ctx.telemetry.cumulative_cost_usd = val
+                        except Exception:
+                            pass
             if "goal_status" in payload:
                 ctx.telemetry.current_goal_status = payload["goal_status"]
             if payload.get("type") == "subagent":
+                phase = str(payload.get("phase") or "start")
+                subagent_type = str(payload.get("subagent_type") or "subagent")
+                desc = str(payload.get("description") or "")
+                call_id = str(payload.get("id") or uuid.uuid4().hex[:8])
+                surface_id = (
+                    ctx.active_tool_surfaces[call_id]["surface_id"]
+                    if call_id in ctx.active_tool_surfaces
+                    else f"tool-task-{call_id}"
+                )
+
+                lifecycle_data = {
+                    "type": "subagent_lifecycle",
+                    "phase": phase,
+                    "id": call_id,
+                    "eval_id": payload.get("eval_id"),
+                    "subagent_type": subagent_type,
+                    "description": desc,
+                    "duration_ms": payload.get("duration_ms"),
+                }
+
+                parts = []
+                if ctx.use_ui:
+                    if phase == "start":
+                        if call_id not in ctx.active_tool_surfaces:
+                            ops = build_tool_execution_surface(
+                                surface_id=surface_id,
+                                tool_name=f"Subagent: {subagent_type}",
+                                status="running",
+                                parameters={"task": desc, "subagent": subagent_type} if desc else {"subagent": subagent_type},
+                            )
+                            parts.extend(create_a2ui_part(op) for op in ops)
+                            ctx.active_tool_surfaces[call_id] = {
+                                "surface_id": surface_id,
+                                "start_time": time.monotonic(),
+                                "tool_name": f"Subagent: {subagent_type}",
+                                "parameters": {"task": desc, "subagent": subagent_type},
+                                "environment": "",
+                            }
+                        else:
+                            update_op = update_tool_execution_data(
+                                surface_id=surface_id,
+                                status="running",
+                                toolName=f"Subagent: {subagent_type}",
+                            )
+                            parts.append(create_a2ui_part(update_op))
+                    elif phase in ("complete", "error"):
+                        status_str = "success" if phase == "complete" else "error"
+                        dur_ms = int(payload.get("duration_ms") or 0)
+                        update_op = update_tool_execution_data(
+                            surface_id=surface_id,
+                            status=status_str,
+                            durationMs=dur_ms,
+                        )
+                        parts.append(create_a2ui_part(update_op))
+                        ctx.active_tool_surfaces.pop(call_id, None)
+
                 msg_out = self._make_stream_message_parts(
-                    [], ctx.renderer.message_id, ctx.context_id, ctx.task.id
+                    parts, ctx.renderer.message_id, ctx.context_id, ctx.task.id
                 )
                 msg_out.metadata["subagent"] = json.dumps(payload)
+                msg_out.metadata["subagent_lifecycle"] = json.dumps(lifecycle_data)
                 self._attach_stream_trace(msg_out, "subagent_event", ctx)
                 await ctx.updater.update_status(TaskState.TASK_STATE_WORKING, msg_out)
                 ctx.telemetry.step_index += 1
@@ -1843,32 +1936,44 @@ class A2AAutoPilotExecutor(AgentExecutor):
         await self._flush_active_tool_surfaces(ctx, status="success")
 
         t = ctx.telemetry
-        if t.cumulative_input_tokens == 0 and t.cumulative_output_tokens == 0 and agent_graph is not None:
+        if agent_graph is not None:
             try:
                 latest_state = await agent_graph.aget_state(config)
                 if latest_state and latest_state.values:
                     vals = latest_state.values
-                    if vals.get("_context_tokens"):
-                        t.cumulative_input_tokens = int(vals["_context_tokens"])
                     if vals.get("_session_cost_usd") is not None:
-                        t.cumulative_cost_usd = float(vals["_session_cost_usd"])
+                        try:
+                            val = float(vals["_session_cost_usd"])
+                            if math.isfinite(val) and val >= 0:
+                                t.cumulative_cost_usd = val
+                        except Exception:
+                            pass
+                    if "_goal_status" in vals and vals["_goal_status"]:
+                        t.current_goal_status = str(vals["_goal_status"])
+                    if "_rubric_status" in vals and vals["_rubric_status"]:
+                        r_stat = str(vals["_rubric_status"]).lower()
+                        if r_stat in ("satisfied", "passed", "complete"):
+                            t.current_goal_status = "complete"
+                        elif r_stat in ("max_iterations_reached", "failed", "blocked") and t.current_goal_status != "complete":
+                            t.current_goal_status = "blocked"
+                    if "_goal_objective" in vals and vals["_goal_objective"]:
+                        t.current_goal_objective = str(vals["_goal_objective"])
+                    raw_rubric = (
+                        vals.get("rubric")
+                        or vals.get("_goal_rubric")
+                        or vals.get("_sticky_rubric")
+                        or vals.get("criteria")
+                    )
+                    if isinstance(raw_rubric, list):
+                        t.current_rubric = "\n".join(f"- {c}" for c in raw_rubric if c)
+                    elif isinstance(raw_rubric, str) and raw_rubric.strip():
+                        t.current_rubric = raw_rubric.strip()
+                    if t.current_rubric and not t.current_goal_status:
+                        t.current_goal_status = "active"
+
                     msgs = vals.get("messages", [])
-                    for m in reversed(msgs):
-                        if getattr(m, "type", "") == "ai" or isinstance(m, AIMessage):
-                            u = getattr(m, "usage_metadata", None)
-                            if isinstance(u, dict):
-                                inp = u.get("input_tokens") or u.get("prompt_tokens") or 0
-                                outp = u.get("output_tokens") or u.get("completion_tokens") or 0
-                                if inp or outp:
-                                    t.cumulative_input_tokens = int(inp)
-                                    t.cumulative_output_tokens = int(outp)
-                                    if not t.cumulative_cost_usd:
-                                        try:
-                                            from k8s_autopilot.middleware.cost_tracking import estimate_cost
-                                            t.cumulative_cost_usd = estimate_cost(u, t.active_model) or 0.0
-                                        except Exception:
-                                            pass
-                                    break
+                    for m in msgs:
+                        self._process_message_telemetry(m, ctx)
             except Exception:
                 pass
 
@@ -1898,7 +2003,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         agent_graph: Any = None,
         config: dict[str, Any] | None = None,
     ) -> None:
-        """Stream deep agent Pregel graph events and dispatch A2A / A2UI updates."""
+        """Stream agent Pregel graph events and dispatch A2A / A2UI updates."""
         agent_name = getattr(self.agent, "name", "k8sAutopilotAgent")
         logger.info(
             "Starting agent execution stream",
@@ -2161,6 +2266,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
         event_type: str,
         approval_mode: str = "manual",
         goal_status: str | None = None,
+        goal_objective: str | None = None,
+        goal_rubric: str | None = None,
         rubric_active: bool = False,
         rubric_label: str | None = None,
         input_tokens: int = 0,
@@ -2180,6 +2287,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
             "action": event_type,
             "approval_mode": approval_mode or "manual",
             "goal_status": goal_status,
+            "goal_objective": goal_objective,
+            "goal_rubric": goal_rubric,
             "rubric_active": rubric_active,
             "rubric_label": rubric_label,
             "input_tokens": input_tokens,
@@ -2198,6 +2307,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
             "timestamp": datetime.now(UTC).isoformat(),
             "approval_mode": approval_mode or "manual",
             "goal_status": goal_status or "",
+            "goal_objective": goal_objective or "",
+            "goal_rubric": goal_rubric or "",
             "rubric_active": rubric_active or False,
             "rubric_label": rubric_label or "",
             "input_tokens": input_tokens,
@@ -2233,6 +2344,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
         step_index: int,
         approval_mode: str = "manual",
         goal_status: str | None = None,
+        goal_objective: str | None = None,
+        goal_rubric: str | None = None,
         rubric_active: bool = False,
         rubric_label: str | None = None,
         input_tokens: int = 0,
@@ -2301,6 +2414,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 "ask_user_interrupt",
                 approval_mode=approval_mode,
                 goal_status=goal_status,
+                goal_objective=goal_objective,
+                goal_rubric=goal_rubric,
                 rubric_active=rubric_active,
                 rubric_label=rubric_label,
                 input_tokens=input_tokens,
@@ -2314,16 +2429,24 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
         # 2. HITL Tool Approval Interrupt
         action_requests = raw_val.get("action_requests") if isinstance(raw_val, dict) else None
-        if action_requests:
-            first_req = (
-                action_requests[0]
-                if isinstance(action_requests, list) and action_requests
-                else raw_val
-            )
+        first_req = (
+            action_requests[0]
+            if isinstance(action_requests, list) and action_requests
+            else raw_val
+        ) if action_requests else None
+        req_name = str(
+            (first_req or {}).get("name")
+            or (first_req or {}).get("action_type")
+            or (first_req or {}).get("tool_name")
+            or ""
+        )
+
+        if action_requests and req_name != "propose_goal":
             req_dict: dict[str, Any] = first_req if isinstance(first_req, dict) else {}
             action_type: str = str(
                 req_dict.get("action_type")
                 or req_dict.get("tool_name")
+                or req_dict.get("name")
                 or "Action Approval"
             )
             description: str = str(
@@ -2381,6 +2504,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 "hitl_interrupt",
                 approval_mode=approval_mode,
                 goal_status=goal_status,
+                goal_objective=goal_objective,
+                goal_rubric=goal_rubric,
                 rubric_active=rubric_active,
                 rubric_label=rubric_label,
                 input_tokens=input_tokens,
@@ -2398,21 +2523,34 @@ class A2AAutoPilotExecutor(AgentExecutor):
             or "goal_review" in raw_val
             or ("objective" in raw_val and "criteria" in raw_val)
             or ("goalText" in raw_val and "criteria" in raw_val)
+            or (action_requests and req_name == "propose_goal")
         ):
-            goal_obj = raw_val.get("goal") or raw_val.get("goal_review") or raw_val
-            goal_text = ""
-            criteria_raw = []
-            if isinstance(goal_obj, dict):
+            if action_requests and req_name == "propose_goal":
+                first_req_dict = first_req if isinstance(first_req, dict) else {}
+                tool_args_raw = first_req_dict.get("args") or first_req_dict.get("parameters") or {}
+                tool_args = tool_args_raw if isinstance(tool_args_raw, dict) else {}
                 goal_text = str(
-                    goal_obj.get("objective")
-                    or goal_obj.get("goal")
-                    or goal_obj.get("goalText")
-                    or goal_obj.get("goal_text")
+                    tool_args.get("objective")
+                    or tool_args.get("goal")
+                    or tool_args.get("goalText")
                     or "Goal Review"
                 )
-                criteria_raw = goal_obj.get("criteria", [])
+                criteria_raw = tool_args.get("criteria", [])
             else:
-                goal_text = str(goal_obj)
+                goal_obj = raw_val.get("goal") or raw_val.get("goal_review") or raw_val
+                goal_text = ""
+                criteria_raw = []
+                if isinstance(goal_obj, dict):
+                    goal_text = str(
+                        goal_obj.get("objective")
+                        or goal_obj.get("goal")
+                        or goal_obj.get("goalText")
+                        or goal_obj.get("goal_text")
+                        or "Goal Review"
+                    )
+                    criteria_raw = goal_obj.get("criteria", [])
+                else:
+                    goal_text = str(goal_obj)
 
             if isinstance(criteria_raw, list):
                 criteria_list = [str(c).strip() for c in criteria_raw if str(c).strip()]
@@ -2457,6 +2595,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 "goal_interrupt",
                 approval_mode=approval_mode,
                 goal_status=goal_status,
+                goal_objective=goal_objective,
+                goal_rubric=goal_rubric,
                 rubric_active=rubric_active,
                 rubric_label=rubric_label,
                 input_tokens=input_tokens,

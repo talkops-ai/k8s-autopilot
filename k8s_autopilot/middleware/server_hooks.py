@@ -93,8 +93,9 @@ from k8s_autopilot.utils.logger import get_logger
 logger = get_logger(__name__)
 
 _DEFAULT_DEADLINE = timedelta(seconds=30)
-_TASK_TOOL_NAME = "subagent"
-_TASK_TOOL_NAMES: tuple[str, ...] = ("task", "subagent", "js_eval")
+_TASK_TOOL_NAME = "task"
+_SUBAGENT_TOOL_NAMES: tuple[str, ...] = ("task", "subagent", "start_async_task")
+_TASK_TOOL_NAMES: tuple[str, ...] = ("task", "subagent", "start_async_task", "js_eval")
 _COMPACT_TOOL_NAME = "compact"
 _INVOCATION_NAMESPACE = UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 _PRE_TOOL_STATE_KEY = "_hooks_pre_tool_outcomes"
@@ -146,7 +147,7 @@ def _subagent_transcript_config(
     call: ToolCallData,
     config: RunnableConfig,
 ) -> Generator[None, None, None]:
-    if call.name != _TASK_TOOL_NAME:
+    if call.name not in _SUBAGENT_TOOL_NAMES:
         yield
         return
 
@@ -241,20 +242,19 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         request = started_or_blocked
         started = time.perf_counter()
 
-        if call.name in _TASK_TOOL_NAMES:
+        if call.name in _SUBAGENT_TOOL_NAMES:
             from langchain_core.callbacks.manager import dispatch_custom_event
 
             subagent_type = str(
                 call.args.get("subagent_type")
                 or call.args.get("name")
                 or call.args.get("agent")
-                or ("js_eval" if call.name == "js_eval" else "subagent")
+                or call.name
             )
             description = str(
                 call.args.get("description")
                 or call.args.get("prompt")
                 or call.args.get("task")
-                or call.args.get("code")
                 or ""
             )
             try:
@@ -277,7 +277,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             result = handler(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
 
-        if call.name in _TASK_TOOL_NAMES:
+        if call.name in _SUBAGENT_TOOL_NAMES:
             from langchain_core.callbacks.manager import dispatch_custom_event
 
             outcome = "error" if _tool_result_failed(result, call.id) else "complete"
@@ -323,20 +323,19 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         request = started_or_blocked
         started = time.perf_counter()
 
-        if call.name in _TASK_TOOL_NAMES:
+        if call.name in _SUBAGENT_TOOL_NAMES:
             from langchain_core.callbacks.manager import adispatch_custom_event
 
             subagent_type = str(
                 call.args.get("subagent_type")
                 or call.args.get("name")
                 or call.args.get("agent")
-                or ("js_eval" if call.name == "js_eval" else "subagent")
+                or call.name
             )
             description = str(
                 call.args.get("description")
                 or call.args.get("prompt")
                 or call.args.get("task")
-                or call.args.get("code")
                 or ""
             )
             try:
@@ -359,7 +358,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             result = await handler(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
 
-        if call.name in _TASK_TOOL_NAMES:
+        if call.name in _SUBAGENT_TOOL_NAMES:
             from langchain_core.callbacks.manager import adispatch_custom_event
 
             outcome = "error" if _tool_result_failed(result, call.id) else "complete"
@@ -410,7 +409,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         context: HookContext,
         gate: _SessionHookGate | None,
     ) -> ToolCallRequest | ToolMessage:
-        if call.name != _TASK_TOOL_NAME or not _event_enabled(
+        if call.name not in _SUBAGENT_TOOL_NAMES or not _event_enabled(
             gate, HookEvent.SUBAGENT_START
         ):
             return request
@@ -558,7 +557,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         config: Mapping[str, Any] | None,
         result: ToolMessage | Command[Any],
     ) -> ToolMessage | Command[Any]:
-        if call.name != _TASK_TOOL_NAME or not _event_enabled(
+        if call.name not in _SUBAGENT_TOOL_NAMES or not _event_enabled(
             gate, HookEvent.SUBAGENT_STOP
         ):
             return result
@@ -1110,11 +1109,23 @@ def _inject_subagent_start_context(
     return request.override(tool_call=tool_call)
 
 
-def _task_agent_identity(call: ToolCallData) -> AgentIdentity:
-    name = call.args.get("subagent_type")
+def _task_agent_identity(call: ToolCallData | dict[str, Any] | Any) -> AgentIdentity:
+    if isinstance(call, dict):
+        args = call.get("args") or {}
+        call_id = str(call.get("id") or "")
+    else:
+        args = getattr(call, "args", {}) or {}
+        call_id = str(getattr(call, "id", "") or "")
+    if not isinstance(args, dict):
+        args = {}
+    name = (
+        args.get("subagent_type")
+        or args.get("name")
+        or args.get("agent")
+    )
     if not isinstance(name, str) or not name:
         name = "unknown"
-    return AgentIdentity(id=call.id or name, name=name)
+    return AgentIdentity(id=call_id or name, name=name)
 
 
 def _tool_result_text(result: ToolMessage | Command[Any], call_id: str) -> str:

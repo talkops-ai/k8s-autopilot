@@ -6,7 +6,7 @@ Run with::
     # or:
     python -m k8s_autopilot.integrations.slack.server --port 3000
 
-This creates the deep agent via ``create_k8s_autopilot_agent`` and
+This creates the agent graph via ``create_k8s_autopilot_agent`` and
 runs on a separate port with Slack Bolt as the event ingress.
 """
 
@@ -78,14 +78,14 @@ def main(host: str, port: int, config_file: str | None) -> None:
             )
             sys.exit(1)
 
-        logger.info("Initializing K8s Autopilot deep agent for Slack…")
+        logger.info("Initializing K8s Autopilot agent for Slack…")
 
         agent_graph, backend = create_k8s_autopilot_agent(
             model=settings.model,
             auto_approve=(settings.approval_mode == "yolo"),
         )
 
-        logger.info("Deep agent ready for Slack")
+        logger.info("Agent ready for Slack")
 
         app = create_slack_integration_server(
             config=settings,

@@ -68,7 +68,7 @@ class SlackOperationClassification(BaseModel):
         "observability_operator",
         "general",
     ] = Field(
-        description="The deep agent domain this request primarily targets.",
+        description="The agent domain this request primarily targets.",
     )
     reasoning: str = Field(
         description="Brief explanation of the classification decision.",

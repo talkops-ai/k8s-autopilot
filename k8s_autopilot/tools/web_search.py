@@ -1,7 +1,4 @@
-"""Web search tool utilizing the Tavily API.
-
-Ported from ``reference/opscode/src/opscode/tools/web_search.py``.
-"""
+"""Web search tool utilizing the Tavily API."""
 
 from __future__ import annotations
 

@@ -1,7 +1,5 @@
 """Goal tools middleware for notice-based goal/rubric orientation.
 
-Ported from ``reference/opscode/src/opscode/middleware/goal_tools.py``.
-
 Exposes constrained goal tools (``get_goal``, ``get_rubric``, ``update_goal``)
 and keeps the model oriented via **goal-state notices**: lightweight internal
 messages appended to checkpointed history whenever goal/rubric state changes.

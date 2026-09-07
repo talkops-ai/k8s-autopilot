@@ -124,13 +124,14 @@ class TestCacheHelpers:
 
     def test_cache_recent_threads(self) -> None:
         from k8s_autopilot.state.session import (
+            ThreadInfo,
             _cache_recent_threads,
             _recent_threads_cache,
             get_cached_threads,
         )
 
         _recent_threads_cache.clear()
-        threads = [{"thread_id": "t1", "agent_name": None, "updated_at": None}]
+        threads: list[ThreadInfo] = [{"thread_id": "t1", "agent_name": None, "updated_at": None}]
         _cache_recent_threads(None, 20, threads)
 
         cached = get_cached_threads(limit=20)
@@ -148,11 +149,12 @@ class TestCacheHelpers:
 class TestSessionAsync:
     """Async integration tests for session management."""
 
-    async def test_list_threads_empty_db(self, tmp_path) -> None:
+    async def test_list_threads_empty_db(self, tmp_path, monkeypatch) -> None:
         """list_threads on an empty/nonexistent DB returns empty list."""
         from k8s_autopilot.state import session
 
-        # Point to a temp DB path
+        monkeypatch.setattr(session, "get_active_backend", lambda: "sqlite")
+        monkeypatch.setattr(session, "get_postgres_uri", lambda: "")
         original = session._db_path
         session._db_path = tmp_path / "test_sessions.db"
         try:
@@ -161,10 +163,12 @@ class TestSessionAsync:
         finally:
             session._db_path = original
 
-    async def test_delete_thread_empty_db(self, tmp_path) -> None:
+    async def test_delete_thread_empty_db(self, tmp_path, monkeypatch) -> None:
         """delete_thread on empty DB returns False."""
         from k8s_autopilot.state import session
 
+        monkeypatch.setattr(session, "get_active_backend", lambda: "sqlite")
+        monkeypatch.setattr(session, "get_postgres_uri", lambda: "")
         original = session._db_path
         session._db_path = tmp_path / "test_sessions.db"
         try:
@@ -172,3 +176,14 @@ class TestSessionAsync:
             assert result is False
         finally:
             session._db_path = original
+
+    async def test_get_thread_token_usage_empty_db(self, tmp_path) -> None:
+        """get_thread_token_usage_and_cost on nonexistent thread returns zeros."""
+        from k8s_autopilot.state.session import SessionManager
+
+        sm = SessionManager()
+        inp, outp, cost, msgs = await sm.get_thread_token_usage_and_cost("nonexistent-id-999")
+        assert inp == 0
+        assert outp == 0
+        assert cost == 0.0
+        assert msgs == []

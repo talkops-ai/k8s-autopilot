@@ -84,9 +84,31 @@ def _clean_mcp_schema(schema: Any) -> dict[str, Any]:
     return cleaned
 
 
+def _clean_stderr_diagnostic(stderr_text: str | None) -> str | None:
+    """Extract a concise and meaningful diagnostic message from captured process stderr."""
+    if not stderr_text:
+        return None
+    lines = [line.strip() for line in stderr_text.strip().splitlines() if line.strip()]
+    if not lines:
+        return None
+    # Prefer lines with explicit error descriptions, CRD missing, or exception details
+    for line in reversed(lines):
+        if line.startswith("Traceback") or line.startswith("File ") or set(line) <= {"─", "│", "╭", "╮", "╰", "╯", " ", "█", "▀", "▄"}:
+            continue
+        if any(keyword in line for keyword in ("CRD not found", "not found", "Error:", "Exception:", "failed", "Error", "Exception")):
+            if ": " in line and ("Error" in line.split(": ")[0] or "Exception" in line.split(": ")[0]):
+                return line.split(": ", 1)[1].strip() or line
+            return line
+    for line in reversed(lines):
+        if not (line.startswith("Traceback") or line.startswith("File ") or set(line) <= {"─", "│", "╭", "╮", "╰", "╯", " ", "█", "▀", "▄"}):
+            return line
+    return lines[-1]
+
+
 def _extract_root_mcp_error(
     exc: BaseException | None,
     close_exc: BaseException | None,
+    stderr_output: str | None = None,
 ) -> tuple[MCPServerStatus, str]:
     """Extract root cause error message and status code ('error' or 'unauthenticated') from probe exceptions."""
     all_excs: list[BaseException] = []
@@ -118,6 +140,10 @@ def _extract_root_mcp_error(
             return "error", f"Connection refused: {msg}"
         if isinstance(e, asyncio.TimeoutError):
             return "error", "Connection timed out after 5.0s"
+
+    stderr_diag = _clean_stderr_diagnostic(stderr_output)
+    if stderr_diag:
+        return "error", stderr_diag
 
     for e in all_excs:
         msg = str(e)
@@ -190,20 +216,61 @@ async def probe_one_mcp_server(
     exit_stack = AsyncExitStack()
     primary_exc: BaseException | None = None
     close_exc: BaseException | None = None
+    captured_stderr: str | None = None
     try:
         from langchain_mcp_adapters.sessions import create_session
         from k8s_autopilot.mcp.session_manager import create_mcp_connection
 
-        conn = create_mcp_connection(resolved_config)
+        if transport == "stdio":
+            import tempfile
+            from mcp.client.stdio import stdio_client, StdioServerParameters
+            from mcp import ClientSession
 
-        session = await asyncio.wait_for(
-            exit_stack.enter_async_context(create_session(conn)),
-            timeout=_PROBE_TIMEOUT,
-        )
-        await asyncio.wait_for(session.initialize(), timeout=_PROBE_TIMEOUT)
-        tools_result = await asyncio.wait_for(
-            session.list_tools(), timeout=_PROBE_TIMEOUT
-        )
+            stdio_env = dict(os.environ)
+            raw_env = resolved_config.get("env")
+            if isinstance(raw_env, dict):
+                stdio_env.update(raw_env)
+            raw_args = resolved_config.get("args")
+            args_list = list(raw_args) if isinstance(raw_args, (list, tuple)) else []
+            server_params = StdioServerParameters(
+                command=str(resolved_config.get("command") or ""),
+                args=args_list,
+                env=stdio_env,
+                cwd=resolved_config.get("cwd"),
+            )
+            with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file:
+                try:
+                    read_stream, write_stream = await asyncio.wait_for(
+                        exit_stack.enter_async_context(
+                            stdio_client(server_params, errlog=stderr_file)
+                        ),
+                        timeout=_PROBE_TIMEOUT,
+                    )
+                    session = await exit_stack.enter_async_context(
+                        ClientSession(read_stream, write_stream)
+                    )
+                    await asyncio.wait_for(session.initialize(), timeout=_PROBE_TIMEOUT)
+                    tools_result = await asyncio.wait_for(
+                        session.list_tools(), timeout=_PROBE_TIMEOUT
+                    )
+                except BaseException as exc:
+                    primary_exc = exc
+                    try:
+                        stderr_file.seek(0)
+                        captured_stderr = stderr_file.read()
+                    except Exception:
+                        pass
+                    raise
+        else:
+            conn = create_mcp_connection(resolved_config)
+            session = await asyncio.wait_for(
+                exit_stack.enter_async_context(create_session(conn)),
+                timeout=_PROBE_TIMEOUT,
+            )
+            await asyncio.wait_for(session.initialize(), timeout=_PROBE_TIMEOUT)
+            tools_result = await asyncio.wait_for(
+                session.list_tools(), timeout=_PROBE_TIMEOUT
+            )
 
         tools: list[MCPToolInfo] = []
         raw_tools = getattr(tools_result, "tools", []) or []
@@ -251,7 +318,7 @@ async def probe_one_mcp_server(
         except BaseException as ce:
             close_exc = ce
 
-    status, err_msg = _extract_root_mcp_error(primary_exc, close_exc)
+    status, err_msg = _extract_root_mcp_error(primary_exc, close_exc, captured_stderr)
     logger.warning("MCP server '%s' probe failed (%s): %s", name, status, err_msg)
     return MCPServerInfo(
         name=name,

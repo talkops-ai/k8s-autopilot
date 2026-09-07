@@ -1,7 +1,4 @@
-"""Stderr marker emission used by server and graph startup entry points.
-
-Ported from ``reference/opscode/src/opscode/utils/startup_error.py``.
-"""
+"""Stderr marker emission used by server and graph startup entry points."""
 
 from __future__ import annotations
 

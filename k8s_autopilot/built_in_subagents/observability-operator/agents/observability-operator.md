@@ -8,14 +8,19 @@ description: >
   LogQL log analysis, TraceQL trace search, RED metrics analysis, cross-pillar correlation
   (metrics ↔ traces ↔ logs), and Tempo/OTel Operator CRD lifecycle.
 tools: >
-  Read, Write, ls, glob, execute,
-  *prom_*, *prom://*,
-  *am_*, *am://*,
-  *otel_*, *otel://*,
-  *get_cluster_labels, *get_label_values, *get_active_series,
-  *get_detected_fields, *get_log_patterns, *get_query_stats,
-  *execute_logql_*, *loki_query_a2ui, *loki://*,
-  *tempo_*, *tempo://*,
+  Read, Write, Edit, ls, glob, grep, execute,
+  mcp__talkops-prometheus-mcp-server__*,
+  mcp__talkops-alertmanager-mcp-server__*,
+  mcp__talkops-opentelemetry-mcp-server__*,
+  mcp__talkops-loki-mcp-server__*,
+  mcp__talkops-tempo-mcp-server__*,
+  prom_*, prom://*,
+  am_*, am://*,
+  otel_*, otel://*,
+  get_cluster_labels, get_label_values, get_active_series,
+  get_detected_fields, get_log_patterns, get_query_stats,
+  execute_logql_*, loki_query_a2ui, loki://*,
+  tempo_*, tempo://*,
   read_mcp_resource, ask_user
 skills:
   - prometheus

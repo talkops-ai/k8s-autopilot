@@ -1,11 +1,8 @@
 """Local shell and filesystem backend for K8s Autopilot.
 
-Extends the deep-agents SDK ``LocalShellBackend`` with a curated shell
+Extends ``LocalShellBackend`` with a curated shell
 environment that preserves Kubernetes, Helm, ArgoCD, and observability
 tool environment variables.
-
-Ported from ``reference/opscode/src/opscode/backend/local.py`` with
-K8s-specific env-var set.
 """
 
 from __future__ import annotations

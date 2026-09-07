@@ -7,11 +7,10 @@ description: >
   traffic splitting, middleware configuration, and multi-environment
   promotion across dev, staging, and production.
 tools: >
-  Read, Write, ls, glob, execute,
-  *_application*, *get_sync_status, *_repositor*, *_project*,
-  *argo_*, *convert_*, *validate_deployment_ready,
-  *create_stable_canary_services, *generate_argocd_ignore_differences,
-  *traefik_*,
+  Read, Write, Edit, ls, glob, grep, execute,
+  mcp__talkops-argocd-mcp-server__*,
+  mcp__talkops-argo-rollout-mcp-server__*,
+  mcp__talkops-traefik-mcp-server__*,
   read_mcp_resource, ask_user
 ---
 

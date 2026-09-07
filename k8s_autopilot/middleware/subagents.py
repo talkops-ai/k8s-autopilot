@@ -1,7 +1,5 @@
 """Subagents middleware — manages subagent metadata and system-prompt injection.
 
-Ported from ``reference/opscode/src/opscode/middleware/subagents.py``.
-
 Lifecycle:
 1. Constructed with a list of ``SubagentMetadata`` dicts.
 2. ``before_agent`` — injects a concise listing of subagent names and
@@ -25,6 +23,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 from langchain_core.messages import SystemMessage
+from deepagents.middleware._utils import append_to_system_message
 
 from k8s_autopilot.middleware.registry import register_middleware
 
@@ -56,8 +55,10 @@ class SubagentsMiddleware(AgentMiddleware):
     def __init__(
         self,
         subagent_metas: Sequence[SubagentMetadata] | None = None,
+        planning_mode: bool = False,
     ) -> None:
         super().__init__()
+        self._planning_mode = planning_mode
         self._registry: dict[str, SubagentMetadata] = {}
         if subagent_metas:
             for meta in subagent_metas:
@@ -66,8 +67,9 @@ class SubagentsMiddleware(AgentMiddleware):
                     self._registry[name] = meta
 
         logger.debug(
-            "[SubagentsMiddleware] Initialized with %d subagent(s): %s",
+            "[SubagentsMiddleware] Initialized with %d subagent(s) (planning_mode=%s): %s",
             len(self._registry),
+            self._planning_mode,
             list(self._registry.keys()),
         )
 
@@ -111,6 +113,19 @@ class SubagentsMiddleware(AgentMiddleware):
         """Build the system-prompt fragment dynamically listing available subagents."""
         if not self._registry:
             return ""
+
+        if self._planning_mode:
+            lines: list[str] = ["\n\n## Subagent Delegation & Operational Capabilities\n"]
+            lines.append(
+                "K8s Autopilot operates with specialized autonomous subagents to execute and verify tasks. "
+                "You do NOT execute tasks or run subagents yourself. "
+                "Use this context solely to understand the operational capabilities and verification boundaries available when drafting acceptance criteria:\n"
+            )
+            for name in sorted(self._registry):
+                meta = self._registry[name]
+                desc = meta.get("description", "No description provided.")
+                lines.append(f"- **`{name}`**: {desc}")
+            return "\n".join(lines)
 
         builtin_agents: list[SubagentMetadata] = []
         plugin_agents: list[SubagentMetadata] = []
@@ -240,14 +255,8 @@ class SubagentsMiddleware(AgentMiddleware):
         """Inject the subagent prompt block into system_message before model execution."""
         block = self._build_prompt_block()
         if block and request.system_message is not None:
-            curr_content = request.system_message.content or ""
-            if isinstance(curr_content, str):
-                new_content = curr_content + block
-            elif isinstance(curr_content, list):
-                new_content = list(curr_content) + [block]
-            else:
-                new_content = block
-            request = request.override(system_message=SystemMessage(content=new_content))
+            new_system_msg = append_to_system_message(request.system_message, block)
+            request = request.override(system_message=new_system_msg)
         return handler(request)
 
     async def awrap_model_call(
@@ -258,12 +267,6 @@ class SubagentsMiddleware(AgentMiddleware):
         """Async variant of wrap_model_call."""
         block = self._build_prompt_block()
         if block and request.system_message is not None:
-            curr_content = request.system_message.content or ""
-            if isinstance(curr_content, str):
-                new_content = curr_content + block
-            elif isinstance(curr_content, list):
-                new_content = list(curr_content) + [block]
-            else:
-                new_content = block
-            request = request.override(system_message=SystemMessage(content=new_content))
+            new_system_msg = append_to_system_message(request.system_message, block)
+            request = request.override(system_message=new_system_msg)
         return await handler(request)

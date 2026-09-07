@@ -146,6 +146,15 @@ async def test_coordinator_agent_does_not_attach_subagent_mcp_tools(tmp_path: Pa
             assert len(sub_tools) > 0, (
                 f"Subagent '{expected_name}' must have its scoped MCP tools attached"
             )
+            sub_tool_names = [getattr(t, "name", str(t)) for t in sub_tools]
+            for st_name in sub_tool_names:
+                assert not st_name.startswith("subagent__"), (
+                    f"Redundant subagent__ prefix found in subagent tool: {st_name}"
+                )
+            assert len(sub_tool_names) == len(set(sub_tool_names)), (
+                f"Duplicate tools found in subagent '{expected_name}': "
+                f"{[x for x in sub_tool_names if sub_tool_names.count(x) > 1]}"
+            )
 
         # Verify MCPSessionManager accumulated all subagents servers
         from k8s_autopilot.mcp.session_manager import MCPSessionManager
@@ -172,5 +181,6 @@ def test_subagent_mcp_configs_adapter_for_builtin_subagent() -> None:
     configs = subagent_mcp_configs("helm-operator", helm_dir)
     assert "talkops-helm-mcp-server" in configs
     assert configs["talkops-helm-mcp-server"]["command"] == "helm-mcp-server"
-    assert "subagent__helm-operator__talkops-helm-mcp-server" in configs
+    assert "subagent__helm-operator__talkops-helm-mcp-server" not in configs
+    assert len(configs) == 1
 

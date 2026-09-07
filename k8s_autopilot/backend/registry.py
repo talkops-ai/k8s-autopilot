@@ -1,7 +1,4 @@
-"""Singleton registry for backend providers.
-
-Ported from ``reference/opscode/src/opscode/backend/registry.py``.
-"""
+"""Singleton registry for backend providers."""
 
 from __future__ import annotations
 

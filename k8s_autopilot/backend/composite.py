@@ -2,8 +2,6 @@
 
 Routes special virtual paths (``/large_tool_results/``) to temporary
 backends while delegating everything else to the default ``LocalShellBackend``.
-
-Ported from ``reference/opscode/src/opscode/backend/composite.py``.
 """
 
 from __future__ import annotations

@@ -1,7 +1,4 @@
-"""Runtime thread identification tool for K8s Autopilot.
-
-Ported from ``reference/opscode/src/opscode/tools/thread.py``.
-"""
+"""Runtime thread identification tool for K8s Autopilot."""
 
 from __future__ import annotations
 
@@ -16,7 +13,7 @@ logger = get_logger(__name__)
 
 @tool
 def get_current_thread_id(config: RunnableConfig) -> str:
-    """Get the current Deep Agents thread ID for LangSmith or MCP tooling.
+    """Get the current thread ID for LangSmith or MCP tooling.
 
     Args:
         config: Runtime config injected by LangChain.

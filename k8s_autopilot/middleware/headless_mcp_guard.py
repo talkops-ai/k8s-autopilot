@@ -1,7 +1,4 @@
-"""Headless MCP guard middleware — rejects mutating MCP calls when no approval UI exists.
-
-Ported from ``reference/opscode/src/opscode/middleware/headless_mcp_guard.py``.
-"""
+"""Headless MCP guard middleware — rejects mutating MCP calls when no approval UI exists."""
 
 from __future__ import annotations
 

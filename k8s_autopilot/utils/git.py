@@ -1,7 +1,4 @@
-"""Lightweight git metadata helpers for state detection and repository inspection.
-
-Ported from ``reference/opscode/src/opscode/utils/git.py``.
-"""
+"""Lightweight git metadata helpers for state detection and repository inspection."""
 
 from __future__ import annotations
 

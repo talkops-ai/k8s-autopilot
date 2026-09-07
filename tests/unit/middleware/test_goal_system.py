@@ -385,6 +385,50 @@ class TestProposeGoalParser:
         assert len(cmd.update["messages"]) == 1
         assert "Goal confirmed by user" in cmd.update["messages"][0].content
 
+    def test_approve_decision(self):
+        from k8s_autopilot.tools.goal_tools import _parse_goal_response
+
+        # Direct approve
+        cmd = _parse_goal_response(
+            response={"decision": "approve"},
+            objective="Deploy ArgoCD App",
+            criteria=["sync application", "verify healthy"],
+            tool_call_id="call_appr",
+        )
+        assert cmd.update["_goal_objective"] == "Deploy ArgoCD App"
+        assert cmd.update["_goal_status"] == "active"
+        assert "Goal confirmed by user" in cmd.update["messages"][0].content
+
+        # HITL response format
+        cmd2 = _parse_goal_response(
+            response={"action": "hitl_response", "decision": "approve"},
+            objective="Deploy ArgoCD App",
+            criteria=["sync application"],
+            tool_call_id="call_hitl",
+        )
+        assert cmd2.update["_goal_objective"] == "Deploy ArgoCD App"
+        assert cmd2.update["_goal_status"] == "active"
+
+        # Decisions list format from wrap_resume
+        cmd3 = _parse_goal_response(
+            response={"decisions": [{"type": "approve"}]},
+            objective="Deploy ArgoCD App",
+            criteria=["sync application"],
+            tool_call_id="call_dec",
+        )
+        assert cmd3.update["_goal_objective"] == "Deploy ArgoCD App"
+        assert cmd3.update["_goal_status"] == "active"
+
+        # Wrapped by interrupt id
+        cmd4 = _parse_goal_response(
+            response={"int_abc123": {"decision": "confirm"}},
+            objective="Deploy ArgoCD App",
+            criteria=["sync application"],
+            tool_call_id="call_wrap",
+        )
+        assert cmd4.update["_goal_objective"] == "Deploy ArgoCD App"
+        assert cmd4.update["_goal_status"] == "active"
+
     def test_edit_decision(self):
         from k8s_autopilot.tools.goal_tools import _parse_goal_response
 
@@ -463,5 +507,196 @@ class TestProposeGoalParser:
             assert "Configure alert rules" in captured_interrupt["criteria"]
             assert cmd.update["_goal_status"] == "active"
             assert "- Deploy Prometheus" in cmd.update["_goal_rubric"]
+            assert "- Deploy Prometheus" in cmd.update["_sticky_rubric"]
+
+    def test_propose_goal_persists_sticky_rubric_on_edit(self):
+        from unittest.mock import patch
+        from k8s_autopilot.tools.goal_tools import propose_goal
+
+        def mock_interrupt(req):
+            return {
+                "decision": "edit",
+                "criteria": ["Custom criterion 1", "Custom criterion 2"],
+            }
+
+        with patch("k8s_autopilot.tools.goal_tools.interrupt", side_effect=mock_interrupt):
+            cmd = propose_goal.invoke({
+                "args": {
+                    "objective": "Setup ingress controller",
+                    "criteria": ["Default crit 1"],
+                },
+                "name": "propose_goal",
+                "type": "tool_call",
+                "id": "call_edit_1",
+            })
+            assert cmd.update["_goal_status"] == "active"
+            assert "- Custom criterion 1" in cmd.update["_goal_rubric"]
+            assert "- Custom criterion 1" in cmd.update["_sticky_rubric"]
+            assert cmd.update["_goal_status_note"] is None
+            assert cmd.update["_pending_goal_completion_note"] is None
+
+
+class TestReliableRubricGoalLifecycleBridge:
+    """Test ReliableRubricMiddleware bridging rubric verdicts to goal lifecycle."""
+
+    def test_satisfied_verdict_completes_goal_and_commits_staged_note(self):
+        from k8s_autopilot.middleware.reliable_rubric import ReliableRubricMiddleware
+
+        mw = ReliableRubricMiddleware(model="gpt-4o")
+        mock_state = {
+            "_goal_objective": "Deploy Prometheus monitoring",
+            "_goal_status": "active",
+            "_pending_goal_completion_note": "Prometheus and alert manager deployed and healthy",
+            "messages": [],
+        }
+        evaluation = {
+            "grading_run_id": "run-123",
+            "result": "satisfied",
+            "iteration": 0,
+            "explanation": "All criteria met",
+            "criteria": [{"name": "Prometheus running", "result": "satisfied"}],
+        }
+
+        update = mw._compose_update(mock_state, evaluation)
+        assert update["_goal_status"] == "complete"
+        assert update["_goal_status_note"] == "Prometheus and alert manager deployed and healthy"
+        assert update["_pending_goal_completion_note"] is None
+        assert update["_rubric_status"] == "satisfied"
+
+    def test_max_iterations_reached_marks_goal_blocked(self):
+        from k8s_autopilot.middleware.reliable_rubric import ReliableRubricMiddleware
+
+        mw = ReliableRubricMiddleware(model="gpt-4o")
+        mock_state = {
+            "_goal_objective": "Deploy Prometheus monitoring",
+            "_goal_status": "active",
+            "messages": [],
+        }
+        evaluation = {
+            "grading_run_id": "run-456",
+            "result": "max_iterations_reached",
+            "iteration": 3,
+            "explanation": "Prometheus pod failed readiness check after 3 retries",
+            "criteria": [{"name": "Prometheus running", "result": "failed"}],
+        }
+
+        update = mw._compose_update(mock_state, evaluation)
+        assert update["_goal_status"] == "blocked"
+        assert "readiness check" in update["_goal_status_note"]
+        assert update["_rubric_status"] == "max_iterations_reached"
+
+
+class TestGoalHITLAndCriteriaAgentIntegration:
+    """Test propose_goal exemption from generic HITL gating and its criteria agent invocation."""
+
+    def test_propose_goal_exempt_from_hitl_interrupt(self):
+        """Verify that propose_goal is exempt from HumanInTheLoopMiddleware interruption."""
+        from k8s_autopilot.agent.factory import _should_interrupt_tool_call
+        from k8s_autopilot.middleware.auto_mode_hitl import DynamicInterruptMapping, READONLY_SAFE_TOOLS
+        from k8s_autopilot.security.approval_mode import ApprovalMode
+
+        # 1. READONLY_SAFE_TOOLS and DynamicInterruptMapping check
+        assert "propose_goal" in READONLY_SAFE_TOOLS
+        dim = DynamicInterruptMapping()
+        assert "propose_goal" not in dim
+
+        # 2. _should_interrupt_tool_call in MANUAL mode
+        req = {
+            "name": "propose_goal",
+            "args": {"objective": "Deploy app"},
+        }
+        assert not _should_interrupt_tool_call(req, mode=ApprovalMode.MANUAL)
+        assert not _should_interrupt_tool_call(req, mode=ApprovalMode.AUTO)
+        assert not _should_interrupt_tool_call(req, mode=ApprovalMode.YOLO)
+
+    def test_draft_goal_criteria_invokes_criteria_agent(self):
+        """Verify draft_goal_criteria runs active criteria agent when set."""
+        from unittest.mock import MagicMock
+        from langchain_core.messages import AIMessage
+        from k8s_autopilot.tools.goal_tools import (
+            draft_goal_criteria,
+            set_active_criteria_agent,
+        )
+
+        mock_criteria_agent = MagicMock()
+        mock_criteria_agent.invoke.return_value = {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "## Objective\nDeploy cart app to ArgoCD\n\n"
+                        "## Acceptance Criteria\n"
+                        "- Locate ArgoCD namespace and project\n"
+                        "- Generate Application manifest\n"
+                        "- Sync and verify healthy status\n"
+                    )
+                )
+            ]
+        }
+
+        set_active_criteria_agent(mock_criteria_agent, None)
+        try:
+            obj, criteria = draft_goal_criteria(
+                "Deploy cart app",
+                suggested_criteria=["Rough note 1"],
+            )
+            mock_criteria_agent.invoke.assert_called_once()
+            assert "cart app" in obj
+            assert len(criteria) == 3
+            assert any("ArgoCD namespace" in c for c in criteria)
+            assert any("healthy status" in c for c in criteria)
+        finally:
+            set_active_criteria_agent(None, None)
+
+    def test_draft_goal_criteria_falls_back_when_agent_fails(self):
+        """Verify draft_goal_criteria falls back to rubric generator if agent raises."""
+        from unittest.mock import MagicMock, patch
+        from k8s_autopilot.tools.goal_tools import (
+            draft_goal_criteria,
+            set_active_criteria_agent,
+        )
+
+        failing_agent = MagicMock()
+        failing_agent.invoke.side_effect = RuntimeError("Cluster connection timeout")
+
+        set_active_criteria_agent(failing_agent, None)
+        try:
+            with patch(
+                "k8s_autopilot.tools.goal_tools.generate_rubric",
+                return_value="- Fallback criterion 1\n- Fallback criterion 2",
+            ):
+                obj, criteria = draft_goal_criteria("Deploy cart app")
+                assert obj == "Deploy cart app"
+                assert criteria == ["Fallback criterion 1", "Fallback criterion 2"]
+        finally:
+            set_active_criteria_agent(None, None)
+
+    def test_propose_goal_handles_rejection_feedback(self):
+        """Verify rejecting goal proposal triggers draft_goal_criteria with user feedback."""
+        from unittest.mock import patch
+        from k8s_autopilot.tools.goal_tools import propose_goal
+
+        def mock_interrupt(req):
+            assert req["type"] == "goal_review"
+            return {
+                "decision": "reject",
+                "feedback": "Do not deploy to default namespace, use prod-apps",
+            }
+
+        with patch("k8s_autopilot.tools.goal_tools.interrupt", side_effect=mock_interrupt):
+            with patch(
+                "k8s_autopilot.tools.goal_tools.generate_rubric",
+                return_value="- Deploy to prod-apps namespace\n- Verify healthy",
+            ):
+                cmd = propose_goal.invoke({
+                    "args": {"objective": "Deploy cart app"},
+                    "name": "propose_goal",
+                    "type": "tool_call",
+                    "id": "call_reject_1",
+                })
+                msg = cmd.update["messages"][0].content
+                assert "rejected proposed goal criteria with feedback" in msg
+                assert "prod-apps" in msg
+
+
 
 

@@ -130,6 +130,15 @@ def load_namespaced_skills(
     return skills
 
 
+CRITERIA_SKILLS_SYSTEM_PROMPT = """## Skills System & Domain Capabilities
+
+K8s Autopilot operates with a skills library providing domain knowledge and specialized procedures. Use these capabilities to understand what criteria and verification targets are achievable:
+{skills_locations}{skills_load_warnings}
+**Available Skills:**
+
+{skills_list}"""
+
+
 @register_middleware(name="skills")
 class PluginSkillsMiddleware(SkillsMiddleware):
     """Load namespaced plugin skills with optional whitelist filtering for subagent scoping."""
@@ -140,14 +149,27 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         backend: BackendProtocol | None = None,
         sources: Sequence[tuple[str, ...]] | None = None,
         skill_sources: Sequence[Any] | None = None,
-        system_prompt: str | None = sdk_skills.SKILLS_SYSTEM_PROMPT,
+        system_prompt: str | None = None,
         allowed_skills: Sequence[str] | None = None,
+        include_subagent_skills: bool = False,
+        subagents: Sequence[Any] | None = None,
+        planning_mode: bool = False,
     ) -> None:
+        self._planning_mode = planning_mode
+        if system_prompt is None:
+            system_prompt = (
+                CRITERIA_SKILLS_SYSTEM_PROMPT
+                if planning_mode
+                else sdk_skills.SKILLS_SYSTEM_PROMPT
+            )
+
         if backend is None:
             from deepagents.backends.filesystem import FilesystemBackend
             backend = FilesystemBackend(virtual_mode=False)
 
         self._dynamic_sources = (sources is None and skill_sources is None)
+        self._include_subagent_skills = include_subagent_skills
+        self._subagents = subagents
         if sources is None:
             if skill_sources is not None:
                 sources = [
@@ -156,9 +178,12 @@ class PluginSkillsMiddleware(SkillsMiddleware):
                 ]
             else:
                 from k8s_autopilot.skills.registry import SkillRegistry
-                sources = SkillRegistry.get_instance().get_sources_for_middleware()
+                sources = SkillRegistry.get_instance().get_sources_for_middleware(
+                    include_subagent_skills=include_subagent_skills,
+                    subagents=subagents,
+                )
 
-        sdk_sources = [(str(source[0]), str(source[1])) for source in sources]
+        sdk_sources = [(source[0], source[1]) for source in sources]
         super().__init__(
             backend=backend,
             sources=sdk_sources,
@@ -169,6 +194,31 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             for source in sources
         )
         self._allowed_skills = tuple(allowed_skills) if allowed_skills is not None else None
+
+    def _format_skills_locations(self) -> str:
+        """Format skills locations for display in system prompt."""
+        if self._planning_mode:
+            return ""
+        return super()._format_skills_locations()
+
+    def _format_skills_load_warnings(self, errors: list[str]) -> str:
+        """Format skills load warnings for display in system prompt."""
+        if self._planning_mode:
+            return ""
+        return super()._format_skills_load_warnings(errors)
+
+    def _format_skills_list(self, skills: list[sdk_skills.SkillMetadata]) -> str:
+        """Format skills metadata cleanly when in planning mode without filesystem paths."""
+        if self._planning_mode:
+            if not skills:
+                return "(No specialized skills currently loaded.)"
+            lines: list[str] = []
+            for skill in skills:
+                name = skill.get("name", "")
+                desc = skill.get("description", "").strip()
+                lines.append(f"- **{name}**: {desc}")
+            return "\n".join(lines)
+        return super()._format_skills_list(skills)
 
     def _is_skill_allowed(self, skill_name: str) -> bool:
         if self._allowed_skills is None:
@@ -181,9 +231,12 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     def _get_live_skills(self) -> tuple[list[sdk_skills.SkillMetadata], list[str]]:
         if self._dynamic_sources:
             from k8s_autopilot.skills.registry import SkillRegistry
-            live_sources = SkillRegistry.get_instance().get_sources_for_middleware()
-            self.sources = [str(s[0]) for s in live_sources]
-            self.source_labels = [str(s[1]) for s in live_sources]
+            live_sources = SkillRegistry.get_instance().get_sources_for_middleware(
+                include_subagent_skills=self._include_subagent_skills,
+                subagents=self._subagents,
+            )
+            self.sources = [s[0] for s in live_sources]
+            self.source_labels = [s[1] for s in live_sources]
             self._namespaces = tuple(
                 s[2] if len(s) == _PLUGIN_SKILL_SOURCE_LENGTH else None
                 for s in live_sources

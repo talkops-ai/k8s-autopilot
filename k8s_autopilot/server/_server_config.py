@@ -1,7 +1,4 @@
-"""Typed configuration for the K8s Autopilot server.
-
-Ported from ``reference/opscode/src/opscode/server/_server_config.py``.
-"""
+"""Typed configuration for the K8s Autopilot server."""
 
 from __future__ import annotations
 

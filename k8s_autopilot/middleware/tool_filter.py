@@ -17,9 +17,14 @@ logger = get_logger(__name__)
 
 TOOL_ALIAS_MAP: dict[str, tuple[str, ...]] = {
     "read": ("read_file", "view_file", "read_url_content"),
+    "read_file": ("read_file", "view_file", "read_url_content"),
     "write": ("write_to_file", "write_file"),
+    "write_file": ("write_to_file", "write_file"),
     "edit": ("replace_file_content", "multi_replace_file_content", "edit_file"),
+    "edit_file": ("replace_file_content", "multi_replace_file_content", "edit_file"),
     "grep": ("grep_search", "grep"),
+    "grep_search": ("grep_search", "grep"),
+    "search": ("grep_search", "grep", "file_search"),
     "glob": ("glob", "file_search", "dir_list"),
     "ls": ("ls", "list_dir", "dir_list"),
     "list_dir": ("ls", "list_dir", "dir_list"),
@@ -30,47 +35,147 @@ TOOL_ALIAS_MAP: dict[str, tuple[str, ...]] = {
 
 def _expand_tool_patterns(patterns: Sequence[str]) -> tuple[str, ...]:
     expanded: list[str] = []
+    seen: set[str] = set()
     for pattern in patterns:
-        expanded.append(pattern)
+        if pattern not in seen:
+            seen.add(pattern)
+            expanded.append(pattern)
         clean = pattern.strip().lower()
         if clean in TOOL_ALIAS_MAP:
-            expanded.extend(TOOL_ALIAS_MAP[clean])
+            for alias in TOOL_ALIAS_MAP[clean]:
+                if alias not in seen:
+                    seen.add(alias)
+                    expanded.append(alias)
     return tuple(expanded)
+
+
+_GLOB_METACHARS = frozenset("*?[")
+
+
+def _entry_matches_tool(pattern: str, tool_name: str, base_name: str, server_name: str | None = None) -> bool:
+    """Check if an allowed pattern matches a tool call under any valid naming projection."""
+    # 1. Server wildcard matches
+    if server_name:
+        if pattern in {f"mcp__{server_name}__*", f"{server_name}:*", f"{server_name}_*", server_name}:
+            return True
+        if fnmatch.fnmatch(server_name, pattern) or fnmatch.fnmatch(server_name.lower(), pattern.lower()):
+            return True
+
+    # 2. Build projection candidates
+    candidates: list[str] = [tool_name, base_name]
+    if server_name:
+        candidates.append(f"mcp__{server_name}__{base_name}")
+        candidates.append(f"{server_name}:{base_name}")
+        candidates.append(f"{server_name}_{base_name}")
+
+    # 3. Test candidates against pattern
+    is_glob = any(ch in _GLOB_METACHARS for ch in pattern)
+    for cand in candidates:
+        if is_glob:
+            if fnmatch.fnmatch(cand, pattern) or fnmatch.fnmatch(cand.lower(), pattern.lower()):
+                return True
+        else:
+            if cand == pattern or cand.lower() == pattern.lower():
+                return True
+
+    return False
 
 
 @register_middleware(name="tool_filter")
 class ToolFilterMiddleware(AgentMiddleware[Any, Any]):
-    """Filters tool calls against a whitelist of allowed tool patterns (fnmatch format)."""
+    """Filters tool calls against an allowlist of allowed tool patterns (fnmatch format).
 
-    def __init__(self, allowed_patterns: Sequence[str] | None = None) -> None:
+    Aligns with OpsCode and DeepAgents architectures:
+    - Symmetrically matches both bare tool names ('get_sync_status') and wire-names ('mcp__server__get_sync_status').
+    - Supports industry standard server wildcards ('mcp__<server>__*').
+    - Expands standard aliases (Read, Write, Edit, grep, glob, ls, execute).
+    """
+
+    def __init__(
+        self,
+        allowed_patterns: Sequence[str | dict[str, Any]] | None = None,
+        capabilities: Sequence[dict[str, Any] | str] | None = None,
+    ) -> None:
         super().__init__()
-        self._allowed_patterns = (
-            _expand_tool_patterns(allowed_patterns) if allowed_patterns is not None else ()
+        patterns: list[str] = []
+
+        if allowed_patterns is not None:
+            for item in allowed_patterns:
+                if isinstance(item, dict):
+                    server = item.get("mcp_server")
+                    if server and item.get("allow_all"):
+                        patterns.append(f"mcp__{server}__*")
+                        patterns.append(f"{server}:*")
+                    if "tools" in item and isinstance(item["tools"], (list, tuple)):
+                        patterns.extend(str(t) for t in item["tools"])
+                elif isinstance(item, str):
+                    patterns.append(item)
+
+        # Legacy backward-compatibility for capabilities dicts
+        if capabilities:
+            for cap in capabilities:
+                if isinstance(cap, dict):
+                    server = cap.get("mcp_server")
+                    if server and cap.get("allow_all"):
+                        patterns.append(f"mcp__{server}__*")
+                        patterns.append(f"{server}:*")
+                    if "tools" in cap and isinstance(cap["tools"], (list, tuple)):
+                        patterns.extend(str(t) for t in cap["tools"])
+                elif isinstance(cap, str):
+                    patterns.append(cap)
+
+        self._allowed_patterns: tuple[str, ...] = (
+            _expand_tool_patterns(patterns) if patterns else ()
         )
 
     def is_tool_allowed(self, tool_name: str) -> bool:
-        """Check if a tool name matches any of the allowed patterns."""
+        """Check if a tool name matches any allowed patterns."""
         if not self._allowed_patterns:
             return True
+
+        # Extract server_name and base_name
+        server_name: str | None = None
+        if tool_name.startswith("mcp__"):
+            parts = tool_name[5:].split("__", 1)
+            server_name = parts[0]
+            base_name = parts[1] if len(parts) > 1 else tool_name
+        elif ":" in tool_name:
+            server_name, base_name = tool_name.split(":", 1)
+        else:
+            base_name = tool_name
+
         for pattern in self._allowed_patterns:
-            if fnmatch.fnmatch(tool_name, pattern) or fnmatch.fnmatch(tool_name.lower(), pattern.lower()):
+            if _entry_matches_tool(pattern, tool_name, base_name, server_name):
                 return True
         return False
 
     def _validate_tool_call(self, request: ToolCallRequest) -> ToolMessage | None:
-        tool_name = request.tool_call.get("name", "") if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else ""
+        tool_name = (
+            request.tool_call.get("name", "")
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else ""
+        )
         if self.is_tool_allowed(tool_name):
             return None
 
-        logger.warning("Tool call %r blocked for subagent (not in allowed list: %s)", tool_name, self._allowed_patterns)
         allowed_str = ", ".join(self._allowed_patterns)
+
+        logger.warning(
+            "Tool call %r blocked for subagent (not in allowed list: %s)",
+            tool_name,
+            allowed_str,
+        )
         return ToolMessage(
             content=(
                 f"Tool call rejected: tool `{tool_name}` is restricted for this subagent. "
                 f"Allowed tool patterns: [{allowed_str}]."
             ),
             name=tool_name,
-            tool_call_id=request.tool_call.get("id", "") if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else "",
+            tool_call_id=(
+                request.tool_call.get("id", "")
+                if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+                else ""
+            ),
             status="error",
         )
 

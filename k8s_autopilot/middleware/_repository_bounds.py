@@ -87,7 +87,13 @@ _BACKEND_ERRORS: tuple[type[BaseException], ...] = (
 class RepositoryBounds:
     """Path-safety and size limits for read-only repository inspection tools."""
 
-    def __init__(self, backend: BackendProtocol, *, root: str = "/") -> None:
+    def __init__(
+        self,
+        backend: BackendProtocol,
+        *,
+        root: str = "/",
+        allowed_tools: Sequence[str] | None = None,
+    ) -> None:
         normalized = root.replace("\\", "/")
         path = PurePosixPath(normalized)
         if not normalized.startswith("/") or ".." in path.parts or "~" in root:
@@ -95,6 +101,11 @@ class RepositoryBounds:
             raise ValueError(msg)
         self._backend = backend
         self._root = str(path)
+        self._allowed_tools = (
+            frozenset(allowed_tools)
+            if allowed_tools is not None
+            else REPOSITORY_TOOL_NAMES
+        )
         self._sandbox = backend if isinstance(backend, SandboxBackendProtocol) else None
         self._filesystem = (
             backend
@@ -238,8 +249,10 @@ class RepositoryBounds:
         return None
 
     def preflight(self, name: str, args: dict[str, Any]) -> str | None:
-        if name not in REPOSITORY_TOOL_NAMES:
+        if name not in self._allowed_tools:
             return REPOSITORY_READ_ONLY_ERROR
+        if name == "execute":
+            return None
         if name in {"glob", "grep"}:
             error = self._validate_search_paths(name, args)
             if error is not None:
@@ -284,8 +297,10 @@ class RepositoryBounds:
         return None
 
     async def apreflight(self, name: str, args: dict[str, Any]) -> str | None:
-        if name not in REPOSITORY_TOOL_NAMES:
+        if name not in self._allowed_tools:
             return REPOSITORY_READ_ONLY_ERROR
+        if name == "execute":
+            return None
         if name in {"glob", "grep"}:
             error = self._validate_search_paths(name, args)
             if error is not None:

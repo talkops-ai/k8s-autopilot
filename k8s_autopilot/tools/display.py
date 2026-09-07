@@ -1,7 +1,4 @@
-"""Display helpers for rendering tool outputs with syntax highlighting.
-
-Ported from ``reference/opscode/src/opscode/tools/display.py``.
-"""
+"""Display helpers for rendering tool outputs with syntax highlighting."""
 
 from __future__ import annotations
 

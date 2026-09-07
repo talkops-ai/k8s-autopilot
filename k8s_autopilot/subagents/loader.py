@@ -20,6 +20,7 @@ from typing import Any
 
 import yaml
 
+from deepagents.middleware.async_subagents import AsyncSubAgent
 from k8s_autopilot.config import paths
 from k8s_autopilot.subagents.subagents_parser import parse_built_in_subagents
 from k8s_autopilot.subagents.types import SubagentMetadata
@@ -83,9 +84,11 @@ def _parse_subagent_file(
 
     raw_mcp_config = frontmatter.get("mcp_config")
     raw_mcp_files = frontmatter.get("mcp_files")
+    raw_capabilities = frontmatter.get("capabilities")
 
     mcp_config = dict(raw_mcp_config) if isinstance(raw_mcp_config, dict) else None
     mcp_files = [str(f) for f in raw_mcp_files] if isinstance(raw_mcp_files, list) else None
+    capabilities = list(raw_capabilities) if isinstance(raw_capabilities, list) else None
 
     meta: SubagentMetadata = {
         "name": name,
@@ -98,6 +101,8 @@ def _parse_subagent_file(
         "source": "built-in",
         "path": str(file_path),
     }
+    if capabilities is not None:
+        meta["capabilities"] = capabilities
     if mcp_config is not None:
         meta["mcp_config"] = mcp_config
     if mcp_files is not None:
@@ -288,6 +293,154 @@ def list_subagents(
 
 
 
-def load_async_subagents(config_path: Path | None = None) -> list[dict[str, Any]]:
-    """Load async subagent definitions from config if configured."""
-    return []
+async def load_async_subagents_async(
+    config_path: Path | None = None,
+    *,
+    store: Any = None,
+) -> list[AsyncSubAgent]:
+    """Load async subagent definitions asynchronously from database store or config.
+
+    In k8s-autopilot, the database is the primary source of truth for centralized deployment.
+    Definitions are discovered from:
+    1. The database ConfigStore ('async_subagents' / 'ASYNC_SUBAGENTS' config entry,
+       or subagents table records with is_async=True / graph_id).
+    2. Optional fallback to config.toml if provided or found on disk.
+    """
+    import inspect
+    import os
+
+    active_store = store
+    if active_store is None:
+        try:
+            from k8s_autopilot.api.settings_routes import _config_store
+            active_store = _config_store
+        except Exception:
+            active_store = None
+
+    agents: list[AsyncSubAgent] = []
+    seen_names: set[str] = set()
+
+    # 1. Database as Source of Truth
+    if active_store is not None:
+        try:
+            raw_async_cfg = None
+            if hasattr(active_store, "get"):
+                res = active_store.get("async_subagents")
+                if inspect.isawaitable(res):
+                    res = await res
+                if not res:
+                    res = active_store.get("ASYNC_SUBAGENTS")
+                    if inspect.isawaitable(res):
+                        res = await res
+                raw_async_cfg = res
+
+            if raw_async_cfg:
+                parsed = json.loads(raw_async_cfg) if isinstance(raw_async_cfg, str) else raw_async_cfg
+                items = parsed if isinstance(parsed, list) else (list(parsed.values()) if isinstance(parsed, dict) else [])
+                for spec in items:
+                    if isinstance(spec, dict) and "name" in spec and "description" in spec and "graph_id" in spec:
+                        agent: AsyncSubAgent = {
+                            "name": spec["name"],
+                            "description": spec["description"],
+                            "graph_id": spec["graph_id"],
+                        }
+                        if "url" in spec and isinstance(spec["url"], str):
+                            agent["url"] = os.path.expandvars(spec["url"])
+                        if "headers" in spec and isinstance(spec["headers"], dict):
+                            agent["headers"] = {
+                                k: os.path.expandvars(str(v)) for k, v in spec["headers"].items()
+                            }
+                        agents.append(agent)
+                        seen_names.add(agent["name"])
+
+            if hasattr(active_store, "list_subagents"):
+                res = active_store.list_subagents()
+                if inspect.isawaitable(res):
+                    res = await res
+                db_records = res or []
+                for rec in db_records:
+                    rec_name = rec.get("name")
+                    if not rec_name or rec_name in seen_names:
+                        continue
+                    if rec.get("is_async") or rec.get("type") == "async" or rec.get("graph_id"):
+                        graph_id = rec.get("graph_id") or rec.get("model") or "agent"
+                        agent_spec: AsyncSubAgent = {
+                            "name": rec_name,
+                            "description": rec.get("description", ""),
+                            "graph_id": str(graph_id),
+                        }
+                        if rec.get("url"):
+                            agent_spec["url"] = os.path.expandvars(str(rec["url"]))
+                        if isinstance(rec.get("headers"), dict):
+                            agent_spec["headers"] = {
+                                k: os.path.expandvars(str(v)) for k, v in rec["headers"].items()
+                            }
+                        agents.append(agent_spec)
+                        seen_names.add(rec_name)
+        except Exception as exc:
+            logger.debug("Could not load async subagents from database: %s", exc)
+
+    # 2. Config file fallback (if provided or present on disk)
+    resolved_config_path = config_path
+    if resolved_config_path is None:
+        try:
+            from k8s_autopilot.config.paths import CONFIG_PATH
+            if CONFIG_PATH.exists():
+                resolved_config_path = CONFIG_PATH
+        except Exception:
+            pass
+
+    if resolved_config_path is not None and resolved_config_path.exists():
+        try:
+            import tomllib
+            with resolved_config_path.open("rb") as f:
+                data = tomllib.load(f)
+            section = data.get("async_subagents")
+            if isinstance(section, dict):
+                required = {"description", "graph_id"}
+                for name, spec in section.items():
+                    if not isinstance(spec, dict) or name in seen_names:
+                        continue
+                    if not required.issubset(spec.keys()):
+                        continue
+                    agent_entry: AsyncSubAgent = {
+                        "name": name,
+                        "description": spec["description"],
+                        "graph_id": spec["graph_id"],
+                    }
+                    if "url" in spec and isinstance(spec["url"], str):
+                        agent_entry["url"] = os.path.expandvars(spec["url"])
+                    if "headers" in spec and isinstance(spec["headers"], dict):
+                        agent_entry["headers"] = {
+                            k: os.path.expandvars(str(v)) for k, v in spec["headers"].items()
+                        }
+                    agents.append(agent_entry)
+                    seen_names.add(name)
+        except Exception as exc:
+            logger.debug("Could not read async subagents from %s: %s", resolved_config_path, exc)
+
+    return agents
+
+
+def load_async_subagents(
+    config_path: Path | None = None,
+    *,
+    store: Any = None,
+) -> list[AsyncSubAgent]:
+    """Load async subagent definitions (synchronous wrapper around load_async_subagents_async)."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(
+                asyncio.run,
+                load_async_subagents_async(config_path=config_path, store=store),
+            ).result()
+    else:
+        return asyncio.run(
+            load_async_subagents_async(config_path=config_path, store=store)
+        )

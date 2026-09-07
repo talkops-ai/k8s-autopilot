@@ -424,7 +424,7 @@ class SlackMessagingIntegration(MessagingIntegration):
         2. ``graph.aget_state()`` — if the graph is **actually paused**
            (``state.next`` is non-empty AND ``state.tasks`` has
            interrupt objects), the coordinator completed without the
-           sink seeing an interrupt (e.g., deep agent returned text
+           sink seeing an interrupt (e.g., agent returned text
            directly after Modify click).  We still need to route the
            next user message as a resume.
 

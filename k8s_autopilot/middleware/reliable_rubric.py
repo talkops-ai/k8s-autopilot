@@ -12,8 +12,6 @@
 - **Internal message filtering**: goal-state notices and rubric-grader evidence
   are stripped from the message history before the SDK builds grader evidence,
   so they do not confuse the nested grader.
-
-Ported from ``reference/opscode/src/opscode/middleware/reliable_rubric.py``.
 """
 
 from __future__ import annotations
@@ -266,6 +264,41 @@ with warnings.catch_warnings():
                 grading_run_id,
                 iteration,
             )
+
+        def _compose_update(
+            self,
+            state: RubricState,
+            evaluation: Any,
+        ) -> dict[str, Any]:
+            """Compose state update and synchronize goal completion lifecycle."""
+            update = super()._compose_update(state, evaluation)
+            result = str(evaluation.get("result", "")).lower()
+
+            # If an active goal is present in state, bridge rubric verdict to goal lifecycle
+            if state.get("_goal_objective"):
+                if result in ("satisfied", "passed", "complete"):
+                    update["_goal_status"] = "complete"
+                    pending_note = state.get("_pending_goal_completion_note")
+                    if pending_note:
+                        update["_goal_status_note"] = pending_note
+                        update["_pending_goal_completion_note"] = None
+                    logger.info(
+                        "Goal '%s' marked complete following satisfied rubric evaluation",
+                        str(state.get("_goal_objective", ""))[:40],
+                    )
+                elif result in ("max_iterations_reached", "failed"):
+                    update["_goal_status"] = "blocked"
+                    update["_goal_status_note"] = (
+                        evaluation.get("explanation")
+                        or "Acceptance criteria not satisfied within iteration limit."
+                    )
+                    logger.warning(
+                        "Goal '%s' marked blocked: rubric evaluation terminated with %s",
+                        str(state.get("_goal_objective", ""))[:40],
+                        result,
+                    )
+
+            return update
 
         # ------------------------------------------------------------------
         # Grader creation (override to inject middleware and context schema)

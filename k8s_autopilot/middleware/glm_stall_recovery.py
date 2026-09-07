@@ -1,7 +1,4 @@
-"""GLM terminal stall recovery middleware for handling model stalls in headless turns.
-
-Ported from ``reference/opscode/src/opscode/middleware/glm_stall_recovery.py``.
-"""
+"""GLM terminal stall recovery middleware for handling model stalls in headless turns."""
 
 from __future__ import annotations
 

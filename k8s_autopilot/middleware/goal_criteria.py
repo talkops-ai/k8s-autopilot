@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
     from langgraph.types import Command
+    from k8s_autopilot.subagents.types import SubagentMetadata
 
 from k8s_autopilot.utils.logger import get_logger
 
@@ -140,11 +141,22 @@ class GoalCriteriaState(ResumeState):
     ]
 
 
-class GoalCriteriaAgentState(AgentState):
+from deepagents.middleware.skills import SkillsState
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    OmitFromOutput,
+    PrivateStateAttr,
+    hook_config,
+)
+
+
+class GoalCriteriaAgentState(SkillsState):
     """Private per-invocation state for the nested criteria agent."""
 
     criteria_objective: NotRequired[str]
     criteria_operation_id: NotRequired[str]
+    _subagent_registry: NotRequired[Annotated[dict[str, Any], PrivateStateAttr]]
 
 
 class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
@@ -345,9 +357,17 @@ class _ContextToolCallBudgetMiddleware(AgentMiddleware[Any, Any]):
 class _RepositoryToolBudgetMiddleware(AgentMiddleware[Any, None]):
     """Bound repository inspection calls and read/result sizes."""
 
-    def __init__(self, backend: BackendProtocol, *, root: str = "/") -> None:
+    def __init__(
+        self,
+        backend: BackendProtocol,
+        *,
+        root: str = "/",
+        allowed_tools: Sequence[str] | None = None,
+    ) -> None:
         super().__init__()
-        self._bounds = RepositoryBounds(backend, root=root)
+        self._bounds = RepositoryBounds(
+            backend, root=root, allowed_tools=allowed_tools
+        )
         self._calls: OrderedDict[str, int] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -906,14 +926,22 @@ def create_goal_criteria_agent(
     repository_backend: BackendProtocol | None,
     repository_root: str = "/",
     context_tools: Sequence[BaseTool | Callable[..., Any]] = (),
+    subagent_metas: Sequence[SubagentMetadata] | None = None,
+    skill_sources: Sequence[tuple[str, ...]] | None = None,
 ) -> Any:
     """Create the ephemeral server-side criteria agent graph."""
+    from deepagents.backends.filesystem import FilesystemBackend
     from deepagents.middleware import FilesystemMiddleware
     from langchain.agents import create_agent
     from langchain.agents.structured_output import ToolStrategy
     from langchain_core.tools import BaseTool as _BaseTool, StructuredTool
 
     from k8s_autopilot.middleware.configurable_model import ConfigurableModelMiddleware
+    from k8s_autopilot.middleware.skills import PluginSkillsMiddleware
+    from k8s_autopilot.middleware.subagents import SubagentsMiddleware
+    from k8s_autopilot.middleware.unified_system_message import (
+        UnifiedSystemMessageMiddleware,
+    )
 
     normalized_context_tools: list[_BaseTool] = []
     for t in context_tools:
@@ -944,8 +972,10 @@ def create_goal_criteria_agent(
         _CriteriaContextBudgetMiddleware(),
     ]
     if repository_backend is not None:
+        fs_tools = ["read_file", "ls", "execute"]
         fs_kwargs: dict[str, Any] = {
             "backend": repository_backend,
+            "tools": fs_tools,
             "tool_token_limit_before_evict": None,
         }
         middleware.extend(
@@ -954,8 +984,56 @@ def create_goal_criteria_agent(
                 _RepositoryToolBudgetMiddleware(
                     repository_backend,
                     root=repository_root,
+                    allowed_tools=fs_tools,
                 ),
             ]
+        )
+
+    # Attach skills middleware: encompasses agent, plugin, and subagent skills in planning mode
+    skills_backend = repository_backend or FilesystemBackend(virtual_mode=False)
+    if skill_sources is not None:
+        middleware.append(
+            PluginSkillsMiddleware(
+                backend=skills_backend,
+                sources=skill_sources,
+                planning_mode=True,
+            )
+        )
+    else:
+        middleware.append(
+            PluginSkillsMiddleware(
+                backend=skills_backend,
+                include_subagent_skills=True,
+                subagents=subagent_metas,
+                planning_mode=True,
+            )
+        )
+
+    # Attach subagents middleware: provides capability overview without js_eval or execution instructions
+    effective_subagent_metas = (
+        list(subagent_metas) if subagent_metas is not None else []
+    )
+    if not effective_subagent_metas:
+        try:
+            from k8s_autopilot.subagents.loader import (
+                get_built_in_subagents,
+                list_subagents,
+            )
+
+            effective_subagent_metas.extend(get_built_in_subagents())
+            effective_subagent_metas.extend(list_subagents())
+        except Exception as exc:
+            logger.debug(
+                "Could not discover default subagents for criteria agent: %s",
+                exc,
+            )
+
+    if effective_subagent_metas:
+        middleware.append(
+            SubagentsMiddleware(
+                subagent_metas=effective_subagent_metas,
+                planning_mode=True,
+            )
         )
 
     from k8s_autopilot.middleware.auto_mode import AsyncApprovalHITLMiddleware
@@ -967,15 +1045,14 @@ def create_goal_criteria_agent(
     if criteria_interrupt_on:
         middleware.append(AsyncApprovalHITLMiddleware(criteria_interrupt_on))
 
+    # Collapse all system message blocks into a single consolidated string
+    middleware.append(UnifiedSystemMessageMiddleware())
+
     return create_agent(
         model=model,
         tools=normalized_context_tools,
         middleware=middleware,
-        system_prompt=GOAL_RUBRIC_SYSTEM_PROMPT.replace(
-            "Repository paths are absolute, rooted at `/`.",
-            "Repository paths are absolute and confined to repository root "
-            f"`{repository_root}`.",
-        ),
+        system_prompt=GOAL_RUBRIC_SYSTEM_PROMPT,
         response_format=ToolStrategy(schema=GoalProposal),
         state_schema=GoalCriteriaAgentState,
         name="goal_criteria_agent",
@@ -996,9 +1073,13 @@ def create_goal_criteria_fallback_agent(
     from langchain.agents.structured_output import ToolStrategy
 
     from k8s_autopilot.middleware.configurable_model import ConfigurableModelMiddleware
+    from k8s_autopilot.middleware.unified_system_message import (
+        UnifiedSystemMessageMiddleware,
+    )
 
     middleware: list[AgentMiddleware[Any, Any]] = [
-        ConfigurableModelMiddleware(persist_model_state=False)
+        ConfigurableModelMiddleware(persist_model_state=False),
+        UnifiedSystemMessageMiddleware(),
     ]
     return create_agent(
         model=model,

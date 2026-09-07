@@ -135,7 +135,7 @@ def _create_langsmith_sandbox(config: SandboxConfig) -> Any:
         sandbox = client.get_sandbox(name=config.sandbox_id)
         return LangSmithSandbox(sandbox)
 
-    snapshot_name = config.snapshot_name or "deepagents-code"
+    snapshot_name = config.snapshot_name or "k8s-autopilot-code"
     image = config.image or "python:3"
 
     logger.info(f"Ensuring LangSmith snapshot ready: {snapshot_name} (image: {image})")
@@ -188,7 +188,7 @@ def _create_other_sandbox(config: SandboxConfig) -> Any:
         except ImportError as e:
             raise ImportError("The 'modal' provider requires 'langchain-modal' package.") from e
         
-        app = modal.App.lookup(name="deepagents-sandbox", create_if_missing=True)
+        app = modal.App.lookup(name="k8s-autopilot-sandbox", create_if_missing=True)
         if config.sandbox_id:
             sandbox = modal.Sandbox.from_id(sandbox_id=config.sandbox_id)
         else:

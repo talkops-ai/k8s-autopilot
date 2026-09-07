@@ -18,6 +18,7 @@ from typing import Any, cast
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware
+from deepagents.middleware.async_subagents import AsyncSubAgent
 from deepagents.middleware.skills import SkillsMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
@@ -238,8 +239,12 @@ def _should_interrupt_tool_call(
         or ""
     )
 
+    from k8s_autopilot._constants import READONLY_FS_TOOLS
+
     decision_interrupt = True
-    if "AGENTS.md" in path_str:
+    if tool_name in READONLY_FS_TOOLS:
+        decision_interrupt = False
+    elif "AGENTS.md" in path_str:
         decision_interrupt = False
     elif mode is ApprovalMode.YOLO or mode == "yolo":
         decision_interrupt = False
@@ -252,11 +257,20 @@ def _should_interrupt_tool_call(
         cli_safety = evaluate_cli_safety(cmd_str)
         if cli_safety.get("is_readonly"):
             decision_interrupt = False
-    elif ":" in tool_name or tool_name not in {"execute", "run_command", "read_file", "write_file", "edit_file", "write_todos", "task", "subagent", "js_eval"}:
+    elif ":" in tool_name or tool_name.startswith("mcp__") or tool_name not in {"execute", "run_command", "read_file", "write_file", "edit_file", "write_todos", "task", "subagent", "js_eval"}:
         from k8s_autopilot.mcp.semantic_profiler import MCPSemanticProfiler
 
-        srv_name = tool_name.split(":", 1)[0] if ":" in tool_name else ""
-        raw_tname = tool_name.split(":", 1)[1] if ":" in tool_name else tool_name
+        if tool_name.startswith("mcp__"):
+            parts = tool_name[5:].split("__", 1)
+            srv_name = parts[0]
+            raw_tname = parts[1] if len(parts) > 1 else tool_name
+        elif ":" in tool_name:
+            srv_name = tool_name.split(":", 1)[0]
+            raw_tname = tool_name.split(":", 1)[1]
+        else:
+            srv_name = ""
+            raw_tname = tool_name
+
         profiler = MCPSemanticProfiler.get_instance()
         profile = profiler.get_profile(srv_name, raw_tname)
         if profile is None:
@@ -400,6 +414,7 @@ def _subagent_cli_middleware(
     subagent_name: str,
     allowed_tools: Sequence[str] | None = None,
     allowed_skills: Sequence[str] | None = None,
+    capabilities: Sequence[dict[str, Any]] | None = None,
     interactive: bool = True,
     shell_allow_list: list[str] | None = None,
     interrupt_on: dict[str, Any] | None = None,
@@ -439,8 +454,8 @@ def _subagent_cli_middleware(
         from k8s_autopilot.middleware.mcp_context import MCPContextMiddleware
         middleware.append(MCPContextMiddleware(mcp_server_info=mcp_server_info, mcp_config=mcp_config))
 
-    if allowed_tools:
-        middleware.append(ToolFilterMiddleware(allowed_patterns=allowed_tools))
+    if allowed_tools or capabilities:
+        middleware.append(ToolFilterMiddleware(allowed_patterns=allowed_tools, capabilities=capabilities))
 
     skill_sources: list[tuple[str, ...]] = []
     if subagent_path:
@@ -513,9 +528,10 @@ def create_k8s_autopilot_agent(
     reasoning_effort: str | None = None,
     extra_kwargs: dict[str, Any] | None = None,
     goal_criteria_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
+    async_subagents: Sequence[AsyncSubAgent] | None = None,
     **kwargs: Any,
 ) -> tuple[CompiledStateGraph[Any, Any, Any, Any], K8sCompositeBackend]:
-    """Create the K8s Autopilot deep agent graph with DB-backed resources.
+    """Create the K8s Autopilot agent graph with DB-backed resources.
 
     Returns:
         tuple[Pregel, K8sCompositeBackend]: Compiled Pregel graph and backend.
@@ -687,6 +703,7 @@ def create_k8s_autopilot_agent(
     from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT, SubAgent
 
     compiled_subagents: list[SubAgent] = []
+    base_subagent_tools = [t for t in all_tools if t not in mcp_tools_list]
     for name, subagent_meta in subagent_by_name.items():
         model_spec = subagent_meta.get("model")
         sub_prompt = subagent_meta.get("system_prompt") or ""
@@ -720,7 +737,8 @@ def create_k8s_autopilot_agent(
         from k8s_autopilot.plugins.adapters.mcp import subagent_mcp_configs
 
         servers: dict[str, Any] = {}
-        mcp_files = subagent_meta.get("mcp_files")
+        mcp_files_raw = subagent_meta.get("mcp_files")
+        mcp_files: list[str | Path] | None = list(mcp_files_raw) if mcp_files_raw is not None else None
         if bundle_dir and bundle_dir.is_dir():
             servers.update(subagent_mcp_configs(subagent_name, bundle_dir, mcp_files, project_dir=effective_cwd))
 
@@ -766,7 +784,9 @@ def create_k8s_autopilot_agent(
                 logger.warning("Could not initialize subagent %s MCP tools: %s", subagent_name, exc)
 
         if subagent_mcp_tools:
-            subagent_dict["tools"] = subagent_mcp_tools
+            subagent_dict["tools"] = [*base_subagent_tools, *subagent_mcp_tools]
+        else:
+            subagent_dict["tools"] = list(base_subagent_tools)
 
         sub_middleware = _subagent_cli_middleware(
             has_explicit_model=bool(model_spec),
@@ -774,6 +794,7 @@ def create_k8s_autopilot_agent(
             subagent_name=subagent_name,
             allowed_tools=subagent_meta.get("tools"),
             allowed_skills=subagent_meta.get("skills"),
+            capabilities=subagent_meta.get("capabilities"),
             interactive=interactive,
             shell_allow_list=allow_list if not interactive and allow_list else None,
             interrupt_on=interrupt_on,
@@ -810,6 +831,7 @@ def create_k8s_autopilot_agent(
             "name": GENERAL_PURPOSE_SUBAGENT["name"],
             "description": GENERAL_PURPOSE_SUBAGENT["description"],
             "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
+            "tools": list(base_subagent_tools),
             "middleware": gp_middleware,
         }
         if interrupt_on is not None:
@@ -942,14 +964,29 @@ def create_k8s_autopilot_agent(
     fallback_agent = None
     criteria_context_tools: list[Any] = list(goal_criteria_tools or ())
     if not criteria_context_tools and mcp_tools_list:
-        criteria_context_tools = list(mcp_tools_list)
+        criteria_context_tools = [
+            t
+            for t in mcp_tools_list
+            if (
+                isinstance(getattr(t, "metadata", None), dict)
+                and getattr(t, "metadata", {}).get("readOnlyHint") is True
+            )
+        ]
 
     try:
+        criteria_skill_sources = skill_registry.get_sources_for_middleware(
+            effective_cwd,
+            include_subagent_skills=True,
+            subagents=list(subagent_by_name.values()),
+        )
+        criteria_backend = getattr(composite_backend, "default", composite_backend)
         criteria_agent = create_goal_criteria_agent(
             model=active_model,
-            repository_backend=composite_backend,
+            repository_backend=criteria_backend,
             repository_root=str(effective_cwd),
             context_tools=criteria_context_tools,
+            subagent_metas=list(subagent_by_name.values()),
+            skill_sources=criteria_skill_sources,
         )
     except Exception as exc:
         logger.warning(
@@ -963,6 +1000,10 @@ def create_k8s_autopilot_agent(
         )
     except Exception as exc:
         logger.warning("Failed to create goal criteria fallback agent: %s", exc)
+
+    from k8s_autopilot.tools.goal_tools import set_active_criteria_agent
+
+    set_active_criteria_agent(criteria_agent, fallback_agent)
 
     agent_middleware.append(
         GoalCriteriaMiddleware(
@@ -1003,13 +1044,29 @@ def create_k8s_autopilot_agent(
     enable_full_middleware_tracing()
 
 
-    # 11. Compile the deep agent graph
+    # 11. Compile the agent graph
+    from k8s_autopilot.subagents.loader import load_async_subagents
+
+    resolved_async_subagents: list[AsyncSubAgent] = []
+    if async_subagents is not None:
+        resolved_async_subagents = list(async_subagents)
+    else:
+        try:
+            resolved_async_subagents = load_async_subagents(store=config_store or store)
+        except Exception as exc:
+            logger.warning("Failed to load async subagents: %s", exc)
+            resolved_async_subagents = []
+
+    all_subagents: list[Any] = list(compiled_subagents)
+    if resolved_async_subagents:
+        all_subagents.extend(resolved_async_subagents)
+
     graph = create_deep_agent(
         model=active_model,
         system_prompt=effective_prompt,
         tools=all_tools,
         backend=composite_backend,
-        subagents=compiled_subagents,
+        subagents=all_subagents,
         middleware=agent_middleware,
         checkpointer=checkpointer,
         store=store,

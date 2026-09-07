@@ -1,7 +1,4 @@
-"""Trust store for skill directories to prevent unauthorized execution of untrusted scripts.
-
-Ported from ``reference/opscode/src/opscode/skills/trust.py``.
-"""
+"""Trust store for skill directories to prevent unauthorized execution of untrusted scripts."""
 
 from __future__ import annotations
 

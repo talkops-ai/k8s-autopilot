@@ -1,7 +1,4 @@
-"""Middleware registry — singleton with ``@register_middleware`` decorator.
-
-Ported from ``reference/opscode/src/opscode/middleware/registry.py``.
-"""
+"""Middleware registry — singleton with ``@register_middleware`` decorator."""
 
 from __future__ import annotations
 

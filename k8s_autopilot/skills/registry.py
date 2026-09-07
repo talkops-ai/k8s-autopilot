@@ -14,6 +14,7 @@ import asyncio
 import logging
 import re
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -23,6 +24,7 @@ import yaml
 from k8s_autopilot.config import paths
 from k8s_autopilot.config.settings import get_settings
 from k8s_autopilot.skills.loader import ExtendedSkillMetadata, list_skills
+from k8s_autopilot.subagents.types import SubagentMetadata
 
 from k8s_autopilot.utils.logger import get_logger
 
@@ -172,8 +174,18 @@ class SkillRegistry:
                     count += 1
         return count
 
-    def get_sources_for_middleware(self, project_root: Path | None = None) -> list[tuple[str, ...]]:
-        """Return sources ordered by precedence for SkillsMiddleware."""
+    def get_sources_for_middleware(
+        self,
+        project_root: Path | None = None,
+        include_subagent_skills: bool = False,
+        subagents: Sequence[SubagentMetadata] | None = None,
+    ) -> list[tuple[str, ...]]:
+        """Return sources ordered by precedence for SkillsMiddleware.
+
+        When ``include_subagent_skills`` is False (default), agent-bound plugin skills
+        are excluded so that the main agent maintains context isolation. When True,
+        all skills across agents, agent plugins, and subagents are returned.
+        """
         settings = get_settings()
         effective_project_root = project_root or getattr(settings, "project_root", None) or Path.cwd()
         sources: list[tuple[str, ...]] = []
@@ -183,22 +195,23 @@ class SkillRegistry:
         if built_in_dir.is_dir():
             sources.append((str(built_in_dir), "Built-in"))
 
-        # 2. Plugin skills (Installed and enabled non-agent plugins only)
+        # 2. Plugin skills
         try:
             from k8s_autopilot.plugins.adapters.skills import plugin_skill_sources
             from k8s_autopilot.plugins.discovery import discover_plugins
             active_store = self._store or self._get_store()
             plugin_result = discover_plugins(project_root=effective_project_root, store=active_store)
             for plugin in plugin_result.plugins:
-                inv = getattr(plugin, "inventory", None)
-                if inv and getattr(inv, "agents", None):
-                    has_agents = any(
-                        (p.is_dir() and any(p.iterdir())) or (p.is_file() and p.suffix == ".md")
-                        for p in inv.agents
-                        if p.exists()
-                    )
-                    if has_agents:
-                        continue  # Agent plugin skills are bound exclusively to their subagent
+                if not include_subagent_skills:
+                    inv = getattr(plugin, "inventory", None)
+                    if inv and getattr(inv, "agents", None):
+                        has_agents = any(
+                            (p.is_dir() and any(p.iterdir())) or (p.is_file() and p.suffix == ".md")
+                            for p in inv.agents
+                            if p.exists()
+                        )
+                        if has_agents:
+                            continue  # Agent plugin skills are bound exclusively to their subagent
                 for skill_src, label, p_id in plugin_skill_sources([plugin]):
                     if Path(skill_src).is_dir():
                         sources.append((skill_src, label, p_id))
@@ -210,9 +223,10 @@ class SkillRegistry:
         if proj_plugins_dir.is_dir():
             for p in sorted(proj_plugins_dir.iterdir()):
                 if p.is_dir() and not p.name.startswith("."):
-                    agents_dir = p / "agents"
-                    if agents_dir.is_dir() and any(agents_dir.iterdir()):
-                        continue  # Agent plugin skills are bound exclusively to their subagent
+                    if not include_subagent_skills:
+                        agents_dir = p / "agents"
+                        if agents_dir.is_dir() and any(agents_dir.iterdir()):
+                            continue  # Agent plugin skills are bound exclusively to their subagent
                     skills_dir = p / "skills"
                     if skills_dir.is_dir():
                         p_source = (str(skills_dir), f"Plugin: {p.name}", p.name)
@@ -236,6 +250,29 @@ class SkillRegistry:
         for p_dir in proj_skills_candidates:
             if p_dir.is_dir() and not any(s[0] == str(p_dir) for s in sources):
                 sources.append((str(p_dir), "Project"))
+
+        # 6. Bundled subagent skills (when requested)
+        if include_subagent_skills:
+            target_subagents: list[SubagentMetadata] = list(subagents) if subagents is not None else []
+            if not target_subagents:
+                try:
+                    from k8s_autopilot.subagents.loader import get_built_in_subagents, list_subagents
+                    target_subagents.extend(get_built_in_subagents())
+                    target_subagents.extend(list_subagents(store=self._store or self._get_store()))
+                except Exception as exc:
+                    logger.debug("Could not discover subagents for bundled skills: %s", exc)
+
+            for sub_meta in target_subagents:
+                sub_name = sub_meta.get("name", "subagent")
+                sub_path = sub_meta.get("path")
+                if sub_path:
+                    p = Path(sub_path)
+                    bundle_dir = p.parent.parent if p.parent.name == "agents" else p.parent
+                    sub_skills_dir = bundle_dir / "skills"
+                    if sub_skills_dir.is_dir():
+                        sub_source = (str(sub_skills_dir), f"Subagent ({sub_name})")
+                        if not any(s[0] == sub_source[0] for s in sources):
+                            sources.append(sub_source)
 
         return [source for source in sources if Path(source[0]).exists()]
 

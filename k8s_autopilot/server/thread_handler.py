@@ -6,8 +6,6 @@ Provides thread lifecycle operations accessible via A2A protocol:
 - Delete thread
 - Create new thread
 - Get thread history (render previous messages)
-
-Ported from opscode session management patterns.
 """
 
 from __future__ import annotations

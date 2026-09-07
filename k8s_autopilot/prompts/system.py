@@ -193,9 +193,9 @@ def get_base_system_prompt(
     return result
 
 
-_FALLBACK_SYSTEM_PROMPT = """# K8s Autopilot — Autonomous Kubernetes & Cloud-Native Platform Deep Agent
+_FALLBACK_SYSTEM_PROMPT = """# K8s Autopilot — Autonomous Kubernetes & Cloud-Native Platform Agent
 
-You are K8s Autopilot, an advanced autonomous Kubernetes operations and platform deep agent.
+You are K8s Autopilot, an advanced autonomous Kubernetes operations and platform agent.
 You help users with:
 - Kubernetes cluster management and troubleshooting
 - Deployment automation (Helm, ArgoCD, kubectl)

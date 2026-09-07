@@ -1,7 +1,4 @@
-"""Lightweight session statistics and token formatting utilities.
-
-Ported from ``reference/opscode/src/opscode/utils/session_stats.py``.
-"""
+"""Lightweight session statistics and token formatting utilities."""
 
 from __future__ import annotations
 

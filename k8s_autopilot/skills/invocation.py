@@ -1,7 +1,4 @@
-"""Skill invocation helpers — build prompts and metadata for /skill:<name>.
-
-Ported from ``reference/opscode/src/opscode/skills/invocation.py``.
-"""
+"""Skill invocation helpers — build prompts and metadata for /skill:<name>."""
 
 from __future__ import annotations
 

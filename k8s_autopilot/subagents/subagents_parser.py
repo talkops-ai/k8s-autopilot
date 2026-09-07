@@ -1,7 +1,4 @@
-"""Parser for built-in subagent bundle directories and plugin-style subagent assets.
-
-Ported from ``reference/opscode/src/opscode/subagents/subagents_parser.py``.
-"""
+"""Parser for built-in subagent bundle directories and plugin-style subagent assets."""
 
 from __future__ import annotations
 

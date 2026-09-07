@@ -195,8 +195,6 @@ def plugin_mcp_configs(
                 data_dir=plugin.data_dir,
                 project_dir=project_dir,
             )
-            # Also register unscoped name if unique for direct lookup fallback
-            scoped[server_name] = scoped[scoped_name]
         if scoped:
             configs.append(scoped)
     return configs
@@ -212,7 +210,7 @@ def subagent_mcp_configs(
     """Build MCP configs for a built-in or custom subagent.
 
     Reads declared MCP server configuration files and returns a normalized
-    server dictionary mapping both scoped and unscoped server names.
+    server dictionary mapping declared server names to server configurations.
 
     Args:
         subagent_name: Subagent identifier (e.g., 'helm-operator').
@@ -241,15 +239,12 @@ def subagent_mcp_configs(
     for file_path in target_files:
         raw_servers = _load_mcp_server_map(file_path)
         for name, server in raw_servers.items():
-            scoped_name = scoped_subagent_mcp_server_name(subagent_name, name)
             norm_srv = _normalize_server(
                 server,
                 root=bundle_dir,
                 data_dir=data_dir,
                 project_dir=project_dir,
             )
-            normalized[scoped_name] = norm_srv
-            # Keep unscoped name mapped as well so both scoped and legacy calls resolve
             normalized[name] = norm_srv
 
     return normalized

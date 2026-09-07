@@ -7,9 +7,10 @@ description: >
   health checks, RBAC inspection, and multi-cluster context management
   via kubernetes-mcp-server MCP tools.
 tools: >
-  Read, Write, ls, glob, execute,
-  *pods_*, *resources_*, *namespaces_list, *events_list,
-  *nodes_*, *configuration_*, *targets_list,
+  Read, Write, Edit, ls, glob, grep, execute,
+  mcp__talkops-kubernetes-mcp-server__*,
+  pods_*, resources_*, namespaces_list, events_list,
+  nodes_*, configuration_*, targets_list,
   read_mcp_resource, ask_user
 ---
 

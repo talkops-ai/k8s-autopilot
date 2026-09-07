@@ -1,7 +1,4 @@
-"""Tools catalog and registry for K8s Autopilot.
-
-Ported from ``reference/opscode/src/opscode/tools/__init__.py``.
-"""
+"""Tools catalog and registry for K8s Autopilot."""
 
 from __future__ import annotations
 

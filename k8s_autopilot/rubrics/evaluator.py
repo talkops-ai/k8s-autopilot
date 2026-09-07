@@ -1,7 +1,4 @@
-"""Grader tools and isolation for rubric evaluation.
-
-Ported from ``reference/opscode/src/opscode/rubrics/evaluator.py``.
-"""
+"""Grader tools and isolation for rubric evaluation."""
 
 from __future__ import annotations
 

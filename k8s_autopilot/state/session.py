@@ -640,14 +640,14 @@ def _thread_freshness(thread: ThreadInfo) -> str | None:
 def _cache_recent_threads(
     project_root: str | None,
     limit: int,
-    threads: list[ThreadInfo],
+    threads: Sequence[ThreadInfo],
 ) -> None:
     if len(_recent_threads_cache) >= _MAX_RECENT_THREADS_CACHE_KEYS:
         _recent_threads_cache.pop(next(iter(_recent_threads_cache)), None)
     _recent_threads_cache[(project_root, limit)] = _copy_threads(threads)
 
 
-def _copy_threads(threads: list[ThreadInfo]) -> list[ThreadInfo]:
+def _copy_threads(threads: Sequence[ThreadInfo]) -> list[ThreadInfo]:
     return [dict(t) for t in threads]  # type: ignore[misc]
 
 
@@ -1601,6 +1601,306 @@ class SessionManager:
             logger.warning("Failed fetching SQLite thread history for %s: %s", thread_id, exc)
 
         return accumulated
+
+    async def get_thread_token_usage_and_cost(
+        self, thread_id: str
+    ) -> tuple[int, int, float, list[str]]:
+        """Calculate cumulative input tokens, output tokens, cost in USD, and processed message IDs for a thread.
+
+        Unlike `get_thread_messages`, this inspects writes across ALL namespaces (including subagents
+        and rubric grading subgraphs) deduplicating by message ID to accurately reflect total LLM consumption.
+        """
+        serde = await _get_jsonplus_serializer()
+        input_tokens = 0
+        output_tokens = 0
+        cost_usd = 0.0
+        seen_msg_ids: list[str] = []
+        seen_set: set[str] = set()
+
+        # ── PostgreSQL Branch ──────────────────────────────────────────
+        if self._postgres_uri:
+            try:
+                async with _connect_postgres(self._postgres_uri) as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            """
+                            SELECT type, blob FROM checkpoint_writes
+                            WHERE thread_id = %s AND channel = 'messages'
+                            ORDER BY checkpoint_id ASC, task_id ASC, idx ASC
+                            """,
+                            (thread_id,),
+                        )
+                        rows = await cur.fetchall()
+                        for type_str, payload in rows:
+                            if type_str and payload is not None:
+                                try:
+                                    raw_b = bytes(payload) if isinstance(payload, memoryview) else payload
+                                    delta = serde.loads_typed((type_str, raw_b))
+                                    msgs = delta if isinstance(delta, list) else [delta]
+                                    for m in msgs:
+                                        mid = getattr(m, "id", None)
+                                        u = (
+                                            getattr(m, "usage_metadata", None)
+                                            or getattr(m, "response_metadata", {}).get("token_usage")
+                                            or getattr(m, "response_metadata", {}).get("usage")
+                                        )
+                                        if mid and mid not in seen_set:
+                                            seen_set.add(mid)
+                                            seen_msg_ids.append(mid)
+                                            if isinstance(u, dict):
+                                                input_tokens += int(u.get("input_tokens") or u.get("prompt_tokens") or 0)
+                                                output_tokens += int(u.get("output_tokens") or u.get("completion_tokens") or 0)
+                                except Exception as exc:
+                                    logger.debug("Failed deserializing PG message write for %s: %s", thread_id, exc)
+
+                        # Read cost from root checkpoint
+                        await cur.execute(
+                            """
+                            SELECT checkpoint FROM checkpoints
+                            WHERE thread_id = %s AND checkpoint_ns = ''
+                            ORDER BY checkpoint_id DESC LIMIT 1
+                            """,
+                            (thread_id,),
+                        )
+                        row = await cur.fetchone()
+                        if row and row[0]:
+                            cp = row[0] if isinstance(row[0], dict) else serde.loads_typed(("json", bytes(row[0])))
+                            if isinstance(cp, dict):
+                                cv = cp.get("channel_values", {})
+                                if "_session_cost_usd" in cv and cv["_session_cost_usd"] is not None:
+                                    try:
+                                        cost_usd = float(cv["_session_cost_usd"])
+                                    except Exception:
+                                        pass
+                return input_tokens, output_tokens, cost_usd, seen_msg_ids
+            except Exception as exc:
+                logger.warning("Failed calculating PG thread token usage for %s: %s", thread_id, exc)
+
+        # ── SQLite Branch ──────────────────────────────────────────────
+        if not self._db_path.exists():
+            return 0, 0, 0.0, []
+
+        import aiosqlite
+
+        _patch_aiosqlite()
+        try:
+            async with aiosqlite.connect(self._db_path) as conn:
+                async with conn.execute(
+                    """
+                    SELECT type, value FROM writes
+                    WHERE thread_id = ? AND channel = 'messages'
+                    ORDER BY checkpoint_id ASC, task_id ASC, idx ASC
+                    """,
+                    (thread_id,),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+
+                for type_str, blob in rows:
+                    if type_str and blob:
+                        try:
+                            delta = serde.loads_typed((type_str, blob))
+                            msgs = delta if isinstance(delta, list) else [delta]
+                            for m in msgs:
+                                mid = getattr(m, "id", None)
+                                u = (
+                                    getattr(m, "usage_metadata", None)
+                                    or getattr(m, "response_metadata", {}).get("token_usage")
+                                    or getattr(m, "response_metadata", {}).get("usage")
+                                )
+                                if mid and mid not in seen_set:
+                                    seen_set.add(mid)
+                                    seen_msg_ids.append(mid)
+                                    if isinstance(u, dict):
+                                        input_tokens += int(u.get("input_tokens") or u.get("prompt_tokens") or 0)
+                                        output_tokens += int(u.get("output_tokens") or u.get("completion_tokens") or 0)
+                        except Exception as exc:
+                            logger.debug("Failed deserializing SQLite message write for %s: %s", thread_id, exc)
+
+                async with conn.execute(
+                    """
+                    SELECT type, checkpoint FROM checkpoints
+                    WHERE thread_id = ? AND checkpoint_ns = ''
+                    ORDER BY checkpoint_id DESC LIMIT 1
+                    """,
+                    (thread_id,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row and row[0] and row[1]:
+                    try:
+                        cp_data = serde.loads_typed((row[0], row[1]))
+                        if isinstance(cp_data, dict):
+                            cv = cp_data.get("channel_values", {})
+                            if "_session_cost_usd" in cv and cv["_session_cost_usd"] is not None:
+                                try:
+                                    cost_usd = float(cv["_session_cost_usd"])
+                                except Exception:
+                                    pass
+                    except Exception as exc:
+                        logger.debug("Failed deserializing SQLite checkpoint for cost: %s", exc)
+        except Exception as exc:
+            logger.warning("Failed calculating SQLite thread token usage for %s: %s", thread_id, exc)
+
+        return input_tokens, output_tokens, cost_usd, seen_msg_ids
+
+    async def get_thread_goal_state(self, thread_id: str) -> dict[str, Any]:
+        """Fetch authoritative goal objective, status, and rubric from checkpoints and writes."""
+        serde = await _get_jsonplus_serializer()
+        res: dict[str, Any] = {
+            "objective": None,
+            "status": None,
+            "rubric": None,
+            "status_note": None,
+        }
+
+        # ── PostgreSQL Branch ──────────────────────────────────────────
+        if self._postgres_uri:
+            try:
+                async with _connect_postgres(self._postgres_uri) as conn:
+                    async with conn.cursor() as cur:
+                        # 1. Read from latest checkpoint
+                        await cur.execute(
+                            """
+                            SELECT type, checkpoint FROM checkpoints
+                            WHERE thread_id = %s AND checkpoint_ns = ''
+                            ORDER BY checkpoint_id DESC LIMIT 1
+                            """,
+                            (thread_id,),
+                        )
+                        row = await cur.fetchone()
+                        if row and row[1]:
+                            raw_cp = bytes(row[1]) if isinstance(row[1], memoryview) else row[1]
+                            cp_data = serde.loads_typed((row[0], raw_cp)) if row[0] else raw_cp
+                            if isinstance(cp_data, dict):
+                                cv = cp_data.get("channel_values", {})
+                                if cv.get("_goal_objective"):
+                                    res["objective"] = str(cv["_goal_objective"])
+                                if cv.get("_goal_status"):
+                                    res["status"] = str(cv["_goal_status"])
+                                if cv.get("_rubric_status"):
+                                    r_stat = str(cv["_rubric_status"]).lower()
+                                    if r_stat in ("satisfied", "passed", "complete"):
+                                        res["status"] = "complete"
+                                    elif r_stat in ("max_iterations_reached", "failed", "blocked") and res["status"] != "complete":
+                                        res["status"] = "blocked"
+                                raw_r = cv.get("rubric") or cv.get("_goal_rubric") or cv.get("_sticky_rubric") or cv.get("criteria")
+                                if isinstance(raw_r, list):
+                                    res["rubric"] = "\n".join(f"- {c}" for c in raw_r if c)
+                                elif isinstance(raw_r, str) and raw_r.strip():
+                                    res["rubric"] = raw_r.strip()
+
+                        # 2. Check pending/recent writes in checkpoint_writes
+                        await cur.execute(
+                            """
+                            SELECT channel, type, blob FROM checkpoint_writes
+                            WHERE thread_id = %s AND checkpoint_ns = ''
+                              AND channel IN ('_goal_objective', '_goal_status', '_goal_rubric', '_sticky_rubric', 'rubric', '_rubric_status')
+                            ORDER BY checkpoint_id ASC, task_id ASC, idx ASC
+                            """,
+                            (thread_id,),
+                        )
+                        rows = await cur.fetchall()
+                        for ch, type_str, payload in rows:
+                            if type_str and payload is not None:
+                                try:
+                                    raw_b = bytes(payload) if isinstance(payload, memoryview) else payload
+                                    val = serde.loads_typed((type_str, raw_b))
+                                    if ch == "_goal_objective" and val:
+                                        res["objective"] = str(val)
+                                    elif ch == "_goal_status" and val:
+                                        res["status"] = str(val)
+                                    elif ch == "_rubric_status" and val:
+                                        r_stat = str(val).lower()
+                                        if r_stat in ("satisfied", "passed", "complete"):
+                                            res["status"] = "complete"
+                                        elif r_stat in ("max_iterations_reached", "failed", "blocked") and res["status"] != "complete":
+                                            res["status"] = "blocked"
+                                    elif ch in ("_goal_rubric", "_sticky_rubric", "rubric") and val:
+                                        if isinstance(val, list):
+                                            res["rubric"] = "\n".join(f"- {c}" for c in val if c)
+                                        elif isinstance(val, str) and val.strip():
+                                            res["rubric"] = val.strip()
+                                except Exception:
+                                    pass
+                return res
+            except Exception as exc:
+                logger.warning("Failed fetching PG thread goal state for %s: %s", thread_id, exc)
+
+        # ── SQLite Branch ──────────────────────────────────────────────
+        if not self._db_path.exists():
+            return res
+
+        import aiosqlite
+
+        _patch_aiosqlite()
+        try:
+            async with aiosqlite.connect(self._db_path) as conn:
+                async with conn.execute(
+                    """
+                    SELECT type, checkpoint FROM checkpoints
+                    WHERE thread_id = ? AND checkpoint_ns = ''
+                    ORDER BY checkpoint_id DESC LIMIT 1
+                    """,
+                    (thread_id,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                if row and row[0] and row[1]:
+                    try:
+                        cp_data = serde.loads_typed((row[0], row[1]))
+                        if isinstance(cp_data, dict):
+                            cv = cp_data.get("channel_values", {})
+                            if cv.get("_goal_objective"):
+                                res["objective"] = str(cv["_goal_objective"])
+                            if cv.get("_goal_status"):
+                                res["status"] = str(cv["_goal_status"])
+                            if cv.get("_rubric_status"):
+                                r_stat = str(cv["_rubric_status"]).lower()
+                                if r_stat in ("satisfied", "passed", "complete"):
+                                    res["status"] = "complete"
+                                elif r_stat in ("max_iterations_reached", "failed", "blocked") and res["status"] != "complete":
+                                    res["status"] = "blocked"
+                            raw_r = cv.get("rubric") or cv.get("_goal_rubric") or cv.get("_sticky_rubric") or cv.get("criteria")
+                            if isinstance(raw_r, list):
+                                res["rubric"] = "\n".join(f"- {c}" for c in raw_r if c)
+                            elif isinstance(raw_r, str) and raw_r.strip():
+                                res["rubric"] = raw_r.strip()
+                    except Exception:
+                        pass
+
+                async with conn.execute(
+                    """
+                    SELECT channel, type, value FROM writes
+                    WHERE thread_id = ? AND checkpoint_ns = ''
+                      AND channel IN ('_goal_objective', '_goal_status', '_goal_rubric', '_sticky_rubric', 'rubric', '_rubric_status')
+                    ORDER BY checkpoint_id ASC, task_id ASC, idx ASC
+                    """,
+                    (thread_id,),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                for ch, type_str, blob in rows:
+                    if type_str and blob:
+                        try:
+                            val = serde.loads_typed((type_str, blob))
+                            if ch == "_goal_objective" and val:
+                                res["objective"] = str(val)
+                            elif ch == "_goal_status" and val:
+                                res["status"] = str(val)
+                            elif ch == "_rubric_status" and val:
+                                r_stat = str(val).lower()
+                                if r_stat in ("satisfied", "passed", "complete"):
+                                    res["status"] = "complete"
+                                elif r_stat in ("max_iterations_reached", "failed", "blocked") and res["status"] != "complete":
+                                    res["status"] = "blocked"
+                            elif ch in ("_goal_rubric", "_sticky_rubric", "rubric") and val:
+                                if isinstance(val, list):
+                                    res["rubric"] = "\n".join(f"- {c}" for c in val if c)
+                                elif isinstance(val, str) and val.strip():
+                                    res["rubric"] = val.strip()
+                        except Exception:
+                            pass
+        except Exception as exc:
+            logger.warning("Failed fetching SQLite thread goal state for %s: %s", thread_id, exc)
+
+        return res
 
     async def delete_thread(self, thread_id: str) -> bool:
         backend = "postgres" if self._postgres_uri else "sqlite"

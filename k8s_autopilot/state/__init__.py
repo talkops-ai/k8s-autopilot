@@ -6,6 +6,14 @@ Provides agent state schemas, session management, thread persistence, and checkp
 from __future__ import annotations
 
 from k8s_autopilot.state.base import AgentState, BaseAgentState, K8sAgentState
+from k8s_autopilot.state.goal_channels import (
+    GoalProposalKind,
+    GoalRubricChannels,
+    GoalStatus,
+    RUBRIC_RESULT_VALUES,
+    coerce_goal_proposal_kind,
+    coerce_goal_status,
+)
 from k8s_autopilot.state.session import (
     SessionManager,
     ThreadInfo,
@@ -33,9 +41,15 @@ from k8s_autopilot.state.session import (
 __all__ = [
     "AgentState",
     "BaseAgentState",
+    "GoalProposalKind",
+    "GoalRubricChannels",
+    "GoalStatus",
     "K8sAgentState",
+    "RUBRIC_RESULT_VALUES",
     "SessionManager",
     "ThreadInfo",
+    "coerce_goal_proposal_kind",
+    "coerce_goal_status",
     "create_checkpointer",
     "create_runtime_checkpointer",
     "delete_thread",

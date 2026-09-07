@@ -1,7 +1,4 @@
-"""Dynamic tool registry to register and instantiate tools.
-
-Ported from ``reference/opscode/src/opscode/tools/registry.py``.
-"""
+"""Dynamic tool registry to register and instantiate tools."""
 
 from __future__ import annotations
 

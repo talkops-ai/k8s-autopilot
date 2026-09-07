@@ -1,6 +1,5 @@
 """Estimate model cost using ``genai-prices``.
 
-Ported from ``reference/opscode/src/opscode/utils/cost_estimation.py``.
 Provides token-level and session-level pricing calculations for supported
 model providers (Anthropic, OpenAI, Google, Bedrock, Azure, Mistral, xAI).
 """

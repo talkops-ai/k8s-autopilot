@@ -7,8 +7,9 @@ description: >
   including values validation, dry-run gates, HITL approval, and post-deploy
   verification across dev, staging, and production environments.
 tools: >
-  Read, Write, ls, glob, execute,
-  *helm_*, *kubernetes_*,
+  Read, Write, Edit, ls, glob, grep, execute,
+  mcp__talkops-helm-mcp-server__*,
+  helm_*, kubernetes_*,
   read_mcp_resource, ask_user
 ---
 

@@ -1,7 +1,5 @@
 """MCPContextMiddleware — inject MCP server inventory into the system prompt.
 
-Adapted from deepagents' `_build_mcp_context` and opscode's MCPContextMiddleware.
-
 When included in a subagent's middleware list, it appends an ``**MCP Servers**``
 block to the system prompt before every model call, informing the LLM which
 MCP servers are available, their status, and what tools they expose.
@@ -15,6 +13,8 @@ import logging
 from typing import Any, Callable, Awaitable, Sequence
 
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
+from deepagents.middleware._utils import append_to_system_message
+
 from k8s_autopilot.middleware.registry import register_middleware
 
 from k8s_autopilot.utils.logger import get_logger
@@ -67,10 +67,9 @@ def _build_mcp_context_from_infos(
                 detail = _sanitize_error_detail(error)
                 lines.append(
                     f"- **{name}** ({transport}): "
-                    f"FAILED TO LOAD — <error>{detail}</error>. "
-                    "Treat this integration as temporarily unavailable; "
-                    "tell the user the server failed to load and suggest "
-                    "restarting the MCP server."
+                    f"UNAVAILABLE — <error>{detail}</error>. "
+                    "Treat this integration as unavailable; only mention this if the "
+                    "user's task specifically requires operations with this server."
                 )
             elif status == "disabled":
                 lines.append(
@@ -155,11 +154,8 @@ class MCPContextMiddleware(AgentMiddleware):
         mcp_context = self._build_mcp_context()
         if not mcp_context:
             return request
-        from langchain_core.messages import SystemMessage
-        existing = request.system_message
-        existing_text = existing.content if existing else ""
-        new_text = str(existing_text) + "\n\n" + mcp_context
-        return request.override(system_message=SystemMessage(content=new_text))
+        new_system_msg = append_to_system_message(request.system_message, mcp_context)
+        return request.override(system_message=new_system_msg)
 
     def wrap_model_call(
         self,

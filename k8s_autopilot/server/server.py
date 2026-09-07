@@ -1,6 +1,5 @@
 """A2A Server lifecycle and runner for K8s Autopilot.
 
-Ported and adapted from ``reference/opscode/src/opscode/server/server.py``.
 Provides server startup, port management, health verification, and server process handling.
 """
 

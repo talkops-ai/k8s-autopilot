@@ -1,6 +1,5 @@
 """Server-side graph entry point for K8s Autopilot.
 
-Ported from ``reference/opscode/src/opscode/server/server_graph.py``.
 Provides `make_graph()` factory that loads `ServerConfig.from_env()`, builds
 the complete K8s Autopilot agent graph, and returns the compiled Pregel graph.
 """

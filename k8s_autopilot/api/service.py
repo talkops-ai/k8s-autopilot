@@ -367,11 +367,13 @@ class ThreadService:
 
         # 1. Primary: Reconstruct full multi-turn conversation messages via SessionManager
         try:
+            from k8s_autopilot.middleware.goal_state_notice import is_conversation_control_message
             from k8s_autopilot.state.session import SessionManager
 
             raw_msgs = await SessionManager().get_thread_messages(str_tid)
             for msg in raw_msgs:
-                messages.append(self._format_message(msg))
+                if not is_conversation_control_message(msg):
+                    messages.append(self._format_message(msg))
         except Exception as err:
             logger.debug("SessionManager get_thread_messages failed: %s", err)
 
@@ -385,8 +387,13 @@ class ThreadService:
                     if state_snapshot and state_snapshot.values:
                         values = state_snapshot.values
                         if not messages:
+                            from k8s_autopilot.middleware.goal_state_notice import (
+                                is_conversation_control_message,
+                            )
+
                             for msg in values.get("messages", []):
-                                messages.append(self._format_message(msg))
+                                if not is_conversation_control_message(msg):
+                                    messages.append(self._format_message(msg))
 
                         raw_rd = values.get("routing_decision")
                         if isinstance(raw_rd, dict) and raw_rd:
@@ -561,6 +568,12 @@ class ThreadService:
                             approval_mode = str(values["approval_mode"])
                         if "_goal_status" in values:
                             goal_status = values["_goal_status"]
+                        if "_rubric_status" in values:
+                            r_stat = str(values["_rubric_status"]).lower()
+                            if r_stat in ("satisfied", "passed", "complete"):
+                                goal_status = "complete"
+                            elif r_stat in ("max_iterations_reached", "failed", "blocked") and goal_status != "complete":
+                                goal_status = "blocked"
                         if "_goal_objective" in values:
                             goal_obj = values["_goal_objective"]
                         elif "goal" in values:
@@ -598,21 +611,16 @@ class ThreadService:
         except Exception as exc:
             logger.debug(f"Telemetry store approval mode retrieval: {exc}")
 
-        # 4. Extract token counts from messages via SessionManager / checkpointer
+        # 4. Extract token counts and cost from checkpoints/writes via SessionManager
         try:
             from k8s_autopilot.state.session import SessionManager
 
-            raw_msgs = await SessionManager().get_thread_messages(str_tid)
-            for msg in raw_msgs:
-                usage = (
-                    getattr(msg, "usage_metadata", None)
-                    or getattr(msg, "response_metadata", {}).get("token_usage")
-                    or getattr(msg, "response_metadata", {}).get("usage")
-                    or {}
-                )
-                if isinstance(usage, dict):
-                    input_tokens += int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
-                    output_tokens += int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+            sm_in, sm_out, sm_cost, _ = await SessionManager().get_thread_token_usage_and_cost(str_tid)
+            if sm_in or sm_out:
+                input_tokens = sm_in
+                output_tokens = sm_out
+            if sm_cost > 0.0:
+                cost_usd = max(cost_usd, sm_cost)
         except Exception as exc:
             logger.debug(f"Telemetry token extraction: {exc}")
 
@@ -642,6 +650,13 @@ class ThreadService:
                 sa_name = sa.get("name") if isinstance(sa, dict) else getattr(sa, "name", "")
                 if sa_name:
                     subagents.append(SubagentTelemetry(name=str(sa_name), status="idle"))
+
+            from k8s_autopilot.subagents.loader import load_async_subagents
+            async_subs = load_async_subagents()
+            for asa in async_subs:
+                asa_name = asa.get("name") if isinstance(asa, dict) else getattr(asa, "name", "")
+                if asa_name and not any(s.name == str(asa_name) for s in subagents):
+                    subagents.append(SubagentTelemetry(name=str(asa_name), status="idle"))
         except Exception as exc:
             logger.debug(f"Telemetry subagents list: {exc}")
 

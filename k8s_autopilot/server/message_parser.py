@@ -5,9 +5,6 @@ Works for:
 - Live stream events from Pregel graph
 - Stored messages from checkpoint DB (SQLite/Postgres)
 - A2A protocol responses and client rendering
-
-Ported from ``reference/opscode/src/opscode/ui/message_store.py`` and
-stream bridge extraction helpers.
 """
 
 from __future__ import annotations

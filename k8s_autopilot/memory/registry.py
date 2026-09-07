@@ -1,7 +1,4 @@
-"""Memory management and discovery across user and project scopes.
-
-Ported from ``reference/opscode/src/opscode/memory/registry.py``.
-"""
+"""Memory management and discovery across user and project scopes."""
 
 from __future__ import annotations
 
@@ -51,6 +48,7 @@ class MemoryRegistry:
 
         # User scope
         if scope in ("user", "auto"):
+            paths.append(app_paths.user_agent_md())
             paths.append(app_paths.DATA_DIR / "AGENTS.md")
             paths.append(Path.home() / ".k8s-autopilot" / "AGENTS.md")
             paths.append(Path.home() / ".agents" / "AGENTS.md")

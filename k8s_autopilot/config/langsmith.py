@@ -1,7 +1,4 @@
-"""LangSmith tracing helpers, project URL resolution, and environment synchronization.
-
-Ported from ``reference/opscode/src/opscode/config/langsmith.py``.
-"""
+"""LangSmith tracing helpers, project URL resolution, and environment synchronization."""
 
 from __future__ import annotations
 

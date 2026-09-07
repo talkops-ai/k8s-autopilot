@@ -1,7 +1,4 @@
-"""Type definitions for subagent metadata.
-
-Ported from ``reference/opscode/src/opscode/subagents/types.py``.
-"""
+"""Type definitions for subagent metadata."""
 
 from typing import Any, NotRequired, TypedDict
 
@@ -15,6 +12,7 @@ class SubagentMetadata(TypedDict):
     model: NotRequired[str | None]
     skills: NotRequired[list[str] | None]
     tools: NotRequired[list[str] | None]
+    capabilities: NotRequired[list[dict[str, Any]] | None]
     mcp_config: NotRequired[dict[str, Any] | None]
     mcp_files: NotRequired[list[str] | None]
     middleware: NotRequired[list[Any] | None]

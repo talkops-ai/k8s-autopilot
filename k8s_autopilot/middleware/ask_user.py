@@ -1,7 +1,5 @@
 """Ask User middleware for interactive question-answering during agent execution.
 
-Ported from ``reference/opscode/src/opscode/middleware/ask_user.py``.
-
 Provides the ``ask_user`` tool that allows the agent to ask the user one or
 more questions when clarification or input is needed. Uses LangGraph's
 ``interrupt()`` mechanism to pause execution and wait for user responses.
@@ -18,8 +16,10 @@ from langchain.tools import InjectedToolCallId
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
+from deepagents.middleware._utils import append_to_system_message
 
 from k8s_autopilot.middleware.registry import register_middleware
+from k8s_autopilot.middleware.unified_system_message import unify_system_message
 
 from k8s_autopilot.utils.logger import get_logger
 
@@ -229,9 +229,10 @@ class AskUserMiddleware(AgentMiddleware[Any, Any]):
         prompt = self.system_prompt
         system_msg = request.system_message
         if system_msg:
-            content_str = getattr(system_msg, "text", str(system_msg.content))
+            unified = unify_system_message(system_msg)
+            content_str = str(unified.content) if unified and unified.content else ""
             if prompt not in content_str:
-                new_msg = SystemMessage(content=f"{content_str}\n\n{prompt}")
+                new_msg = append_to_system_message(system_msg, prompt)
                 return request.override(system_message=new_msg)
             return request
         return request.override(system_message=SystemMessage(content=prompt))

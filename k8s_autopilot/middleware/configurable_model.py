@@ -1,7 +1,4 @@
-"""Middleware for runtime model selection via LangGraph runtime context.
-
-Ported directly from ``reference/opscode/src/opscode/middleware/configurable_model.py``.
-"""
+"""Middleware for runtime model selection via LangGraph runtime context."""
 
 from __future__ import annotations
 
