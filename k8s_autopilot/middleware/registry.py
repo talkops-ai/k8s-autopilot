@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+import contextlib
 import threading
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from langchain.agents.middleware.types import AgentMiddleware
 
@@ -19,6 +21,7 @@ class MiddlewareRegistry:
     _lock = threading.Lock()
 
     def __init__(self) -> None:
+        """Initialize an empty middleware registry."""
         self._registry: dict[str, tuple[type[AgentMiddleware], dict[str, Any]]] = {}
 
     def register(
@@ -47,11 +50,7 @@ class MiddlewareRegistry:
         **kwargs: Any,
     ) -> list[AgentMiddleware]:
         """Build the full middleware stack, preserving insertion order."""
-        items = [
-            (name, item)
-            for name, item in self._registry.items()
-            if not (exclude and name in exclude)
-        ]
+        items = [(name, item) for name, item in self._registry.items() if not (exclude and name in exclude)]
         stack = []
         for name, (cls, default_kwargs) in items:
             inst_kwargs = {**default_kwargs, **kwargs.get(name, {})}
@@ -119,10 +118,8 @@ class MiddlewareRegistry:
             "k8s_autopilot.middleware.a2ui_buffer",
         ]
         for mod_name in _modules:
-            try:
+            with contextlib.suppress(ImportError):
                 importlib.import_module(mod_name)
-            except ImportError:
-                pass
 
         return inst
 
@@ -150,6 +147,7 @@ def register_middleware(
     """
 
     def decorator(cls: T) -> T:
+        """Register the decorated middleware class into the registry."""
         get_middleware_registry().register(name, cls, default_kwargs=default_kwargs)  # type: ignore[arg-type]
         return cls
 

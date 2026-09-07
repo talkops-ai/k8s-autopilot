@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    ModelRequest,
+    ModelResponse,
+)
 from langchain_core.messages import AIMessage, SystemMessage
 
 from k8s_autopilot.middleware.registry import register_middleware
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -25,12 +27,7 @@ Keep any reasoning brief enough to reach the tool call.
 
 
 def _is_fireworks_glm_5p2_model(model: object) -> bool:
-    name = (
-        getattr(model, "model_name", None)
-        or getattr(model, "model", None)
-        or getattr(model, "name", "")
-        or ""
-    )
+    name = getattr(model, "model_name", None) or getattr(model, "model", None) or getattr(model, "name", "") or ""
     return "glm-5.2" in str(name).lower() or "glm-5p2" in str(name).lower()
 
 
@@ -55,9 +52,7 @@ class GlmTerminalStallRecoveryMiddleware(AgentMiddleware[Any, Any]):
             try:
                 from deepagents.middleware._utils import append_to_system_message
 
-                new_system_msg = append_to_system_message(
-                    system_msg, _TERMINAL_STALL_RECOVERY_SUFFIX
-                )
+                new_system_msg = append_to_system_message(system_msg, _TERMINAL_STALL_RECOVERY_SUFFIX)
             except ImportError:
                 content_str = getattr(system_msg, "text", str(system_msg.content))
                 recovery_prompt = f"{content_str}\n\n{_TERMINAL_STALL_RECOVERY_SUFFIX}"
@@ -66,9 +61,7 @@ class GlmTerminalStallRecoveryMiddleware(AgentMiddleware[Any, Any]):
             new_system_msg = SystemMessage(content=_TERMINAL_STALL_RECOVERY_SUFFIX)
 
         existing_model_kwargs = request.model_settings.get("model_kwargs")
-        model_kwargs = (
-            dict(existing_model_kwargs) if isinstance(existing_model_kwargs, Mapping) else {}
-        )
+        model_kwargs = dict(existing_model_kwargs) if isinstance(existing_model_kwargs, Mapping) else {}
         model_kwargs["reasoning_effort"] = "none"
         model_settings = {**request.model_settings, "model_kwargs": model_kwargs}
         return request.override(
@@ -86,6 +79,15 @@ class GlmTerminalStallRecoveryMiddleware(AgentMiddleware[Any, Any]):
         request: ModelRequest[Any],
         handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
     ) -> ModelResponse[Any]:
+        """Wrap synchronous model call to recover from GLM-5.2 headless stall conditions.
+
+        Args:
+            request: Current model invocation request.
+            handler: Next model invocation handler in the pipeline.
+
+        Returns:
+            ModelResponse from handler or recovery retry.
+        """
         response = handler(request)
         if self._should_recover(response, model=request.model):
             logger.info("GLM-5.2 headless turn stalled at output cap; retrying once")
@@ -98,6 +100,15 @@ class GlmTerminalStallRecoveryMiddleware(AgentMiddleware[Any, Any]):
         request: ModelRequest[Any],
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
+        """Wrap asynchronous model call to recover from GLM-5.2 headless stall conditions.
+
+        Args:
+            request: Current model invocation request.
+            handler: Next async model invocation handler in the pipeline.
+
+        Returns:
+            ModelResponse from handler or recovery retry.
+        """
         response = await handler(request)
         if self._should_recover(response, model=request.model):
             logger.info("GLM-5.2 headless turn stalled at output cap; retrying once")

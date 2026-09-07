@@ -9,20 +9,13 @@ Platform-specific output is handled by the :class:`StreamSink` protocol.
 
 from __future__ import annotations
 
-import logging
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator
 from typing import Any, Protocol, runtime_checkable
 
 from langchain_core.messages import (
-    AIMessage,
     AIMessageChunk,
-    AnyMessage,
-    HumanMessage,
-    SystemMessage,
-    ToolCall,
     ToolMessage,
 )
-from langgraph.types import Command
 
 from k8s_autopilot.middleware.goal_state_notice import is_conversation_control_message
 from k8s_autopilot.utils.logger import AgentLogger
@@ -146,22 +139,16 @@ def _extract_text_and_thinking(
                 if think_val:
                     if isinstance(think_val, str):
                         thinking_parts.append(think_val)
-                    elif isinstance(think_val, dict) and isinstance(
-                        think_val.get("text"), str
-                    ):
+                    elif isinstance(think_val, dict) and isinstance(think_val.get("text"), str):
                         thinking_parts.append(think_val["text"])
                 elif block_type in ("thinking", "thought", "reasoning"):
-                    text_val = (
-                        block.get("text")
-                        or block.get("thinking")
-                        or block.get("thought")
-                    )
+                    text_val = block.get("text") or block.get("thinking") or block.get("thought")
                     if text_val and isinstance(text_val, str):
                         thinking_parts.append(text_val)
                 elif isinstance(block.get("text"), str):
                     text_parts.append(block["text"])
-            elif hasattr(block, "text") and isinstance(getattr(block, "text"), str):
-                text_parts.append(getattr(block, "text"))
+            elif hasattr(block, "text") and isinstance(block.text, str):
+                text_parts.append(block.text)
     elif content is not None:
         text_parts.append(str(content))
 
@@ -175,9 +162,7 @@ def _extract_text(
     msg_obj: Any = None,
 ) -> str:
     """Extract string text with optional formatted thinking prefix."""
-    text, thinking = _extract_text_and_thinking(
-        content, additional_kwargs, response_metadata, msg_obj
-    )
+    text, thinking = _extract_text_and_thinking(content, additional_kwargs, response_metadata, msg_obj)
     if thinking:
         return f"> *Thinking:* {thinking}\n\n{text}"
     return text
@@ -264,6 +249,11 @@ class GraphStreamBridge:
     """Model-agnostic stream bridge between LangGraph runtime and StreamSink."""
 
     def __init__(self, sink: StreamSink) -> None:
+        """Initialize GraphStreamBridge with the target stream sink.
+
+        Args:
+            sink: Output stream sink to receive parsed events.
+        """
         self.sink = sink
         self._buffered_text: list[str] = []
         self._buffered_thinking: list[str] = []
@@ -316,10 +306,7 @@ class GraphStreamBridge:
 
     async def _handle_message_chunk(self, chunk_tuple: Any) -> None:
         """Process an AIMessageChunk or ToolMessage from the stream."""
-        if isinstance(chunk_tuple, tuple) and len(chunk_tuple) >= 1:
-            msg = chunk_tuple[0]
-        else:
-            msg = chunk_tuple
+        msg = chunk_tuple[0] if isinstance(chunk_tuple, tuple) and len(chunk_tuple) >= 1 else chunk_tuple
 
         if is_conversation_control_message(msg):
             return

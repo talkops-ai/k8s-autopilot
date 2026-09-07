@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-import json
-import logging
-import os
-import shutil
-import tempfile
 from contextlib import suppress
 from hashlib import sha256
+import os
 from pathlib import Path
+import shutil
+import tempfile
 from typing import TYPE_CHECKING, Any
 
 from k8s_autopilot.plugins.models import (
-    ComponentInventory,
-    InstallScope,
     InstalledPluginEntry,
+    InstallScope,
     MarketplaceRecord,
     MarketplaceSourceType,
     split_plugin_id,
@@ -43,6 +40,7 @@ def plugin_storage_root() -> Path:
         path = Path(raw).expanduser()
     else:
         from k8s_autopilot.config import paths
+
         path = paths.PLUGINS_DIR
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -50,10 +48,7 @@ def plugin_storage_root() -> Path:
 
 def sanitize_plugin_id(value: str) -> str:
     """Return a bounded, collision-resistant filesystem key."""
-    slug = "".join(
-        ch if ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) else "-"
-        for ch in value
-    )
+    slug = "".join(ch if ch.isascii() and (ch.isalnum() or ch in {"_", "-"}) else "-" for ch in value)
     slug = slug.strip("-")[:_CACHE_SLUG_LENGTH] or "plugin"
     digest = sha256(value.encode()).hexdigest()[:_CACHE_DIGEST_LENGTH]
     return f"{slug}-{digest}"
@@ -106,9 +101,7 @@ def cache_and_register_plugin(
     """Safely copy a plugin directory tree into the versioned cache."""
     cache_path = versioned_cache_path(plugin_id, version)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = Path(
-        tempfile.mkdtemp(prefix=f".{cache_path.name}.", dir=cache_path.parent)
-    )
+    temp_path = Path(tempfile.mkdtemp(prefix=f".{cache_path.name}.", dir=cache_path.parent))
 
     try:
         shutil.copytree(source_dir, temp_path, dirs_exist_ok=True)
@@ -144,15 +137,17 @@ async def load_marketplace_records_async(store: ConfigStore) -> dict[str, Market
 
 async def save_marketplace_record_async(record: MarketplaceRecord, store: ConfigStore) -> None:
     """Save or update marketplace record in DB."""
-    await store.upsert_marketplace({
-        "name": record.name,
-        "source_type": record.source_type,
-        "source_value": record.source,
-        "install_location": record.install_location,
-        "ref": record.ref,
-        "plugin_count": record.plugin_count,
-        "is_team": record.is_team,
-    })
+    await store.upsert_marketplace(
+        {
+            "name": record.name,
+            "source_type": record.source_type,
+            "source_value": record.source,
+            "install_location": record.install_location,
+            "ref": record.ref,
+            "plugin_count": record.plugin_count,
+            "is_team": record.is_team,
+        }
+    )
 
 
 async def delete_marketplace_record_async(name: str, store: ConfigStore) -> bool:
@@ -241,9 +236,7 @@ async def remove_installed_plugin_entry_async(
 async def load_all_enabled_plugin_ids_async(store: ConfigStore) -> frozenset[str]:
     """Return all enabled plugin IDs from the database."""
     plugins_list = await store.list_plugins()
-    return frozenset(
-        p["plugin_id"] for p in plugins_list if p.get("enabled", True)
-    )
+    return frozenset(p["plugin_id"] for p in plugins_list if p.get("enabled", True))
 
 
 async def set_plugin_enabled_async(
@@ -258,9 +251,11 @@ async def set_plugin_enabled_async(
         await store.upsert_plugin(plugin)
     else:
         plugin_name, marketplace = split_plugin_id(plugin_id)
-        await store.upsert_plugin({
-            "plugin_id": plugin_id,
-            "name": plugin_name,
-            "marketplace": marketplace,
-            "enabled": enabled,
-        })
+        await store.upsert_plugin(
+            {
+                "plugin_id": plugin_id,
+                "name": plugin_name,
+                "marketplace": marketplace,
+                "enabled": enabled,
+            }
+        )

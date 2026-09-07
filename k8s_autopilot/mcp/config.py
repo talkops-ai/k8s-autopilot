@@ -49,6 +49,17 @@ def _interpolate_env(value: str, *, field: str) -> str:
     """
 
     def replace(match: re.Match[str]) -> str:
+        """Resolve regex environment variable substitution match.
+
+        Args:
+            match: Regular expression match containing variable name and default.
+
+        Returns:
+            str: Resolved environment variable value or fallback default.
+
+        Raises:
+            RuntimeError: If variable is required and unset without a default.
+        """
         name = match.group(1)
         default = match.group(2)
         resolved = os.environ.get(name)
@@ -71,20 +82,14 @@ def _interpolate_env(value: str, *, field: str) -> str:
             # `${VAR}` set to "": no default, so emit the empty value.
             return resolved
         # `${VAR}` unset with no default: the only hard error.
-        msg = (
-            f"{field} references unset env var {name}. "
-            f"Set {name} in the environment or provide a default."
-        )
+        msg = f"{field} references unset env var {name}. Set {name} in the environment or provide a default."
         raise RuntimeError(msg)
 
     # Reject any `${` that isn't the start of a well-formed reference.
     ref_spans = [match.span() for match in _ENV_REF_RE.finditer(value)]
     for brace in _ENV_BRACE_RE.finditer(value):
         if not any(start <= brace.start() < end for start, end in ref_spans):
-            msg = (
-                f"{field} contains a malformed '${{...}}' reference. "
-                "Use '${VAR}' or '${VAR:-default}'."
-            )
+            msg = f"{field} contains a malformed '${{...}}' reference. Use '${{VAR}}' or '${{VAR:-default}}'."
             raise RuntimeError(msg)
 
     return _ENV_REF_RE.sub(replace, value)
@@ -150,10 +155,7 @@ def resolve_mcp_server_env(
         if not isinstance(args, (list, tuple)):
             msg = f"{prefix}.args must be a list, got {type(args).__name__}"
             raise TypeError(msg)
-        resolved["args"] = [
-            _resolve_string(value, field=f"{prefix}.args[{index}]")
-            for index, value in enumerate(args)
-        ]
+        resolved["args"] = [_resolve_string(value, field=f"{prefix}.args[{index}]") for index, value in enumerate(args)]
 
     for name in ("env", "headers"):
         if name not in resolved or resolved[name] is None:

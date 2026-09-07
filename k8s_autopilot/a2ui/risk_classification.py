@@ -10,8 +10,9 @@ Used by ``UnifiedApprovalComponent`` and ``PlanningApprovalComponent``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import StrEnum
-from typing import Any, Sequence
+from typing import Any
 
 
 class RiskLevel(StrEnum):
@@ -30,89 +31,110 @@ class RiskLevel(StrEnum):
 # ── Tool-level risk classification ────────────────────────────────────────
 
 # Destructive / irreversible operations → HIGH
-_HIGH_RISK_TOOLS: frozenset[str] = frozenset({
-    # K8s Operator
-    "resources_delete",
-    "pods_delete",
-    # Helm
-    "helm_uninstall_release",
-    # ArgoCD
-    "delete_application",
-    "delete_repository",
-    "delete_project",
-    "prune_resources",
-    # Argo Rollouts
-    "argo_delete_rollout",
-    "argo_delete_experiment",
-    "argo_rollouts_abort",
-    # Observability
-    "prom_uninstall_exporter",
-    "prom_delete_rule_group",
-})
+_HIGH_RISK_TOOLS: frozenset[str] = frozenset(
+    {
+        # K8s Operator
+        "resources_delete",
+        "pods_delete",
+        # Helm
+        "helm_uninstall_release",
+        # ArgoCD
+        "delete_application",
+        "delete_repository",
+        "delete_project",
+        "prune_resources",
+        # Argo Rollouts
+        "argo_delete_rollout",
+        "argo_delete_experiment",
+        "argo_rollouts_abort",
+        # Observability
+        "prom_uninstall_exporter",
+        "prom_delete_rule_group",
+    }
+)
 
 # Mutation / state-changing operations → MEDIUM
-_MEDIUM_RISK_TOOLS: frozenset[str] = frozenset({
-    # K8s Operator
-    "resources_create_or_update",
-    "resources_scale",
-    "pods_exec",
-    "pods_run",
-    # Helm
-    "helm_install_chart",
-    "helm_upgrade_release",
-    "helm_rollback_release",
-    # ArgoCD
-    "create_application",
-    "update_application",
-    "sync_application",
-    "rollback_application",
-    "rollback_to_revision",
-    "hard_refresh",
-    "cancel_deployment",
-    "onboard_repository_https",
-    "onboard_repository_ssh",
-    "create_project",
-    # Argo Rollouts
-    "argo_manage_rollout_lifecycle",
-    "argo_manage_legacy_deployment",
-    "argo_rollouts_promote",
-    "argo_rollouts_retry",
-    "convert_deployment_to_rollout",
-    "convert_rollout_to_deployment",
-    # Traefik
-    "traefik_manage_weighted_routing",
-    "traefik_manage_simple_route",
-    "traefik_manage_middleware",
-    "traefik_nginx_migration",
-    "traefik_manage_tcp_routing",
-    "traefik_configure_service_affinity",
-    # Observability
-    "prom_apply_servicemonitor",
-    "prom_apply_probe",
-    "prom_install_exporter",
-    "prom_upsert_rule_group",
-    "prom_manage_file_sd",
-    "prom_configure_remote_write",
-    "am_push_test_alert",
-    "am_create_silence",
-    "am_update_silence",
-    "am_expire_silence",
-    "am_silence_alert",
-})
+_MEDIUM_RISK_TOOLS: frozenset[str] = frozenset(
+    {
+        # K8s Operator
+        "resources_create_or_update",
+        "resources_scale",
+        "pods_exec",
+        "pods_run",
+        # Helm
+        "helm_install_chart",
+        "helm_upgrade_release",
+        "helm_rollback_release",
+        # ArgoCD
+        "create_application",
+        "update_application",
+        "sync_application",
+        "rollback_application",
+        "rollback_to_revision",
+        "hard_refresh",
+        "cancel_deployment",
+        "onboard_repository_https",
+        "onboard_repository_ssh",
+        "create_project",
+        # Argo Rollouts
+        "argo_manage_rollout_lifecycle",
+        "argo_manage_legacy_deployment",
+        "argo_rollouts_promote",
+        "argo_rollouts_retry",
+        "convert_deployment_to_rollout",
+        "convert_rollout_to_deployment",
+        # Traefik
+        "traefik_manage_weighted_routing",
+        "traefik_manage_simple_route",
+        "traefik_manage_middleware",
+        "traefik_nginx_migration",
+        "traefik_manage_tcp_routing",
+        "traefik_configure_service_affinity",
+        # Observability
+        "prom_apply_servicemonitor",
+        "prom_apply_probe",
+        "prom_install_exporter",
+        "prom_upsert_rule_group",
+        "prom_manage_file_sd",
+        "prom_configure_remote_write",
+        "am_push_test_alert",
+        "am_create_silence",
+        "am_update_silence",
+        "am_expire_silence",
+        "am_silence_alert",
+    }
+)
 
 # Phase keywords that indicate elevated risk
-_HIGH_RISK_PHASES: frozenset[str] = frozenset({
-    "delete", "drain", "uninstall", "destroy", "purge", "remove", "force",
-})
+_HIGH_RISK_PHASES: frozenset[str] = frozenset(
+    {
+        "delete",
+        "drain",
+        "uninstall",
+        "destroy",
+        "purge",
+        "remove",
+        "force",
+    }
+)
 
 # Namespace awareness — production or system namespaces escalate risk
-_PRODUCTION_NAMESPACES: frozenset[str] = frozenset({
-    "production", "prod", "prd", "live",
-})
+_PRODUCTION_NAMESPACES: frozenset[str] = frozenset(
+    {
+        "production",
+        "prod",
+        "prd",
+        "live",
+    }
+)
 
-_SYSTEM_NAMESPACES: frozenset[str] = frozenset({
-    "kube-system", "kube-public", "kube-node-lease",
-})
+_SYSTEM_NAMESPACES: frozenset[str] = frozenset(
+    {
+        "kube-system",
+        "kube-public",
+        "kube-node-lease",
+    }
+)
 
 # ── Risk escalation order (for namespace-based escalation) ────────────────
 
@@ -131,6 +153,7 @@ def _escalate(level: RiskLevel) -> RiskLevel:
 
 
 # ── Public API ────────────────────────────────────────────────────────────
+
 
 def classify_risk(
     phase: str = "",
@@ -159,18 +182,12 @@ def classify_risk(
         The classified :class:`RiskLevel`.
     """
     requests = list(action_requests or [])
-    tool_names = {
-        req.get("name", "")
-        for req in requests
-        if isinstance(req, dict)
-    }
+    tool_names = {req.get("name", "") for req in requests if isinstance(req, dict)}
 
     # ── Base classification ───────────────────────────────────────────
     base_level = RiskLevel.LOW
 
-    if tool_names & _HIGH_RISK_TOOLS:
-        base_level = RiskLevel.HIGH
-    elif _phase_is_high_risk(phase):
+    if tool_names & _HIGH_RISK_TOOLS or _phase_is_high_risk(phase):
         base_level = RiskLevel.HIGH
     elif tool_names & _MEDIUM_RISK_TOOLS:
         base_level = RiskLevel.MEDIUM

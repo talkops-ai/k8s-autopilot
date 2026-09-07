@@ -39,9 +39,8 @@ Reference:
 from __future__ import annotations
 
 import json
-from k8s_autopilot.utils.logger import AgentLogger
-import uuid
 from typing import Any
+import uuid
 
 from copilotkit import a2ui
 
@@ -61,6 +60,7 @@ from k8s_autopilot.a2ui.view_models import (
     OTelViewModel,
     TracesViewModel,
 )
+from k8s_autopilot.utils.logger import AgentLogger
 
 logger = AgentLogger("ObsSurfaceBuilder")
 
@@ -79,6 +79,7 @@ OBS_CATALOG_ID = OBSERVABILITY_CATALOG_ID
 
 # ── Helper ────────────────────────────────────────────────────────────────
 
+
 def _gen_surface_id(prefix: str) -> str:
     """Generate a unique surface ID with the given prefix."""
     short_id = uuid.uuid4().hex[:8]
@@ -86,6 +87,7 @@ def _gen_surface_id(prefix: str) -> str:
 
 
 # ── Metric Chart ──────────────────────────────────────────────────────────
+
 
 def build_metric_chart_surface(
     surface_id: str | None = None,
@@ -118,7 +120,7 @@ def build_metric_chart_surface(
     target_points : int
         LTTB target per series. Defaults to 500.
 
-    Returns
+    Returns:
     -------
     list[dict]
         A2UI operations: createSurface + updateComponents + updateDataModel.
@@ -134,19 +136,23 @@ def build_metric_chart_surface(
     return [
         a2ui.create_surface(sid, catalog_id=OBS_CATALOG_ID),
         a2ui.update_components(sid, _METRIC_SCHEMA),
-        a2ui.update_data_model(sid, {
-            "title": title,
-            "chartType": chart_type,
-            "yAxisLabel": y_axis_label,
-            "series": reduced_series,
-            "timeRange": time_range,
-            "timeRangeLabel": time_range_label,
-            "query": f"PromQL: {query}" if query else "",
-        }),
+        a2ui.update_data_model(
+            sid,
+            {
+                "title": title,
+                "chartType": chart_type,
+                "yAxisLabel": y_axis_label,
+                "series": reduced_series,
+                "timeRange": time_range,
+                "timeRangeLabel": time_range_label,
+                "query": f"PromQL: {query}" if query else "",
+            },
+        ),
     ]
 
 
 # ── Log Table ─────────────────────────────────────────────────────────────
+
 
 def build_log_table_surface(
     surface_id: str | None = None,
@@ -170,7 +176,7 @@ def build_log_table_surface(
     max_templates : int
         Maximum template clusters. Defaults to 50.
 
-    Returns
+    Returns:
     -------
     list[dict]
         A2UI operations.
@@ -190,17 +196,21 @@ def build_log_table_surface(
     return [
         a2ui.create_surface(sid, catalog_id=OBS_CATALOG_ID),
         a2ui.update_components(sid, _LOG_SCHEMA),
-        a2ui.update_data_model(sid, {
-            "title": title,
-            "columns": columns,
-            "rows": clustered,
-            "totalLinesLabel": f"{total_lines:,} lines",
-            "query": f"LogQL: {query}" if query else "",
-        }),
+        a2ui.update_data_model(
+            sid,
+            {
+                "title": title,
+                "columns": columns,
+                "rows": clustered,
+                "totalLinesLabel": f"{total_lines:,} lines",
+                "query": f"LogQL: {query}" if query else "",
+            },
+        ),
     ]
 
 
 # ── Trace Timeline ────────────────────────────────────────────────────────
+
 
 def build_trace_timeline_surface(
     surface_id: str | None = None,
@@ -230,7 +240,7 @@ def build_trace_timeline_surface(
     max_spans : int
         Maximum spans to keep. Defaults to 100.
 
-    Returns
+    Returns:
     -------
     list[dict]
         A2UI operations.
@@ -244,9 +254,7 @@ def build_trace_timeline_surface(
     services = {s.get("serviceName", "") for s in pruned}
     services.discard("")
     error_spans = [
-        s for s in pruned
-        if str(s.get("status", "")).lower() in ("error", "unset")
-        or s.get("statusCode") == 2
+        s for s in pruned if str(s.get("status", "")).lower() in ("error", "unset") or s.get("statusCode") == 2
     ]
 
     # Root span info
@@ -260,34 +268,35 @@ def build_trace_timeline_surface(
         root_status = rs
         root_severity = "critical" if rs == "error" else "success"
         dur_ms = root.get("duration", 0)
-        if dur_ms >= 1000:
-            root_duration = f"{dur_ms / 1000:.1f}s"
-        else:
-            root_duration = f"{dur_ms}ms"
+        root_duration = f"{dur_ms / 1000:.1f}s" if dur_ms >= 1000 else f"{dur_ms}ms"
 
     error_severity = "critical" if error_spans else "success"
 
     return [
         a2ui.create_surface(sid, catalog_id=OBS_CATALOG_ID),
         a2ui.update_components(sid, _TRACE_SCHEMA),
-        a2ui.update_data_model(sid, {
-            "title": title or f"Trace {trace_id}",
-            "spans": pruned,
-            "serviceName": service_name,
-            "focusSpanId": focus_span_id,
-            "totalSpansLabel": f"{total_spans} spans",
-            "rootSpanStatus": root_status,
-            "rootSpanSeverity": root_severity,
-            "rootSpanDuration": root_duration,
-            "uniqueServicesCount": str(len(services)),
-            "totalDuration": root_duration,
-            "errorSpansCount": str(len(error_spans)),
-            "errorSpanSeverity": error_severity,
-        }),
+        a2ui.update_data_model(
+            sid,
+            {
+                "title": title or f"Trace {trace_id}",
+                "spans": pruned,
+                "serviceName": service_name,
+                "focusSpanId": focus_span_id,
+                "totalSpansLabel": f"{total_spans} spans",
+                "rootSpanStatus": root_status,
+                "rootSpanSeverity": root_severity,
+                "rootSpanDuration": root_duration,
+                "uniqueServicesCount": str(len(services)),
+                "totalDuration": root_duration,
+                "errorSpansCount": str(len(error_spans)),
+                "errorSpanSeverity": error_severity,
+            },
+        ),
     ]
 
 
 # ── Alert Status ──────────────────────────────────────────────────────────
+
 
 def build_alert_status_surface(
     surface_id: str | None = None,
@@ -306,7 +315,7 @@ def build_alert_status_surface(
         Alert entries with ``alertName``, ``severity``, ``summary``,
         ``sinceLabel`` keys.
 
-    Returns
+    Returns:
     -------
     list[dict]
         A2UI operations.
@@ -325,28 +334,32 @@ def build_alert_status_surface(
             sev = "warning"
         else:
             sev = "info"
-            
+
         labels_dict = alert.get("labels", {})
         labels_text = ", ".join(f"{k}={v}" for k, v in labels_dict.items()) if labels_dict else ""
-        
+
         normalized.append({**alert, "severity": sev, "labelsText": labels_text})
 
     return [
         a2ui.create_surface(sid, catalog_id=OBS_CATALOG_ID),
         a2ui.update_components(sid, _ALERT_SCHEMA),
-        a2ui.update_data_model(sid, {
-            "title": title,
-            "summary": {
-                "critical": str(summary["critical"]),
-                "warning": str(summary["warning"]),
-                "info": str(summary["info"]),
+        a2ui.update_data_model(
+            sid,
+            {
+                "title": title,
+                "summary": {
+                    "critical": str(summary["critical"]),
+                    "warning": str(summary["warning"]),
+                    "info": str(summary["info"]),
+                },
+                "alerts": normalized,
             },
-            "alerts": normalized,
-        }),
+        ),
     ]
 
 
 # ── OTel Status ───────────────────────────────────────────────────────────
+
 
 def build_otel_status_surface(
     surface_id: str | None = None,
@@ -376,7 +389,7 @@ def build_otel_status_surface(
     overall_status_value : str
         Status badge value.
 
-    Returns
+    Returns:
     -------
     list[dict]
         A2UI operations.
@@ -393,18 +406,22 @@ def build_otel_status_surface(
     return [
         a2ui.create_surface(sid, catalog_id=OBS_CATALOG_ID),
         a2ui.update_components(sid, _OTEL_SCHEMA),
-        a2ui.update_data_model(sid, {
-            "title": title,
-            "columns": columns or default_columns,
-            "rows": rows or [],
-            "overallSeverity": overall_severity,
-            "overallStatusLabel": overall_status_label,
-            "overallStatusValue": overall_status_value,
-        }),
+        a2ui.update_data_model(
+            sid,
+            {
+                "title": title,
+                "columns": columns or default_columns,
+                "rows": rows or [],
+                "overallSeverity": overall_severity,
+                "overallStatusLabel": overall_status_label,
+                "overallStatusValue": overall_status_value,
+            },
+        ),
     ]
 
 
 # ── Multi-Pillar Dashboard (Tabs) ────────────────────────────────────────
+
 
 def build_obs_dashboard_surface(
     surface_id: str | None = None,
@@ -426,7 +443,7 @@ def build_obs_dashboard_surface(
         Panel descriptors. Each has ``tab_title``, ``kind``, and the
         relevant view model fields.
 
-    Returns
+    Returns:
     -------
     list[dict]
         A2UI operations.
@@ -441,11 +458,7 @@ def build_obs_dashboard_surface(
     components: list[dict[str, Any]] = [
         {
             "id": "root",
-            "component": {
-                "Column": {
-                    "children": {"explicitList": ["dashboard-title", "divider", "tabs"]}
-                }
-            },
+            "component": {"Column": {"children": {"explicitList": ["dashboard-title", "divider", "tabs"]}}},
         },
         {
             "id": "dashboard-title",
@@ -466,102 +479,113 @@ def build_obs_dashboard_surface(
 
         kind = panel.get("kind", "")
         if kind == "metrics":
-            components.append({
-                "id": tab_id,
-                "component": {
-                    "MetricChart": {
-                        "chartType": {"path": f"panels/{idx}/chartType"},
-                        "title": {"path": f"panels/{idx}/title"},
-                        "series": {"path": f"panels/{idx}/series"},
-                        "timeRange": {"path": f"panels/{idx}/timeRange"},
-                        "yAxisLabel": {"path": f"panels/{idx}/yAxisLabel"},
-                    }
-                },
-            })
+            components.append(
+                {
+                    "id": tab_id,
+                    "component": {
+                        "MetricChart": {
+                            "chartType": {"path": f"panels/{idx}/chartType"},
+                            "title": {"path": f"panels/{idx}/title"},
+                            "series": {"path": f"panels/{idx}/series"},
+                            "timeRange": {"path": f"panels/{idx}/timeRange"},
+                            "yAxisLabel": {"path": f"panels/{idx}/yAxisLabel"},
+                        }
+                    },
+                }
+            )
         elif kind == "logs":
-            components.append({
-                "id": tab_id,
-                "component": {
-                    "DataTable": {
-                        "columns": {"path": f"panels/{idx}/columns"},
-                        "rows": {"path": f"panels/{idx}/rows"},
-                        "searchable": True,
-                    }
-                },
-            })
+            components.append(
+                {
+                    "id": tab_id,
+                    "component": {
+                        "DataTable": {
+                            "columns": {"path": f"panels/{idx}/columns"},
+                            "rows": {"path": f"panels/{idx}/rows"},
+                            "searchable": True,
+                        }
+                    },
+                }
+            )
         elif kind == "traces":
-            components.append({
-                "id": tab_id,
-                "component": {
-                    "TraceTimeline": {
-                        "spans": {"path": f"panels/{idx}/spans"},
-                        "serviceName": {"path": f"panels/{idx}/serviceName"},
-                        "showMiniMap": True,
-                    }
-                },
-            })
+            components.append(
+                {
+                    "id": tab_id,
+                    "component": {
+                        "TraceTimeline": {
+                            "spans": {"path": f"panels/{idx}/spans"},
+                            "serviceName": {"path": f"panels/{idx}/serviceName"},
+                            "showMiniMap": True,
+                        }
+                    },
+                }
+            )
         elif kind == "alerts":
             # For alerts in a dashboard tab, use a simpler column layout
-            alert_col_id = f"alert-col-{idx}"
-            components.append({
-                "id": tab_id,
-                "component": {
-                    "Column": {
-                        "children": {"explicitList": [f"alert-summary-{idx}", f"alert-table-{idx}"]}
-                    }
-                },
-            })
-            components.append({
-                "id": f"alert-summary-{idx}",
-                "component": {
-                    "Text": {
-                        "text": {"path": f"panels/{idx}/summaryText"},
-                        "usageHint": "body",
-                    }
-                },
-            })
-            components.append({
-                "id": f"alert-table-{idx}",
-                "component": {
-                    "DataTable": {
-                        "columns": {"path": f"panels/{idx}/columns"},
-                        "rows": {"path": f"panels/{idx}/rows"},
-                        "searchable": True,
-                    }
-                },
-            })
+            components.append(
+                {
+                    "id": tab_id,
+                    "component": {
+                        "Column": {"children": {"explicitList": [f"alert-summary-{idx}", f"alert-table-{idx}"]}}
+                    },
+                }
+            )
+            components.append(
+                {
+                    "id": f"alert-summary-{idx}",
+                    "component": {
+                        "Text": {
+                            "text": {"path": f"panels/{idx}/summaryText"},
+                            "usageHint": "body",
+                        }
+                    },
+                }
+            )
+            components.append(
+                {
+                    "id": f"alert-table-{idx}",
+                    "component": {
+                        "DataTable": {
+                            "columns": {"path": f"panels/{idx}/columns"},
+                            "rows": {"path": f"panels/{idx}/rows"},
+                            "searchable": True,
+                        }
+                    },
+                }
+            )
         elif kind == "otel":
-            components.append({
-                "id": tab_id,
-                "component": {
-                    "DataTable": {
-                        "columns": {"path": f"panels/{idx}/columns"},
-                        "rows": {"path": f"panels/{idx}/rows"},
-                        "searchable": True,
-                    }
-                },
-            })
+            components.append(
+                {
+                    "id": tab_id,
+                    "component": {
+                        "DataTable": {
+                            "columns": {"path": f"panels/{idx}/columns"},
+                            "rows": {"path": f"panels/{idx}/rows"},
+                            "searchable": True,
+                        }
+                    },
+                }
+            )
         else:
             # Fallback: render as text
-            components.append({
-                "id": tab_id,
-                "component": {
-                    "Text": {
-                        "text": {"path": f"panels/{idx}/content"},
-                        "usageHint": "body",
-                    }
-                },
-            })
+            components.append(
+                {
+                    "id": tab_id,
+                    "component": {
+                        "Text": {
+                            "text": {"path": f"panels/{idx}/content"},
+                            "usageHint": "body",
+                        }
+                    },
+                }
+            )
 
     # Add the Tabs component
-    components.append({
-        "id": "tabs",
-        "component": {
-            "Tabs": {
-                "tabs": tab_defs
-            }
-        },
-    })
+    components.append(
+        {
+            "id": "tabs",
+            "component": {"Tabs": {"tabs": tab_defs}},
+        }
+    )
 
     # Build the data model with panel data
     panels_data = {}
@@ -572,14 +596,18 @@ def build_obs_dashboard_surface(
     return [
         a2ui.create_surface(sid, catalog_id=OBS_CATALOG_ID),
         a2ui.update_components(sid, components),
-        a2ui.update_data_model(sid, {
-            "title": title,
-            "panels": panels_data,
-        }),
+        a2ui.update_data_model(
+            sid,
+            {
+                "title": title,
+                "panels": panels_data,
+            },
+        ),
     ]
 
 
 # ── Dispatch by view model kind ───────────────────────────────────────────
+
 
 def build_obs_surface(
     surface_id: str | None,
@@ -597,7 +625,7 @@ def build_obs_surface(
     view_model : ObsViewModel
         One of the typed observability view models.
 
-    Returns
+    Returns:
     -------
     list[dict]
         A2UI operations.
@@ -651,6 +679,7 @@ def build_obs_surface(
 
 # ── Serialize operations to JSON string ───────────────────────────────────
 
+
 def serialize_a2ui_ops(ops: list[dict[str, Any]]) -> str:
     """Serialize A2UI operations to a JSON string for tool return.
 
@@ -662,7 +691,7 @@ def serialize_a2ui_ops(ops: list[dict[str, Any]]) -> str:
     ops : list[dict]
         A2UI operations from any builder.
 
-    Returns
+    Returns:
     -------
     str
         JSON string: ``{"a2ui_operations": [...]}``.

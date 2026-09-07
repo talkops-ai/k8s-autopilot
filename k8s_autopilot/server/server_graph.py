@@ -7,16 +7,13 @@ the complete K8s Autopilot agent graph, and returns the compiled Pregel graph.
 from __future__ import annotations
 
 import asyncio
-import logging
-import sys
-import traceback
 from collections.abc import Awaitable, Callable
+import sys
 from typing import Any
 
 from k8s_autopilot.server._server_config import ServerConfig
-from k8s_autopilot.utils.startup_error import STARTUP_ERROR_MARKER, emit_startup_failure
-
 from k8s_autopilot.utils.logger import get_logger
+from k8s_autopilot.utils.startup_error import emit_startup_failure
 
 logger = get_logger(__name__)
 
@@ -77,6 +74,11 @@ def _build_graph_factory(
     lock = asyncio.Lock()
 
     async def make_graph() -> Any:
+        """Create and cache the compiled LangGraph server instance.
+
+        Returns:
+            Any: Compiled graph instance or dummy graph on missing credentials.
+        """
         nonlocal graph
         if graph is not missing:
             return graph

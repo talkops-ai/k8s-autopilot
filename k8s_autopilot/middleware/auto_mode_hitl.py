@@ -28,22 +28,21 @@ Key types:
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 import contextlib
+from dataclasses import dataclass
+from enum import StrEnum
+from hashlib import sha256
 import json
-import logging
 import os
+from pathlib import Path
 import re
 import shlex
 import stat
 import tempfile
 import time
-from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from enum import StrEnum
-from hashlib import sha256
-from pathlib import Path
 from typing import (
-    TYPE_CHECKING,
     Annotated,
     Any,
     Literal,
@@ -74,13 +73,13 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.tools import BaseTool, tool
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from langgraph.types import Command
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import TypedDict
 
+from k8s_autopilot._constants import READONLY_FS_TOOLS
 from k8s_autopilot.middleware.goal_state_notice import project_goal_state
 from k8s_autopilot.middleware.registry import register_middleware
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -88,8 +87,6 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-from dataclasses import dataclass
 
 _ASYNC_APPROVAL_ROUTING_KEY = "_k8s_autopilot_async_approval_routing"
 
@@ -110,10 +107,9 @@ def _async_routing_mode(state: object) -> Any | None:
     return None
 
 
-from k8s_autopilot._constants import READONLY_FS_TOOLS
-
 READONLY_SAFE_TOOLS: frozenset[str] = frozenset(
-    READONLY_FS_TOOLS | {
+    READONLY_FS_TOOLS
+    | {
         "ask_user",
         "read_mcp_resource",
     }
@@ -136,6 +132,13 @@ class DynamicInterruptMapping(dict):
         explicit_overrides: Mapping[str, bool | InterruptOnConfig | Mapping[str, Any]] | None = None,
         readonly_tools: frozenset[str] | set[str] | None = None,
     ) -> None:
+        """Initialize DynamicInterruptMapping with default config and read-only tools.
+
+        Args:
+            default_config: Default interrupt configuration applied to unmapped tools.
+            explicit_overrides: Explicit tool name mappings.
+            readonly_tools: Collection of read-only safe tool names that bypass interrupts.
+        """
         super().__init__(explicit_overrides or {})
         if default_config is None:
             try:
@@ -155,6 +158,14 @@ class DynamicInterruptMapping(dict):
         self._readonly_tools = frozenset(readonly_tools or READONLY_SAFE_TOOLS)
 
     def is_readonly_tool(self, tool_name: str) -> bool:
+        """Check whether a tool is recognized as read-only and safe from interruption.
+
+        Args:
+            tool_name: Full or prefixed tool name to evaluate.
+
+        Returns:
+            True if the tool is read-only, False otherwise.
+        """
         if tool_name in self._readonly_tools:
             return True
 
@@ -183,16 +194,53 @@ class DynamicInterruptMapping(dict):
         lower = raw_name.lower()
         name_tokens = set(re.findall(r"[a-z0-9]+", lower))
         destructive_verbs = {
-            "delete", "destroy", "drop", "drain", "evict", "prune",
-            "zap", "wipe", "uninstall", "purge", "kill", "terminate",
-            "erase", "format", "remove",
+            "delete",
+            "destroy",
+            "drop",
+            "drain",
+            "evict",
+            "prune",
+            "zap",
+            "wipe",
+            "uninstall",
+            "purge",
+            "kill",
+            "terminate",
+            "erase",
+            "format",
+            "remove",
         }
         inspection_verbs = {
-            "get", "list", "describe", "view", "status", "query",
-            "read", "inspect", "search", "show", "check", "fetch",
-            "diff", "find", "lookup", "info", "cat", "tail",
-            "watch", "scan", "metrics", "logs", "events", "ping",
-            "test", "validate", "explain", "history", "top", "version",
+            "get",
+            "list",
+            "describe",
+            "view",
+            "status",
+            "query",
+            "read",
+            "inspect",
+            "search",
+            "show",
+            "check",
+            "fetch",
+            "diff",
+            "find",
+            "lookup",
+            "info",
+            "cat",
+            "tail",
+            "watch",
+            "scan",
+            "metrics",
+            "logs",
+            "events",
+            "ping",
+            "test",
+            "validate",
+            "explain",
+            "history",
+            "top",
+            "version",
         }
         if not any(v in name_tokens for v in destructive_verbs) and not any(v in lower for v in destructive_verbs):
             if any(v in name_tokens for v in inspection_verbs):
@@ -203,9 +251,7 @@ class DynamicInterruptMapping(dict):
 
     def __contains__(self, key: object) -> bool:
         if isinstance(key, str):
-            if self.is_readonly_tool(key):
-                return False
-            return True
+            return not self.is_readonly_tool(key)
         return super().__contains__(key)
 
     def __getitem__(self, key: str) -> Any:
@@ -218,6 +264,15 @@ class DynamicInterruptMapping(dict):
         raise KeyError(key)
 
     def get(self, key: str, default: Any = None) -> Any:
+        """Retrieve the interrupt configuration for a tool name.
+
+        Args:
+            key: Tool name.
+            default: Default value if key is read-only or not found.
+
+        Returns:
+            Interrupt configuration or default.
+        """
         if self.is_readonly_tool(key):
             return default
         if super().__contains__(key):
@@ -239,6 +294,12 @@ class AsyncApprovalHITLMiddleware(HumanInTheLoopMiddleware[Any, Any, Any]):
         *,
         default_config: InterruptOnConfig | Mapping[str, Any] | None = None,
     ) -> None:
+        """Initialize AsyncApprovalHITLMiddleware.
+
+        Args:
+            interrupt_on: Optional explicit interrupt mappings or DynamicInterruptMapping.
+            default_config: Optional default interrupt configuration.
+        """
         if isinstance(interrupt_on, DynamicInterruptMapping):
             dim = interrupt_on
         elif interrupt_on:
@@ -264,6 +325,7 @@ class AsyncApprovalHITLMiddleware(HumanInTheLoopMiddleware[Any, Any, Any]):
         mode = await _aresolve_approval_mode(context, getattr(runtime, "store", None))
         if mode is None and isinstance(state, dict) and state.get("approval_mode"):
             from k8s_autopilot.security.approval_mode import coerce_approval_mode
+
             mode = coerce_approval_mode(state.get("approval_mode"))
         routed_state = dict(state)
         routed_state[_ASYNC_APPROVAL_ROUTING_KEY] = _RoutingDecision(mode)
@@ -274,6 +336,15 @@ class AsyncApprovalHITLMiddleware(HumanInTheLoopMiddleware[Any, Any, Any]):
         state: AgentState[Any],
         runtime: Any,
     ) -> dict[str, Any] | None:
+        """Synchronously resolve live approval mode and delegate to stock HITL routing.
+
+        Args:
+            state: Current agent state.
+            runtime: Execution runtime containing store and context.
+
+        Returns:
+            State update dictionary or None.
+        """
         from k8s_autopilot.security.approval_mode_source import _resolve_approval_mode
 
         context = getattr(runtime, "context", None)
@@ -284,6 +355,7 @@ class AsyncApprovalHITLMiddleware(HumanInTheLoopMiddleware[Any, Any, Any]):
         mode = _resolve_approval_mode(context, getattr(runtime, "store", None))
         if mode is None and isinstance(state, dict) and state.get("approval_mode"):
             from k8s_autopilot.security.approval_mode import coerce_approval_mode
+
             mode = coerce_approval_mode(state.get("approval_mode"))
         routed_state = dict(state)
         routed_state[_ASYNC_APPROVAL_ROUTING_KEY] = _RoutingDecision(mode)
@@ -311,9 +383,7 @@ _URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Z0-9_]*)\s*=\s*([^\s,;]+)"
 )
-_SECRET_KEY_RE = re.compile(
-    r"(?i)(?:key|token|secret|password|credential|authorization)"
-)
+_SECRET_KEY_RE = re.compile(r"(?i)(?:key|token|secret|password|credential|authorization)")
 _SHELL_CONTROL_RE = re.compile(r"(?:\n|\r|&&|\|\||[;&|`<>]|\$\(|\$\{)")
 _MCP_MARKER_KEY = "_k8s_autopilot_mcp"
 
@@ -327,10 +397,13 @@ class _ClassifierDeadlineExceededError(TimeoutError):
     """Raised when the local classifier wait budget expires."""
 
     def __init__(self, timeout_seconds: float) -> None:
+        """Initialize deadline exceeded error with timeout duration.
+
+        Args:
+            timeout_seconds: Duration in seconds before timeout occurred.
+        """
         self.timeout_seconds = timeout_seconds
-        super().__init__(
-            f"local classifier deadline exceeded after {timeout_seconds:g}s"
-        )
+        super().__init__(f"local classifier deadline exceeded after {timeout_seconds:g}s")
 
 
 # ---------------------------------------------------------------------------
@@ -508,18 +581,13 @@ def _validate_temp_artifact(value: object) -> AutoTempArtifact | None:
     file_device = value.get("file_device")
     file_inode = value.get("file_inode")
     integer_values = (file_device, file_inode)
-    if any(
-        not isinstance(item, int) or isinstance(item, bool) or item < 0
-        for item in integer_values
-    ):
+    if any(not isinstance(item, int) or isinstance(item, bool) or item < 0 for item in integer_values):
         return None
     try:
         file_path = Path(cast(str, raw_file_path))
     except (OSError, TypeError, ValueError):
         return None
-    if not file_path.is_absolute() or not file_path.name.startswith(
-        _TEMP_ARTIFACT_PREFIX
-    ):
+    if not file_path.is_absolute() or not file_path.name.startswith(_TEMP_ARTIFACT_PREFIX):
         return None
     return AutoTempArtifact(
         allocation_id=cast(str, allocation_id),
@@ -532,14 +600,8 @@ def _validate_temp_artifact(value: object) -> AutoTempArtifact | None:
     )
 
 
-def _validate_temp_artifact_mutation(
-    file_path: object, value: object
-) -> AutoTempArtifactMutation | None:
-    if (
-        not isinstance(file_path, str)
-        or not file_path
-        or not isinstance(value, Mapping)
-    ):
+def _validate_temp_artifact_mutation(file_path: object, value: object) -> AutoTempArtifactMutation | None:
+    if not isinstance(file_path, str) or not file_path or not isinstance(value, Mapping):
         return None
     allocation_id = value.get("allocation_id")
     artifact_value = value.get("artifact")
@@ -551,11 +613,7 @@ def _validate_temp_artifact_mutation(
             artifact=None,
         )
     artifact = _validate_temp_artifact(artifact_value)
-    if (
-        artifact is None
-        or artifact["file_path"] != file_path
-        or artifact["allocation_id"] != allocation_id
-    ):
+    if artifact is None or artifact["file_path"] != file_path or artifact["allocation_id"] != allocation_id:
         return None
     return AutoTempArtifactMutation(
         allocation_id=allocation_id,
@@ -579,10 +637,7 @@ def _merge_temp_artifacts(
         existing = merged.get(file_path)
         artifact = mutation["artifact"]
         if artifact is None:
-            if (
-                existing is not None
-                and existing["allocation_id"] == mutation["allocation_id"]
-            ):
+            if existing is not None and existing["allocation_id"] == mutation["allocation_id"]:
                 merged.pop(file_path, None)
             continue
         if existing is None or existing["allocation_id"] == mutation["allocation_id"]:
@@ -593,9 +648,7 @@ def _merge_temp_artifacts(
 class AutoModeState(AgentState[Any]):
     """Agent state carrying private Auto decisions and scratch provenance."""
 
-    _auto_decision_plan: NotRequired[
-        Annotated[AutoDecisionPlan | None, PrivateStateAttr]
-    ]
+    _auto_decision_plan: NotRequired[Annotated[AutoDecisionPlan | None, PrivateStateAttr]]
     _auto_temp_artifacts: Annotated[
         NotRequired[dict[str, AutoTempArtifactMutation]],
         PrivateStateAttr,
@@ -617,6 +670,16 @@ def user_prompt_metadata(
     *,
     turn_id: str | None = None,
 ) -> PromptMetadata:
+    """Construct trusted PromptMetadata dictionary for user input.
+
+    Args:
+        literal_user_text: Raw user prompt string.
+        referenced_paths: Sequence of file or directory paths referenced in the turn.
+        turn_id: Optional conversation turn identifier.
+
+    Returns:
+        Structured PromptMetadata dictionary.
+    """
     return {
         "literal_user_text": literal_user_text,
         "referenced_paths": [str(path) for path in referenced_paths],
@@ -668,9 +731,7 @@ def sanitize_auto_reason(reason: object, *, known_secrets: Sequence[str] = ()) -
     return text[:_REASON_LIMIT] or "The action was not authorized by the user request."
 
 
-def classifier_unavailable_reason(
-    exc: Exception, *, timeout_seconds: float = _CLASSIFIER_TIMEOUT_SECONDS
-) -> str:
+def classifier_unavailable_reason(exc: Exception, *, timeout_seconds: float = _CLASSIFIER_TIMEOUT_SECONDS) -> str:
     """Build a reason string for a classifier exception."""
     if isinstance(exc, _ClassifierDeadlineExceededError):
         return f"Classifier timed out after {timeout_seconds:g}s"
@@ -694,16 +755,10 @@ def mcp_tool_is_coherently_read_only(tool: object) -> bool:
         "openWorldHint",
     )
     if any(
-        name in metadata
-        and metadata[name] is not None
-        and not isinstance(metadata[name], bool)
-        for name in hint_names
+        name in metadata and metadata[name] is not None and not isinstance(metadata[name], bool) for name in hint_names
     ):
         return False
-    return (
-        metadata.get("readOnlyHint") is True
-        and metadata.get("destructiveHint") is not True
-    )
+    return metadata.get("readOnlyHint") is True and metadata.get("destructiveHint") is not True
 
 
 def is_mcp_tool(tool: object) -> bool:
@@ -864,9 +919,7 @@ def _temp_artifact_tool_context(
     return thread_key, turn_id, tool_call_id, messages
 
 
-def _temp_artifact_command(
-    *, tool_name: str, tool_call_id: str, content: str, error: bool
-) -> Command[Any]:
+def _temp_artifact_command(*, tool_name: str, tool_call_id: str, content: str, error: bool) -> Command[Any]:
     return Command(
         update={
             "messages": [
@@ -895,7 +948,6 @@ def _delete_temp_artifact_file(artifact: AutoTempArtifact) -> None:
         msg = "temporary artifact identity changed"
         raise OSError(msg)
     file_path.unlink()
-
 
 
 # ---------------------------------------------------------------------------
@@ -950,24 +1002,14 @@ def _summarize_value(key: str, value: object, *, depth: int = 0) -> object:
         return value
     if isinstance(value, list):
         if len(value) > 20:
-            return [
-                _summarize_value(f"{key}[{i}]", item, depth=depth + 1)
-                for i, item in enumerate(value[:20])
-            ] + [f"...[{len(value)} items]"]
-        return [
-            _summarize_value(f"{key}[{i}]", item, depth=depth + 1)
-            for i, item in enumerate(value)
-        ]
+            return [_summarize_value(f"{key}[{i}]", item, depth=depth + 1) for i, item in enumerate(value[:20])] + [
+                f"...[{len(value)} items]"
+            ]
+        return [_summarize_value(f"{key}[{i}]", item, depth=depth + 1) for i, item in enumerate(value)]
     if isinstance(value, Mapping):
         if len(value) > 20:
-            return {
-                k: _summarize_value(f"{key}.{k}", v, depth=depth + 1)
-                for k, v in list(value.items())[:20]
-            }
-        return {
-            k: _summarize_value(f"{key}.{k}", v, depth=depth + 1)
-            for k, v in value.items()
-        }
+            return {k: _summarize_value(f"{key}.{k}", v, depth=depth + 1) for k, v in list(value.items())[:20]}
+        return {k: _summarize_value(f"{key}.{k}", v, depth=depth + 1) for k, v in value.items()}
     return str(value)[:200]
 
 
@@ -1047,9 +1089,7 @@ def _classifier_context(
                         _MCP_MARKER_KEY,
                     }
                 },
-                "deterministic_disposition": dispositions.get(
-                    _tool_call_id(call), "review"
-                ),
+                "deterministic_disposition": dispositions.get(_tool_call_id(call), "review"),
             }
         )
     state = cast("Mapping[str, object]", request.state)
@@ -1133,23 +1173,71 @@ def _batch_id(calls: Sequence[ToolCall]) -> str:
 
 _ROUTINE_WRITE_SUFFIXES = frozenset(
     {
-        ".c", ".cc", ".cfg", ".conf", ".cpp", ".css", ".csv",
-        ".go", ".h", ".hcl", ".hpp", ".html", ".ini",
-        ".j2", ".java", ".jinja", ".jinja2", ".js", ".jsx",
-        ".json", ".kt", ".md", ".mdx", ".php", ".properties",
-        ".proto", ".py", ".rb", ".rs", ".rst", ".scss", ".sql",
-        ".swift", ".template", ".tex", ".tf", ".tfvars",
-        ".tmpl", ".toml", ".tpl", ".ts", ".tsv", ".tsx",
-        ".txt", ".vue", ".xml", ".yaml", ".yml",
+        ".c",
+        ".cc",
+        ".cfg",
+        ".conf",
+        ".cpp",
+        ".css",
+        ".csv",
+        ".go",
+        ".h",
+        ".hcl",
+        ".hpp",
+        ".html",
+        ".ini",
+        ".j2",
+        ".java",
+        ".jinja",
+        ".jinja2",
+        ".js",
+        ".jsx",
+        ".json",
+        ".kt",
+        ".md",
+        ".mdx",
+        ".php",
+        ".properties",
+        ".proto",
+        ".py",
+        ".rb",
+        ".rs",
+        ".rst",
+        ".scss",
+        ".sql",
+        ".swift",
+        ".template",
+        ".tex",
+        ".tf",
+        ".tfvars",
+        ".tmpl",
+        ".toml",
+        ".tpl",
+        ".ts",
+        ".tsv",
+        ".tsx",
+        ".txt",
+        ".vue",
+        ".xml",
+        ".yaml",
+        ".yml",
     }
 )
 
 _DEPENDENCY_FILES = frozenset(
     {
-        "cargo.toml", "cargo.lock", "go.mod", "go.sum",
-        "package.json", "package-lock.json", "pnpm-lock.yaml",
-        "poetry.lock", "pyproject.toml", "requirements.txt",
-        "uv.lock", "yarn.lock",
+        "cargo.toml",
+        "cargo.lock",
+        "go.mod",
+        "go.sum",
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "poetry.lock",
+        "pyproject.toml",
+        "requirements.txt",
+        "uv.lock",
+        "yarn.lock",
     }
 )
 
@@ -1186,29 +1274,61 @@ def _is_sensitive_write_path(root: Path, path: Path) -> bool:
     if any(
         part
         in {
-            ".git", ".ssh", ".k8s_autopilot", ".agents",
-            ".buildkite", ".circleci", ".devcontainer",
-            ".github", ".husky", ".vscode",
-            "hooks", "systemd", "cron.d",
-            "launchagents", "launchdaemons",
+            ".git",
+            ".ssh",
+            ".k8s_autopilot",
+            ".agents",
+            ".buildkite",
+            ".circleci",
+            ".devcontainer",
+            ".github",
+            ".husky",
+            ".vscode",
+            "hooks",
+            "systemd",
+            "cron.d",
+            "launchagents",
+            "launchdaemons",
         }
         for part in lowered_parts
     ):
         return True
     if name in {
-        ".env", ".bashrc", ".bash_profile", ".zshrc", ".profile",
-        ".pre-commit-config.yaml", ".mcp.json",
-        "action.yaml", "action.yml", "agents.md",
-        "authorized_keys", "codeowners",
-        "compose.yaml", "compose.yml", "conftest.py",
-        "docker-compose.yaml", "docker-compose.yml",
-        "dockerfile", "noxfile.py", "setup.py",
-        "sitecustomize.py", "sudoers", "tox.ini",
+        ".env",
+        ".bashrc",
+        ".bash_profile",
+        ".zshrc",
+        ".profile",
+        ".pre-commit-config.yaml",
+        ".mcp.json",
+        "action.yaml",
+        "action.yml",
+        "agents.md",
+        "authorized_keys",
+        "codeowners",
+        "compose.yaml",
+        "compose.yml",
+        "conftest.py",
+        "docker-compose.yaml",
+        "docker-compose.yml",
+        "dockerfile",
+        "noxfile.py",
+        "setup.py",
+        "sitecustomize.py",
+        "sudoers",
+        "tox.ini",
         "usercustomize.py",
     }:
         return True
     return path.suffix.lower() in {
-        ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".command",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".fish",
+        ".ps1",
+        ".bat",
+        ".cmd",
+        ".command",
     }
 
 
@@ -1234,11 +1354,7 @@ def _command_paths_stay_in_worktree(parts: Sequence[str], root: Path) -> bool:
     """Check that all path-like arguments stay within the worktree."""
     for token in parts[1:]:
         candidate = token.split("=", 1)[-1] if "=" in token else token
-        if not (
-            candidate.startswith(("/", "~", "../", "..\\"))
-            or "/../" in candidate
-            or "\\..\\" in candidate
-        ):
+        if not (candidate.startswith(("/", "~", "../", "..\\")) or "/../" in candidate or "\\..\\" in candidate):
             continue
         path = _resolve_path(root, candidate)
         if path is None or not _is_within(root, path):
@@ -1248,11 +1364,7 @@ def _command_paths_stay_in_worktree(parts: Sequence[str], root: Path) -> bool:
 
 def _fixed_repo_command_allowed(command: object, root: Path) -> bool:
     """Check if a shell command is a known-safe git read-only operation."""
-    if (
-        not isinstance(command, str)
-        or not command.strip()
-        or _SHELL_CONTROL_RE.search(command)
-    ):
+    if not isinstance(command, str) or not command.strip() or _SHELL_CONTROL_RE.search(command):
         return False
     try:
         parts = shlex.split(command)
@@ -1265,7 +1377,12 @@ def _fixed_repo_command_allowed(command: object, root: Path) -> bool:
         and parts[0] == "git"
         and parts[1]
         in {
-            "diff", "log", "ls-files", "rev-parse", "show", "status",
+            "diff",
+            "log",
+            "ls-files",
+            "rev-parse",
+            "show",
+            "status",
         }
     )
 
@@ -1309,9 +1426,7 @@ def _default_counters(mode: ApprovalMode) -> AutoModeCounters:
     )
 
 
-async def _read_counters(
-    store: object, thread_key: str, mode: ApprovalMode
-) -> AutoModeCounters | None:
+async def _read_counters(store: object, thread_key: str, mode: ApprovalMode) -> AutoModeCounters | None:
     """Read counters from the runtime store, creating defaults if needed.
 
     Placeholder: In production this would use the runtime's checkpointed
@@ -1320,9 +1435,7 @@ async def _read_counters(
     return _default_counters(mode)
 
 
-async def _write_counters(
-    store: object, thread_key: str, counters: AutoModeCounters
-) -> bool:
+async def _write_counters(store: object, thread_key: str, counters: AutoModeCounters) -> bool:
     """Write counters to the runtime store.
 
     Placeholder: In production this would persist to the store. Returns True.
@@ -1354,11 +1467,7 @@ def _extract_model_name(model: object) -> str:
 
 def _resolved_tools(request: ModelRequest) -> dict[str, BaseTool]:
     """Build a name→tool lookup from request tools."""
-    return {
-        tool.name: tool
-        for tool in request.tools
-        if isinstance(tool, BaseTool) and isinstance(tool.name, str)
-    }
+    return {tool.name: tool for tool in request.tools if isinstance(tool, BaseTool) and isinstance(tool.name, str)}
 
 
 # ---------------------------------------------------------------------------
@@ -1397,16 +1506,21 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         trusted_compaction_tool: BaseTool | None = None,
         **kwargs: Any,
     ) -> None:
-        if (
-            trusted_ask_user_tool is not None
-            and trusted_ask_user_tool.name != "ask_user"
-        ):
+        """Initialize AutoModeHITLMiddleware with approval policies and trusted tools.
+
+        Args:
+            interrupt_on: Optional mapping of tool names to interrupt policies.
+            worktree_root: Root path of the current worktree.
+            shell_allow_list: Optional whitelist of shell commands permitted in auto mode.
+            classifier_timeout_seconds: Timeout budget for the classification model.
+            trusted_ask_user_tool: Trusted instance of ask_user tool.
+            trusted_compaction_tool: Trusted instance of compaction tool.
+            **kwargs: Additional keyword arguments.
+        """
+        if trusted_ask_user_tool is not None and trusted_ask_user_tool.name != "ask_user":
             msg = "trusted_ask_user_tool must be named ask_user"
             raise ValueError(msg)
-        if (
-            trusted_compaction_tool is not None
-            and trusted_compaction_tool.name != "compact_conversation"
-        ):
+        if trusted_compaction_tool is not None and trusted_compaction_tool.name != "compact_conversation":
             msg = "trusted_compaction_tool must be named compact_conversation"
             raise ValueError(msg)
         interrupt_map = dict(interrupt_on or {})
@@ -1461,9 +1575,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             """
             tool_call_id = runtime.tool_call_id or ""
             try:
-                thread_key, turn_id, tool_call_id, _messages = (
-                    _temp_artifact_tool_context(runtime)
-                )
+                thread_key, turn_id, tool_call_id, _messages = _temp_artifact_tool_context(runtime)
                 artifact = _allocate_temp_artifact(
                     content,
                     _validate_temp_artifact_suffix(suffix),
@@ -1487,10 +1599,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     _TEMP_ARTIFACT_STATE_KEY: {artifact["file_path"]: mutation},
                     "messages": [
                         ToolMessage(
-                            content=(
-                                "Created current-request temporary artifact at "
-                                f"{artifact['file_path']}"
-                            ),
+                            content=(f"Created current-request temporary artifact at {artifact['file_path']}"),
                             name="create_temp_artifact",
                             tool_call_id=tool_call_id,
                             status="success",
@@ -1514,9 +1623,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             """
             tool_call_id = runtime.tool_call_id or ""
             try:
-                _thread_key_value, _turn_id, tool_call_id, messages = (
-                    _temp_artifact_tool_context(runtime)
-                )
+                _thread_key_value, _turn_id, tool_call_id, messages = _temp_artifact_tool_context(runtime)
             except ValueError as exc:
                 return _temp_artifact_command(
                     tool_name="delete_temp_artifact",
@@ -1530,10 +1637,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 return _temp_artifact_command(
                     tool_name="delete_temp_artifact",
                     tool_call_id=tool_call_id,
-                    content=(
-                        "Denied temporary artifact cleanup: the exact path is not "
-                        "owned by this request."
-                    ),
+                    content=("Denied temporary artifact cleanup: the exact path is not owned by this request."),
                     error=True,
                 )
             try:
@@ -1571,10 +1675,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         trusted_tool = self._temp_tools_by_name.get(tool_name)
         if trusted_tool is not None and request.tool is not trusted_tool:
             return ToolMessage(
-                content=(
-                    "Denied a tool-name collision with k8s-autopilot's managed temporary "
-                    "artifact tools."
-                ),
+                content=("Denied a tool-name collision with k8s-autopilot's managed temporary artifact tools."),
                 name=tool_name,
                 tool_call_id=_tool_call_id(request.tool_call),
                 status="error",
@@ -1590,8 +1691,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         normalized_path = os.path.normcase(str(candidate.absolute()))
         artifacts = _active_temp_artifacts(cast("Mapping[str, object]", request.state))
         protected_paths = {
-            os.path.normcase(str(Path(artifact["file_path"]).absolute()))
-            for artifact in artifacts.values()
+            os.path.normcase(str(Path(artifact["file_path"]).absolute())) for artifact in artifacts.values()
         }
         targets_managed_artifact = normalized_path in protected_paths
         if not targets_managed_artifact:
@@ -1601,8 +1701,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 pass
             else:
                 targets_managed_artifact = any(
-                    candidate_stat.st_dev == artifact["file_device"]
-                    and candidate_stat.st_ino == artifact["file_inode"]
+                    candidate_stat.st_dev == artifact["file_device"] and candidate_stat.st_ino == artifact["file_inode"]
                     for artifact in artifacts.values()
                 )
         if not targets_managed_artifact:
@@ -1622,6 +1721,15 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap synchronous tool call and reject unauthorized modifications to managed temp files.
+
+        Args:
+            request: Tool execution request.
+            handler: Synchronous tool handler.
+
+        Returns:
+            Rejection ToolMessage or result from handler.
+        """
         return self._managed_temp_rejection(request) or handler(request)
 
     async def awrap_tool_call(
@@ -1629,6 +1737,15 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap asynchronous tool call and reject unauthorized modifications to managed temp files.
+
+        Args:
+            request: Tool execution request.
+            handler: Asynchronous tool handler.
+
+        Returns:
+            Rejection ToolMessage or result from handler.
+        """
         rejection = await asyncio.to_thread(self._managed_temp_rejection, request)
         return rejection if rejection is not None else await handler(request)
 
@@ -1694,9 +1811,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 result = await invoke
         except TimeoutError:
             if timeout_cm.expired():
-                raise _ClassifierDeadlineExceededError(
-                    self._classifier_timeout_seconds
-                ) from None
+                raise _ClassifierDeadlineExceededError(self._classifier_timeout_seconds) from None
             raise
         if isinstance(result, AutoDecisionBatch):
             return result
@@ -1720,11 +1835,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         """
         response = await handler(request)
         ai_message = next(
-            (
-                message
-                for message in reversed(response.result)
-                if isinstance(message, AIMessage)
-            ),
+            (message for message in reversed(response.result) if isinstance(message, AIMessage)),
             None,
         )
         if ai_message is None or not ai_message.tool_calls:
@@ -1735,7 +1846,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         calls = list(ai_message.tool_calls)
         gated_calls = [call for call in calls if call["name"] in self.interrupt_on]
-        mode, mode_unavailable = await _live_mode(request.runtime)
+        mode, _mode_unavailable = await _live_mode(request.runtime)
         if mode is ApprovalMode.AUTO:
             _validate_unique_tool_call_ids(calls)
         thread_key = _thread_key(request.runtime) or ""
@@ -1800,10 +1911,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                         "tool_call_id": _tool_call_id(call),
                         "disposition": "require_human",
                         "category": AutoDecisionCategory.TRUST_BOUNDARY.value,
-                        "reason": (
-                            "Auto control state was unavailable; human approval "
-                            "is required."
-                        ),
+                        "reason": ("Auto control state was unavailable; human approval is required."),
                         "path": "fallback",
                     }
                 )
@@ -1834,10 +1942,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                         "tool_call_id": _tool_call_id(call),
                         "disposition": "require_human",
                         "category": AutoDecisionCategory.OTHER_POLICY.value,
-                        "reason": (
-                            "Auto already processed this action batch; human approval "
-                            "is required."
-                        ),
+                        "reason": ("Auto already processed this action batch; human approval is required."),
                         "path": "fallback",
                     }
                 )
@@ -1894,9 +1999,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 known_secrets=self._known_secrets,
             )
             reason = sanitize_auto_reason(
-                classifier_unavailable_reason(
-                    exc, timeout_seconds=self._classifier_timeout_seconds
-                ),
+                classifier_unavailable_reason(exc, timeout_seconds=self._classifier_timeout_seconds),
                 known_secrets=self._known_secrets,
             )
             for call in review_calls:
@@ -1911,8 +2014,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 )
             plan["counters_applied"] = True
             logger.info(
-                "Auto decision mode=auto model=%s tools=%d path=classifier "
-                "decision=unavailable latency_ms=%d error=%s",
+                "Auto decision mode=auto model=%s tools=%d path=classifier decision=unavailable latency_ms=%d error=%s",
                 _extract_model_name(request.model),
                 len(review_calls),
                 latency_ms,
@@ -1952,9 +2054,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     "tool_call_id": _tool_call_id(call),
                     "disposition": disposition,
                     "category": decision.category.value,
-                    "reason": sanitize_auto_reason(
-                        decision.reason, known_secrets=self._known_secrets
-                    ),
+                    "reason": sanitize_auto_reason(decision.reason, known_secrets=self._known_secrets),
                     "path": "classifier",
                 }
             )
@@ -1966,8 +2066,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         )
         plan["counters_applied"] = True
         logger.info(
-            "Auto decision mode=auto model=%s tools=%d path=classifier "
-            "decision=valid latency_ms=%d",
+            "Auto decision mode=auto model=%s tools=%d path=classifier decision=valid latency_ms=%d",
             _extract_model_name(request.model),
             len(review_calls),
             latency_ms,

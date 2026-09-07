@@ -5,6 +5,7 @@ from __future__ import annotations
 from k8s_autopilot.middleware.auto_mode_hitl import (
     AUTO_MODE_COUNTERS_NAMESPACE,
     AUTO_MODE_EVENT_TYPE,
+    READONLY_SAFE_TOOLS,
     USER_PROMPT_METADATA_KEY,
     AsyncApprovalHITLMiddleware,
     AutoDecision,
@@ -18,7 +19,6 @@ from k8s_autopilot.middleware.auto_mode_hitl import (
     DynamicInterruptMapping,
     PlannedDecision,
     PromptMetadata,
-    READONLY_SAFE_TOOLS,
     _async_routing_mode,
     _merge_temp_artifacts,
     user_prompt_metadata,
@@ -31,6 +31,7 @@ from k8s_autopilot.middleware.headless_mcp_guard import (
 __all__ = [
     "AUTO_MODE_COUNTERS_NAMESPACE",
     "AUTO_MODE_EVENT_TYPE",
+    "READONLY_SAFE_TOOLS",
     "USER_PROMPT_METADATA_KEY",
     "AsyncApprovalHITLMiddleware",
     "AutoDecision",
@@ -45,7 +46,6 @@ __all__ = [
     "HeadlessMCPGuardMiddleware",
     "PlannedDecision",
     "PromptMetadata",
-    "READONLY_SAFE_TOOLS",
     "_async_routing_mode",
     "_merge_temp_artifacts",
     "gated_mcp_tool_names",

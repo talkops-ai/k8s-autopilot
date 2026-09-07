@@ -6,18 +6,11 @@ Provides server startup, port management, health verification, and server proces
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import logging
 import os
-import signal
 import socket
-import sys
 import time
-from pathlib import Path
-from typing import Any
 
-from k8s_autopilot.server._server_config import SERVER_ENV_PREFIX, ServerConfig
-
+from k8s_autopilot.server._server_config import ServerConfig
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -96,6 +89,7 @@ def run_server(
 ) -> None:
     """Run the K8s Autopilot FastAPI / A2A server synchronously with uvicorn."""
     import uvicorn
+
     from k8s_autopilot.server.app import create_app
 
     if config is not None:

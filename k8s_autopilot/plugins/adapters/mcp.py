@@ -4,20 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import json
-import logging
-import re
 from hashlib import sha256
+import json
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING, Any
 
 from k8s_autopilot.plugins.discovery import discover_plugins_async
 from k8s_autopilot.plugins.substitution import plugin_environment, substitute_json
+from k8s_autopilot.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from k8s_autopilot.plugins.models import PluginInstance
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _MCP_NAME_PART_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _MCP_NAME_PART_LENGTH = 48
@@ -181,7 +181,8 @@ def plugin_mcp_configs(
                 plugin.data_dir.mkdir(parents=True, exist_ok=True)
             except OSError:
                 logger.warning(
-                    "Could not create plugin data dir for %s", plugin.plugin_id,
+                    "Could not create plugin data dir for %s",
+                    plugin.plugin_id,
                 )
         servers = _plugin_mcp_server_map(plugin)
         scoped: dict[str, Any] = {}
@@ -224,14 +225,10 @@ def subagent_mcp_configs(
     """
     if mcp_files is None:
         target_files = [
-            candidate
-            for candidate in (bundle_dir / ".mcp.json", bundle_dir / "mcp.json")
-            if candidate.is_file()
+            candidate for candidate in (bundle_dir / ".mcp.json", bundle_dir / "mcp.json") if candidate.is_file()
         ]
     else:
-        target_files = [
-            f if isinstance(f, Path) else (bundle_dir / f) for f in mcp_files
-        ]
+        target_files = [f if isinstance(f, Path) else (bundle_dir / f) for f in mcp_files]
 
     normalized: dict[str, Any] = {}
     data_dir = bundle_dir / ".data"
@@ -284,7 +281,7 @@ def discover_plugin_mcp_configs(
         merged: dict[str, Any] = {}
         for layer in plugin_mcp_configs(result.plugins, project_dir=project_dir):
             merged.update(layer)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("Could not discover plugin MCP configs: %s", exc)
         return {}
     else:

@@ -3,6 +3,7 @@
 import re
 
 from k8s_autopilot.prompts.system import (
+    SRE_MEMORY_SYSTEM_PROMPT,
     build_model_identity_section,
     get_base_system_prompt,
 )
@@ -16,6 +17,8 @@ MODEL_IDENTITY_RE = re.compile(
 
 __all__ = [
     "MODEL_IDENTITY_RE",
+    "SRE_MEMORY_SYSTEM_PROMPT",
     "build_model_identity_section",
     "get_base_system_prompt",
 ]
+

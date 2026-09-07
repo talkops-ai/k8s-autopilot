@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, cast
 from uuid import uuid4
 
@@ -27,8 +26,11 @@ from langgraph.types import Command
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
     from langchain_core.language_models import BaseChatModel
     from langgraph.prebuilt.tool_node import ToolCallRequest
+
+import contextlib
 
 from k8s_autopilot.utils.logger import get_logger
 
@@ -49,12 +51,7 @@ def _without_offload_seed(messages: list[Any], tool_call_id: str) -> list[Any]:
     return [
         message
         for message in messages
-        if (
-            message.get("id")
-            if isinstance(message, dict)
-            else getattr(message, "id", None)
-        )
-        != seed_id
+        if (message.get("id") if isinstance(message, dict) else getattr(message, "id", None)) != seed_id
     ]
 
 
@@ -85,19 +82,16 @@ def _runtime_model_config(runtime: ToolRuntime[Any, Any]) -> RuntimeModelConfig:
         return RuntimeModelConfig(
             model_spec=model if isinstance(model, str) else None,
             model_params=dict(params) if isinstance(params, dict) else {},
-            profile_overrides=(
-                dict(profile_overrides) if isinstance(profile_overrides, dict) else {}
-            ),
+            profile_overrides=(dict(profile_overrides) if isinstance(profile_overrides, dict) else {}),
             context_limit=context_limit if isinstance(context_limit, int) else None,
         )
-    return RuntimeModelConfig(
-        model_spec=None, model_params={}, profile_overrides={}, context_limit=None
-    )
+    return RuntimeModelConfig(model_spec=None, model_params={}, profile_overrides={}, context_limit=None)
 
 
 def _offload_tool_call_id(context: object) -> str | None:
+    """Extract offload tool call ID from context if present."""
     if hasattr(context, "offload_tool_call_id"):
-        value = getattr(context, "offload_tool_call_id")
+        value = getattr(context, "offload_tool_call_id", None)
     elif isinstance(context, dict):
         value = context.get("offload_tool_call_id")
     else:
@@ -106,17 +100,19 @@ def _offload_tool_call_id(context: object) -> str | None:
 
 
 class _ArchiveReadGuard:
+    """Context manager preventing concurrent reads during archive compaction."""
+
     def __init__(self, backend: BackendProtocol) -> None:
+        """Initialize _ArchiveReadGuard wrapping the given storage backend.
+
+        Args:
+            backend: Storage backend providing file operations.
+        """
         self._backend = backend
         self._read_failed = False
 
-    def _record_response_errors(
-        self, responses: list[FileDownloadResponse]
-    ) -> list[FileDownloadResponse]:
-        if any(
-            response.error is not None and response.error != FILE_NOT_FOUND
-            for response in responses
-        ):
+    def _record_response_errors(self, responses: list[FileDownloadResponse]) -> list[FileDownloadResponse]:
+        if any(response.error is not None and response.error != FILE_NOT_FOUND for response in responses):
             self._read_failed = True
         return responses
 
@@ -126,6 +122,14 @@ class _ArchiveReadGuard:
             raise RuntimeError(msg)
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files synchronously while tracking read failure states.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects.
+        """
         try:
             responses = self._backend.download_files(paths)
         except Exception:
@@ -134,6 +138,14 @@ class _ArchiveReadGuard:
         return self._record_response_errors(responses)
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Download multiple files asynchronously while tracking read failure states.
+
+        Args:
+            paths: List of file paths to download.
+
+        Returns:
+            List of FileDownloadResponse objects.
+        """
         try:
             responses = await self._backend.adownload_files(paths)
         except Exception:
@@ -142,10 +154,28 @@ class _ArchiveReadGuard:
         return self._record_response_errors(responses)
 
     def write(self, file_path: str, content: str) -> WriteResult:
+        """Write content synchronously only if preceding archive reads succeeded.
+
+        Args:
+            file_path: Destination file path.
+            content: File content string.
+
+        Returns:
+            WriteResult object.
+        """
         self._ensure_read_succeeded()
         return self._backend.write(file_path, content)
 
     async def awrite(self, file_path: str, content: str) -> WriteResult:
+        """Write content asynchronously only if preceding archive reads succeeded.
+
+        Args:
+            file_path: Destination file path.
+            content: File content string.
+
+        Returns:
+            WriteResult object.
+        """
         self._ensure_read_succeeded()
         return await self._backend.awrite(file_path, content)
 
@@ -156,10 +186,19 @@ class _ArchiveReadGuard:
         new_string: str,
         replace_all: bool = False,
     ) -> EditResult:
+        """Edit file content synchronously only if preceding archive reads succeeded.
+
+        Args:
+            file_path: Target file path.
+            old_string: Target substring to replace.
+            new_string: Replacement substring.
+            replace_all: Whether to replace all occurrences.
+
+        Returns:
+            EditResult object.
+        """
         self._ensure_read_succeeded()
-        return self._backend.edit(
-            file_path, old_string, new_string, replace_all=replace_all
-        )
+        return self._backend.edit(file_path, old_string, new_string, replace_all=replace_all)
 
     async def aedit(
         self,
@@ -168,10 +207,19 @@ class _ArchiveReadGuard:
         new_string: str,
         replace_all: bool = False,
     ) -> EditResult:
+        """Edit file content asynchronously only if preceding archive reads succeeded.
+
+        Args:
+            file_path: Target file path.
+            old_string: Target substring to replace.
+            new_string: Replacement substring.
+            replace_all: Whether to replace all occurrences.
+
+        Returns:
+            EditResult object.
+        """
         self._ensure_read_succeeded()
-        return await self._backend.aedit(
-            file_path, old_string, new_string, replace_all=replace_all
-        )
+        return await self._backend.aedit(file_path, old_string, new_string, replace_all=replace_all)
 
 
 def _resolve_session_id(summarization: Any, state: Any) -> str:
@@ -223,13 +271,9 @@ def _build_compact_result_compat(
     session_id: str,
 ) -> Command[Any]:
     try:
-        return middleware._build_compact_result(
-            runtime, to_summarize, summary, file_path, event, cutoff, session_id
-        )
+        return middleware._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff, session_id)
     except TypeError:
-        return middleware._build_compact_result(
-            runtime, to_summarize, summary, file_path, event, cutoff
-        )
+        return middleware._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
 
 
 class CLICompactionMiddleware(SummarizationToolMiddleware):
@@ -237,6 +281,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 
     @property
     def name(self) -> str:
+        """Return the canonical middleware identifier."""
         return "SummarizationMiddleware"
 
     @staticmethod
@@ -250,9 +295,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         messages = request.state.get("messages", [])
         last_message = messages[-1] if messages else None
         last_message_id = (
-            last_message.get("id")
-            if isinstance(last_message, dict)
-            else getattr(last_message, "id", None)
+            last_message.get("id") if isinstance(last_message, dict) else getattr(last_message, "id", None)
         )
         is_seeded_compaction = (
             tool_call.get("id") == expected_id
@@ -265,10 +308,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             return None
 
         return ToolMessage(
-            content=(
-                "Not executed: /offload only authorizes its seeded "
-                "conversation compaction call."
-            ),
+            content=("Not executed: /offload only authorizes its seeded conversation compaction call."),
             name=tool_call.get("name", "unknown"),
             tool_call_id=tool_call.get("id", ""),
             status="error",
@@ -279,6 +319,15 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap synchronous tool call and guard against unauthorized execution during /offload.
+
+        Args:
+            request: Tool execution request.
+            handler: Synchronous tool handler.
+
+        Returns:
+            ToolMessage error or handler result.
+        """
         if (rejection := self._offload_rejection(request)) is not None:
             return rejection
         return handler(request)
@@ -288,6 +337,15 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap asynchronous tool call and guard against unauthorized execution during /offload.
+
+        Args:
+            request: Tool execution request.
+            handler: Asynchronous tool handler.
+
+        Returns:
+            ToolMessage error or handler result.
+        """
         if (rejection := self._offload_rejection(request)) is not None:
             return rejection
         return await handler(request)
@@ -299,6 +357,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             runtime: ToolRuntime[Any, Any],
             force: Annotated[bool, InjectedToolArg] = False,
         ) -> Command[Any]:
+            """Synchronously compact older messages into a summary."""
             del force
             if _offload_tool_call_id(runtime.context) != runtime.tool_call_id:
                 return middleware._run_compact(runtime)
@@ -308,6 +367,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             runtime: ToolRuntime[Any, Any],
             force: Annotated[bool, InjectedToolArg] = False,
         ) -> Command[Any]:
+            """Asynchronously compact older messages into a summary."""
             del force
             if _offload_tool_call_id(runtime.context) != runtime.tool_call_id:
                 return await middleware._arun_compact(runtime)
@@ -324,9 +384,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             coroutine=async_compact,
         )
 
-    def _guarded_backend(
-        self, runtime: ToolRuntime[Any, Any] | None = None
-    ) -> BackendProtocol:
+    def _guarded_backend(self, runtime: ToolRuntime[Any, Any] | None = None) -> BackendProtocol:
         backend_obj = getattr(self._summarization, "_backend", None)
         if callable(backend_obj) and runtime is not None:
             backend = cast(BackendProtocol, backend_obj(runtime))
@@ -334,9 +392,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             backend = cast(BackendProtocol, backend_obj)
         return cast(BackendProtocol, _ArchiveReadGuard(backend))
 
-    def _summarization_for_runtime(
-        self, runtime: ToolRuntime[Any, Any]
-    ) -> SummarizationMiddleware:
+    def _summarization_for_runtime(self, runtime: ToolRuntime[Any, Any]) -> SummarizationMiddleware:
         """Build a summarizer for the active runtime model when overridden."""
         config = _runtime_model_config(runtime)
         if not config.model_spec:
@@ -352,9 +408,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         context_limit = config.context_limit
         if context_limit is not None:
             profile = getattr(model, "profile", None)
-            native = (
-                profile.get("max_input_tokens") if isinstance(profile, dict) else None
-            )
+            native = profile.get("max_input_tokens") if isinstance(profile, dict) else None
             if native != context_limit:
                 merged = (
                     {**profile, "max_input_tokens": context_limit}
@@ -362,7 +416,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                     else {"max_input_tokens": context_limit}
                 )
                 try:
-                    setattr(model, "profile", merged)
+                    cast(Any, model).profile = merged
                 except (AttributeError, TypeError, ValueError):
                     logger.warning(
                         "Could not apply runtime context limit %d to the offload "
@@ -400,9 +454,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     async def _arun_forced_compact(self, runtime: ToolRuntime[Any, Any]) -> Command[Any]:
         tool_call_id = runtime.tool_call_id or ""
         try:
-            summarization = await asyncio.to_thread(
-                self._summarization_for_runtime, runtime
-            )
+            summarization = await asyncio.to_thread(self._summarization_for_runtime, runtime)
             messages = runtime.state.get("messages", [])
             event = runtime.state.get("_summarization_event")
             effective = summarization._apply_event_to_messages(messages, event)
@@ -448,12 +500,10 @@ def _create_cli_compaction_middleware(
     """Create the k8s-autopilot compaction middleware from the SDK configuration."""
     if not isinstance(model, str) and not hasattr(model, "profile"):
         try:
-            setattr(model, "profile", {})
+            cast(Any, model).profile = {}
         except Exception:
-            try:
-                setattr(type(model), "profile", property(lambda self: {}))
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                cast(Any, type(model)).profile = property(lambda self: {})
     sdk_middleware = create_summarization_tool_middleware(model, backend)
     return CLICompactionMiddleware(
         sdk_middleware._summarization,
@@ -464,8 +514,8 @@ def _create_cli_compaction_middleware(
 CompactionMiddleware = CLICompactionMiddleware
 
 __all__ = [
-    "CLICompactionMiddleware",
     "COMPACTION_FAILURE_PREFIX",
+    "CLICompactionMiddleware",
     "CompactionMiddleware",
     "RuntimeModelConfig",
     "_create_cli_compaction_middleware",

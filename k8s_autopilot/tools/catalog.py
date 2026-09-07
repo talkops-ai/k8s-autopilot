@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from k8s_autopilot.tools.fetch_url import fetch_url
-from k8s_autopilot.tools.goal_tools import get_goal, get_rubric, propose_goal, update_goal
+from k8s_autopilot.tools.goal_tools import (
+    get_goal,
+    get_rubric,
+    propose_goal,
+    update_goal,
+)
 from k8s_autopilot.tools.registry import ToolRegistry
 from k8s_autopilot.tools.thread import get_current_thread_id
 from k8s_autopilot.tools.web_search import web_search
@@ -26,4 +29,3 @@ def register_all_tools() -> None:
     registry.register("get_goal", lambda **kwargs: get_goal, category="goal")
     registry.register("update_goal", lambda **kwargs: update_goal, category="goal")
     registry.register("propose_goal", lambda **kwargs: propose_goal, category="goal")
-

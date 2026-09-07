@@ -8,17 +8,14 @@ Matches the OpsCode model system:
 
 from __future__ import annotations
 
-import json
-import logging
-import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+import os
 from types import MappingProxyType
-from typing import Any, Mapping, TypedDict, cast
+from typing import Any, TypedDict, cast
 
 from k8s_autopilot.config.settings import get_settings, resolve_env_var
-from k8s_autopilot.exceptions import ModelConfigError
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -72,6 +69,8 @@ OPTIONAL_AUTH_ENV: dict[str, str] = {"ollama": "OLLAMA_API_KEY"}
 
 
 class ProviderAuthState(StrEnum):
+    """Authentication state for a single LLM provider credential."""
+
     CONFIGURED = "configured"
     MISSING = "missing"
     IMPLICIT = "implicit"
@@ -82,12 +81,19 @@ class ProviderAuthState(StrEnum):
 
 @dataclass(frozen=True)
 class ProviderAuthStatus:
+    """Aggregate authentication status across all configured providers."""
+
     state: str
     provider: str
     env_var: str | None = None
     detail: str = ""
 
     def as_legacy_bool(self) -> bool | None:
+        """Convert the auth state into a legacy boolean representation.
+
+        Returns:
+            True if authenticated or managed, False if missing, or None if unknown.
+        """
         if self.state in (
             ProviderAuthState.CONFIGURED,
             ProviderAuthState.IMPLICIT,
@@ -102,6 +108,8 @@ class ProviderAuthStatus:
 
 @dataclass(frozen=True)
 class ModelSpec:
+    """Parsed model specification with provider, model name, and parameters."""
+
     provider: str
     model: str
 
@@ -113,6 +121,17 @@ class ModelSpec:
 
     @classmethod
     def parse(cls, spec: str) -> ModelSpec:
+        """Parse a model specification string into a ModelSpec instance.
+
+        Args:
+            spec: String in 'provider:model' format.
+
+        Returns:
+            ModelSpec instance.
+
+        Raises:
+            ValueError: If spec does not contain ':' or components are empty.
+        """
         if ":" not in spec:
             raise ValueError(f"Invalid spec '{spec}': must be provider:model format")
         provider, model = spec.split(":", 1)
@@ -120,6 +139,14 @@ class ModelSpec:
 
     @classmethod
     def try_parse(cls, spec: str) -> ModelSpec | None:
+        """Attempt to parse a model specification string without raising an exception.
+
+        Args:
+            spec: String in 'provider:model' format.
+
+        Returns:
+            ModelSpec instance if valid, None otherwise.
+        """
         try:
             return cls.parse(spec)
         except ValueError:
@@ -130,6 +157,8 @@ class ModelSpec:
 
 
 class ModelProfile(TypedDict, total=False):
+    """Capability profile for a specific model (context window, features, pricing)."""
+
     name: str
     max_input_tokens: int
     max_output_tokens: int
@@ -147,11 +176,15 @@ class ModelProfile(TypedDict, total=False):
 
 
 class ModelProfileEntry(TypedDict):
+    """Single entry in the model profile registry mapping spec to capabilities."""
+
     profile: ModelProfile
     overridden_keys: set[str]
 
 
 class ProviderConfig(TypedDict, total=False):
+    """Configuration for an LLM provider (API keys, base URLs, overrides)."""
+
     enabled: bool
     models: list[str]
     api_key_env: str
@@ -165,6 +198,8 @@ class ProviderConfig(TypedDict, total=False):
 
 @dataclass(frozen=True)
 class ModelConfig:
+    """Complete model configuration including all providers and their profiles."""
+
     default_model: str | None = None
     recent_model: str | None = None
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
@@ -175,17 +210,39 @@ class ModelConfig:
 
     @classmethod
     def load(cls) -> ModelConfig:
+        """Load the active model configuration from application settings.
+
+        Returns:
+            ModelConfig initialized with default and recent model selections.
+        """
         settings = get_settings()
         default = getattr(settings, "model", None) or "gemini-3.7-flash"
         return cls(default_model=default, recent_model=default)
 
     def is_provider_enabled(self, provider: str) -> bool:
+        """Check whether a model provider is enabled in configuration.
+
+        Args:
+            provider: Provider name (e.g. 'openai', 'anthropic').
+
+        Returns:
+            True if enabled; False otherwise.
+        """
         provider_config = self.providers.get(provider)
         if provider_config is None:
             return True
         return provider_config.get("enabled", True)
 
     def get_kwargs(self, provider: str, *, model_name: str | None = None) -> dict[str, Any]:
+        """Retrieve model initialization keyword arguments for a provider.
+
+        Args:
+            provider: Provider identifier.
+            model_name: Optional specific model name for model-specific overrides.
+
+        Returns:
+            Dictionary of provider kwargs.
+        """
         provider_config = self.providers.get(provider)
         if not provider_config:
             return {}
@@ -199,6 +256,14 @@ class ModelConfig:
         return params
 
     def get_base_url(self, provider: str) -> str | None:
+        """Resolve the effective base URL for a provider from env or config.
+
+        Args:
+            provider: Provider identifier.
+
+        Returns:
+            Resolved base URL string or None.
+        """
         provider_config = self.providers.get(provider)
         if not provider_config:
             return None
@@ -210,24 +275,57 @@ class ModelConfig:
         return provider_config.get("base_url")
 
     def get_base_url_env(self, provider: str) -> str | None:
+        """Get the configured base URL environment variable name for a provider.
+
+        Args:
+            provider: Provider identifier.
+
+        Returns:
+            Environment variable name or None.
+        """
         provider_config = self.providers.get(provider)
         if not provider_config:
             return None
         return provider_config.get("base_url_env")
 
     def get_api_key_env(self, provider: str) -> str | None:
+        """Get the configured API key environment variable name for a provider.
+
+        Args:
+            provider: Provider identifier.
+
+        Returns:
+            Environment variable name or None.
+        """
         provider_config = self.providers.get(provider)
         if not provider_config:
             return None
         return provider_config.get("api_key_env")
 
     def get_class_path(self, provider: str) -> str | None:
+        """Get the custom class path configured for a provider's model wrapper.
+
+        Args:
+            provider: Provider identifier.
+
+        Returns:
+            Python import path string or None.
+        """
         provider_config = self.providers.get(provider)
         if not provider_config:
             return None
         return provider_config.get("class_path")
 
     def get_profile_overrides(self, provider: str, *, model_name: str | None = None) -> dict[str, Any]:
+        """Retrieve profile capability overrides for a provider or model.
+
+        Args:
+            provider: Provider identifier.
+            model_name: Optional specific model name.
+
+        Returns:
+            Dictionary of profile overrides.
+        """
         provider_config = self.providers.get(provider)
         if not provider_config:
             return {}
@@ -242,10 +340,26 @@ class ModelConfig:
 
 
 def get_credential_env_var(provider: str) -> str | None:
+    """Return the primary environment variable name for a provider's API key.
+
+    Args:
+        provider: Provider identifier.
+
+    Returns:
+        Environment variable name or None.
+    """
     return PROVIDER_API_KEY_ENV.get(provider)
 
 
 def get_base_url_env_vars(provider: str) -> tuple[str, ...]:
+    """Return candidate environment variable names for a provider's base URL.
+
+    Args:
+        provider: Provider identifier.
+
+    Returns:
+        Tuple of candidate environment variable names.
+    """
     return PROVIDER_BASE_URL_ENV.get(provider, ())
 
 
@@ -281,6 +395,14 @@ PROVIDER_KEY_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
+    """Inspect and resolve authentication status for a provider.
+
+    Args:
+        provider: Provider identifier.
+
+    Returns:
+        ProviderAuthStatus indicating current configuration state and credentials.
+    """
     if provider in NO_AUTH_REQUIRED_PROVIDERS:
         return ProviderAuthStatus(state=ProviderAuthState.NOT_REQUIRED, provider=provider, detail="local provider")
 
@@ -315,10 +437,20 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
     if not env_var:
         return ProviderAuthStatus(state=ProviderAuthState.UNKNOWN, provider=provider, detail="credentials unknown")
 
-    return ProviderAuthStatus(state=ProviderAuthState.MISSING, provider=provider, env_var=env_var, detail=f"{env_var} is not set")
+    return ProviderAuthStatus(
+        state=ProviderAuthState.MISSING, provider=provider, env_var=env_var, detail=f"{env_var} is not set"
+    )
 
 
 def has_provider_credentials(provider: str) -> bool | None:
+    """Determine whether credentials are available for a given provider.
+
+    Args:
+        provider: Provider identifier.
+
+    Returns:
+        True if credentials exist, False if missing, None if indeterminate.
+    """
     return get_provider_auth_status(provider).as_legacy_bool()
 
 
@@ -630,10 +762,26 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
 
 
 def get_provider_display_name(provider: str) -> str:
+    """Return the user-facing display name for a model provider.
+
+    Args:
+        provider: Provider identifier.
+
+    Returns:
+        Formatted human-readable display name.
+    """
     return PROVIDER_DISPLAY_NAMES.get(provider, provider.title())
 
 
 def get_model_profile(spec: str) -> ModelProfileEntry | None:
+    """Resolve capability and configuration profile for a model specification.
+
+    Args:
+        spec: Model specification string (e.g. 'openai:gpt-4o' or 'gpt-4o').
+
+    Returns:
+        ModelProfileEntry dictionary containing context limits, features, and defaults.
+    """
     if ":" in spec:
         provider, model_id = spec.split(":", 1)
     else:

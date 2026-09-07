@@ -5,7 +5,6 @@ Supports standard Claude / VS Code `"mcpServers"` JSON specification.
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from k8s_autopilot.utils.logger import get_logger
@@ -85,10 +84,7 @@ async def import_raw_mcp_config(
         # Resolve transport
         transport = config.get("transport") or config.get("type")
         if not transport:
-            if url:
-                transport = "sse" if "sse" in str(url).lower() else "http"
-            else:
-                transport = "stdio"
+            transport = ("sse" if "sse" in str(url).lower() else "http") if url else "stdio"
 
         # Enabled / disabled toggle
         if "disabled" in config:

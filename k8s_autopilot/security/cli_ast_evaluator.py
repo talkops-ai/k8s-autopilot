@@ -6,7 +6,6 @@ Parses composite bash commands, subshells, pipelines, and process substitutions 
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 import bashlex
@@ -17,132 +16,143 @@ from k8s_autopilot.utils.logger import get_logger
 logger = get_logger(__name__)
 
 # Wrapper utilities that execute other commands
-WRAPPER_UTILITIES: frozenset[str] = frozenset({
-    "xargs",
-    "sudo",
-    "doas",
-    "time",
-    "nohup",
-    "env",
-    "parallel",
-    "chroot",
-    "exec",
-    "sh",
-    "bash",
-    "zsh",
-})
+WRAPPER_UTILITIES: frozenset[str] = frozenset(
+    {
+        "xargs",
+        "sudo",
+        "doas",
+        "time",
+        "nohup",
+        "env",
+        "parallel",
+        "chroot",
+        "exec",
+        "sh",
+        "bash",
+        "zsh",
+    }
+)
 
 # Pure read-only utilities whose execution only inspects local data/state
-READONLY_UTILITIES: frozenset[str] = frozenset({
-    "cat",
-    "grep",
-    "egrep",
-    "fgrep",
-    "rg",
-    "head",
-    "tail",
-    "ls",
-    "find",
-    "echo",
-    "pwd",
-    "awk",
-    "sed",
-    "jq",
-    "yq",
-    "wc",
-    "diff",
-    "stat",
-    "file",
-    "uname",
-    "which",
-    "whereis",
-    "whoami",
-    "printenv",
-    "date",
-    "uptime",
-    "df",
-    "du",
-    "free",
-    "ps",
-    "top",
-    "tree",
-    "sort",
-    "uniq",
-    "tr",
-    "cut",
-    "less",
-    "more",
-    "curl",
-})
+READONLY_UTILITIES: frozenset[str] = frozenset(
+    {
+        "cat",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "head",
+        "tail",
+        "ls",
+        "find",
+        "echo",
+        "pwd",
+        "awk",
+        "sed",
+        "jq",
+        "yq",
+        "wc",
+        "diff",
+        "stat",
+        "file",
+        "uname",
+        "which",
+        "whereis",
+        "whoami",
+        "printenv",
+        "date",
+        "uptime",
+        "df",
+        "du",
+        "free",
+        "ps",
+        "top",
+        "tree",
+        "sort",
+        "uniq",
+        "tr",
+        "cut",
+        "less",
+        "more",
+        "curl",
+    }
+)
 
 # Destructive operations that delete or disrupt live cluster state, disk, or databases
-DANGEROUS_VERBS: frozenset[str] = frozenset({
-    "delete",
-    "remove",
-    "rm",
-    "drain",
-    "evict",
-    "taint",
-    "drop",
-    "uninstall",
-    "zap",
-    "destroy",
-    "prune",
-    "truncate",
-    "kill",
-    "purge",
-    "wipe",
-    "format",
-    "cordon",
-    "uncordon",
-    "shutdown",
-    "reboot",
-})
+DANGEROUS_VERBS: frozenset[str] = frozenset(
+    {
+        "delete",
+        "remove",
+        "rm",
+        "drain",
+        "evict",
+        "taint",
+        "drop",
+        "uninstall",
+        "zap",
+        "destroy",
+        "prune",
+        "truncate",
+        "kill",
+        "purge",
+        "wipe",
+        "format",
+        "cordon",
+        "uncordon",
+        "shutdown",
+        "reboot",
+    }
+)
 
 # Destructive force-override CLI flags
-DANGEROUS_FLAGS: frozenset[str] = frozenset({
-    "--force",
-    "--purge",
-    "--grace-period=0",
-    "-rf",
-    "-fr",
-    "--all",
-    "--no-preserve-root",
-    "--cascade=foreground",
-    "--cascade=orphan",
-    "--hard",
-    "-D",
-})
+DANGEROUS_FLAGS: frozenset[str] = frozenset(
+    {
+        "--force",
+        "--purge",
+        "--grace-period=0",
+        "-rf",
+        "-fr",
+        "--all",
+        "--no-preserve-root",
+        "--cascade=foreground",
+        "--cascade=orphan",
+        "--hard",
+        "-D",
+    }
+)
 
 # Standard Kubernetes/Helm/Git read-only verbs
-READONLY_VERBS: frozenset[str] = frozenset({
-    "get",
-    "list",
-    "describe",
-    "status",
-    "logs",
-    "log",
-    "version",
-    "show",
-    "view",
-    "explain",
-    "top",
-    "diff",
-    "cluster-info",
-    "auth",
-    "can-i",
-    "api-resources",
-    "api-versions",
-    "branch",
-    "remote",
-    "config",
-})
+READONLY_VERBS: frozenset[str] = frozenset(
+    {
+        "get",
+        "list",
+        "describe",
+        "status",
+        "logs",
+        "log",
+        "version",
+        "show",
+        "view",
+        "explain",
+        "top",
+        "diff",
+        "cluster-info",
+        "auth",
+        "can-i",
+        "api-resources",
+        "api-versions",
+        "branch",
+        "remote",
+        "config",
+    }
+)
 
 
 class SecurityASTVisitor(bashlex.ast.nodevisitor):
     """Traverses bashlex AST nodes inspecting words, commands, and substitutions."""
 
     def __init__(self) -> None:
+        """Initialize SecurityASTVisitor with empty collections and default safety flags."""
         self.found_verbs: list[str] = []
         self.found_flags: list[str] = []
         self.found_commands: list[str] = []
@@ -194,10 +204,11 @@ class SecurityASTVisitor(bashlex.ast.nodevisitor):
             w_lower = word.lower()
             if word.startswith("-"):
                 flags.append(word)
-                if word in DANGEROUS_FLAGS or w_lower in DANGEROUS_FLAGS:
-                    self.is_destructive = True
-                    self.is_readonly = False
-                elif cmd_utility == "rm" and ("f" in word or "r" in word):
+                if (
+                    word in DANGEROUS_FLAGS
+                    or w_lower in DANGEROUS_FLAGS
+                    or (cmd_utility == "rm" and ("f" in word or "r" in word))
+                ):
                     self.is_destructive = True
                     self.is_readonly = False
             else:

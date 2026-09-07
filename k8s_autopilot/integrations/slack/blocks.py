@@ -13,11 +13,10 @@ from :func:`~k8s_autopilot.integrations.slack.mrkdwn.md_to_mrkdwn`.
 
 from __future__ import annotations
 
-from typing import Any, Optional
 import json
+from typing import Any
 
 from k8s_autopilot.integrations.slack.mrkdwn import md_to_mrkdwn
-
 
 # ---------------------------------------------------------------------------
 # HITL approval blocks (Approve / Reject — 2-button)
@@ -40,10 +39,13 @@ def build_approval_blocks(
     Returns:
         Slack Block Kit blocks with an actions section.
     """
-    question = str(interrupt_value.get(
-        "question",
-        interrupt_value.get("message", "Action requires approval"),
-    ) or "Action requires approval")
+    question = str(
+        interrupt_value.get(
+            "question",
+            interrupt_value.get("message", "Action requires approval"),
+        )
+        or "Action requires approval"
+    )
     details = interrupt_value.get(
         "details",
         interrupt_value.get("action_description", ""),
@@ -158,12 +160,8 @@ def build_planning_approval_blocks(
     Returns:
         Slack Block Kit blocks with a 3-button action section.
     """
-    question = interrupt_value.get(
-        "question", "Please review the following plan:"
-    )
-    context_text = interrupt_value.get(
-        "context", interrupt_value.get("details", "")
-    )
+    question = interrupt_value.get("question", "Please review the following plan:")
+    context_text = interrupt_value.get("context", interrupt_value.get("details", ""))
     plan_summary = interrupt_value.get("plan_summary", "")
 
     blocks: list[dict[str, Any]] = [
@@ -396,9 +394,7 @@ def build_user_input_blocks(
     # If there are input fields, add a hint to type a reply
     input_fields = interrupt_value.get("input_fields", [])
     if input_fields:
-        field_names = ", ".join(
-            f.get("label", f.get("name", "field")) for f in input_fields
-        )
+        field_names = ", ".join(f.get("label", f.get("name", "field")) for f in input_fields)
         blocks.append(
             {
                 "type": "context",
@@ -538,10 +534,7 @@ def build_error_blocks(
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": (
-                    f":rotating_light: *Error*\n"
-                    f"`{error_type}`: {error_text}"
-                ),
+                "text": (f":rotating_light: *Error*\n`{error_type}`: {error_text}"),
             },
         },
     ]
@@ -640,7 +633,7 @@ def build_task_plan_blocks(
 def build_status_update_blocks(
     title: str,
     status: str,
-    details: Optional[str] = None,
+    details: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build a status update block (for coordinator activity).
 
@@ -677,4 +670,3 @@ def build_status_update_blocks(
         )
 
     return blocks
-

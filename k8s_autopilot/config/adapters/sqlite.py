@@ -12,15 +12,14 @@ Implements storage for:
 
 from __future__ import annotations
 
+import contextlib
 import json
-import logging
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
 from k8s_autopilot.config.store import ConfigCategory, ConfigEntry, ConfigStorageAdapter
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -143,6 +142,7 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
     """SQLite-backed config storage with full entity CRUD."""
 
     def __init__(self, db_path: str | Path) -> None:
+        """Initialize the SQLite configuration storage adapter."""
         self._db_path = str(db_path)
 
     def _connect(self) -> aiosqlite.Connection:
@@ -168,51 +168,41 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
                 ("load_error", "TEXT"),
             ]
             for col_name, col_type in plugin_columns:
-                try:
+                with contextlib.suppress(Exception):
                     await conn.execute(f"ALTER TABLE plugins ADD COLUMN {col_name} {col_type}")
-                except Exception:
-                    pass
-            try:
+            with contextlib.suppress(Exception):
                 await conn.execute("ALTER TABLE skills ADD COLUMN content TEXT DEFAULT ''")
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 await conn.execute("ALTER TABLE subagents ADD COLUMN system_prompt TEXT DEFAULT ''")
-            except Exception:
-                pass
             mcp_columns = [
                 ("disabled_tools", "TEXT DEFAULT '[]'"),
                 ("allowed_tools", "TEXT DEFAULT '[]'"),
             ]
             for col_name, col_type in mcp_columns:
-                try:
+                with contextlib.suppress(Exception):
                     await conn.execute(f"ALTER TABLE mcp_servers ADD COLUMN {col_name} {col_type}")
-                except Exception:
-                    pass
-            await conn.execute(
-                "INSERT OR IGNORE INTO model_preferences (id) VALUES ('current')"
-            )
+            await conn.execute("INSERT OR IGNORE INTO model_preferences (id) VALUES ('current')")
             await conn.commit()
         logger.debug("SqliteConfigAdapter initialized at %s", self._db_path)
 
     # ── ConfigEntry CRUD ─────────────────────────────────
 
     async def load_all(self) -> list[ConfigEntry]:
+        """Load all configuration entries from the database."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
             async with conn.execute(
-                "SELECT key, value, category, display_name, description, is_secret "
-                "FROM config_store ORDER BY key"
+                "SELECT key, value, category, display_name, description, is_secret FROM config_store ORDER BY key"
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [self._row_to_entry(row) for row in rows]
 
     async def get(self, key: str) -> ConfigEntry | None:
+        """Retrieve a single configuration entry by its key."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
             async with conn.execute(
-                "SELECT key, value, category, display_name, description, is_secret "
-                "FROM config_store WHERE key = ?",
+                "SELECT key, value, category, display_name, description, is_secret FROM config_store WHERE key = ?",
                 (key,),
             ) as cursor:
                 row = await cursor.fetchone()
@@ -221,6 +211,7 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
                 return self._row_to_entry(row)
 
     async def set(self, entry: ConfigEntry) -> None:
+        """Store or update a configuration entry."""
         async with self._connect() as conn:
             await conn.execute(
                 """
@@ -246,14 +237,14 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
             await conn.commit()
 
     async def delete(self, key: str) -> bool:
+        """Delete a configuration entry by its key."""
         async with self._connect() as conn:
-            result = await conn.execute(
-                "DELETE FROM config_store WHERE key = ?", (key,)
-            )
+            result = await conn.execute("DELETE FROM config_store WHERE key = ?", (key,))
             await conn.commit()
             return bool(result.rowcount and result.rowcount > 0)
 
     async def list_by_category(self, category: ConfigCategory) -> list[ConfigEntry]:
+        """Retrieve all configuration entries belonging to a category."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
             async with conn.execute(
@@ -267,6 +258,7 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
     # ── Model Preferences CRUD ────────────────────────────
 
     async def get_model_preferences(self) -> dict[str, Any]:
+        """Retrieve saved model preferences."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
             async with conn.execute(
@@ -289,6 +281,7 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
                 }
 
     async def save_model_preferences(self, prefs: dict[str, Any]) -> None:
+        """Save or update model preferences."""
         async with self._connect() as conn:
             await conn.execute(
                 """
@@ -313,57 +306,62 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
     # ── MCP Server CRUD ──────────────────────────────────
 
     async def list_mcp_servers(self) -> list[dict[str, Any]]:
+        """List all configured MCP servers."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT * FROM mcp_servers ORDER BY name"
-            ) as cursor:
+            async with conn.execute("SELECT * FROM mcp_servers ORDER BY name") as cursor:
                 rows = await cursor.fetchall()
-                return [
-                    {
-                        "name": row["name"],
-                        "transport": row["transport"],
-                        "command": row["command"],
-                        "args": json.loads(row["args"] or "[]"),
-                        "url": row["url"],
-                        "env": json.loads(row["env"] or "{}"),
-                        "headers": json.loads(row["headers"] or "{}"),
-                        "source": row["source"],
-                        "auth_token_env_var": row["auth_token_env_var"],
-                        "disabled_tools": json.loads(row["disabled_tools"] or "[]") if "disabled_tools" in row.keys() and row["disabled_tools"] else [],
-                        "allowed_tools": json.loads(row["allowed_tools"] or "[]") if "allowed_tools" in row.keys() and row["allowed_tools"] else [],
-                        "enabled": bool(row["enabled"]),
-                        "trusted": bool(row["trusted"]),
-                    }
-                    for row in rows
-                ]
+                result = []
+                for row in rows:
+                    d = dict(row)
+                    result.append(
+                        {
+                            "name": d["name"],
+                            "transport": d["transport"],
+                            "command": d["command"],
+                            "args": json.loads(d["args"] or "[]"),
+                            "url": d["url"],
+                            "env": json.loads(d["env"] or "{}"),
+                            "headers": json.loads(d["headers"] or "{}"),
+                            "source": d["source"],
+                            "auth_token_env_var": d["auth_token_env_var"],
+                            "disabled_tools": json.loads(d["disabled_tools"] or "[]")
+                            if d.get("disabled_tools")
+                            else [],
+                            "allowed_tools": json.loads(d["allowed_tools"] or "[]") if d.get("allowed_tools") else [],
+                            "enabled": bool(d["enabled"]),
+                            "trusted": bool(d["trusted"]),
+                        }
+                    )
+                return result
 
     async def get_mcp_server(self, name: str) -> dict[str, Any] | None:
+        """Retrieve an MCP server configuration by name."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT * FROM mcp_servers WHERE name = ?", (name,)
-            ) as cursor:
+            async with conn.execute("SELECT * FROM mcp_servers WHERE name = ?", (name,)) as cursor:
                 row = await cursor.fetchone()
                 if row is None:
                     return None
+                d = dict(row)
                 return {
-                    "name": row["name"],
-                    "transport": row["transport"],
-                    "command": row["command"],
-                    "args": json.loads(row["args"] or "[]"),
-                    "url": row["url"],
-                    "env": json.loads(row["env"] or "{}"),
-                    "headers": json.loads(row["headers"] or "{}"),
-                    "source": row["source"],
-                    "auth_token_env_var": row["auth_token_env_var"],
-                    "disabled_tools": json.loads(row["disabled_tools"] or "[]") if "disabled_tools" in row.keys() and row["disabled_tools"] else [],
-                    "allowed_tools": json.loads(row["allowed_tools"] or "[]") if "allowed_tools" in row.keys() and row["allowed_tools"] else [],
-                    "enabled": bool(row["enabled"]),
-                    "trusted": bool(row["trusted"]),
+                    "name": d["name"],
+                    "transport": d["transport"],
+                    "command": d["command"],
+                    "args": json.loads(d["args"] or "[]"),
+                    "url": d["url"],
+                    "env": json.loads(d["env"] or "{}"),
+                    "headers": json.loads(d["headers"] or "{}"),
+                    "source": d["source"],
+                    "auth_token_env_var": d["auth_token_env_var"],
+                    "disabled_tools": json.loads(d["disabled_tools"] or "[]") if d.get("disabled_tools") else [],
+                    "allowed_tools": json.loads(d["allowed_tools"] or "[]") if d.get("allowed_tools") else [],
+                    "enabled": bool(d["enabled"]),
+                    "trusted": bool(d["trusted"]),
                 }
 
     async def upsert_mcp_server(self, server: dict[str, Any]) -> None:
+        """Create or update an MCP server configuration."""
         async with self._connect() as conn:
             await conn.execute(
                 """
@@ -403,21 +401,19 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
             await conn.commit()
 
     async def delete_mcp_server(self, name: str) -> bool:
+        """Delete an MCP server configuration by name."""
         async with self._connect() as conn:
-            result = await conn.execute(
-                "DELETE FROM mcp_servers WHERE name = ?", (name,)
-            )
+            result = await conn.execute("DELETE FROM mcp_servers WHERE name = ?", (name,))
             await conn.commit()
             return bool(result.rowcount and result.rowcount > 0)
 
     # ── Marketplace Metadata CRUD ─────────────────────────
 
     async def list_marketplaces(self) -> list[dict[str, Any]]:
+        """List all configured plugin marketplaces."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT * FROM marketplaces ORDER BY name"
-            ) as cursor:
+            async with conn.execute("SELECT * FROM marketplaces ORDER BY name") as cursor:
                 rows = await cursor.fetchall()
                 return [
                     {
@@ -435,11 +431,10 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
                 ]
 
     async def get_marketplace(self, name: str) -> dict[str, Any] | None:
+        """Retrieve a plugin marketplace by name."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT * FROM marketplaces WHERE name = ?", (name,)
-            ) as cursor:
+            async with conn.execute("SELECT * FROM marketplaces WHERE name = ?", (name,)) as cursor:
                 row = await cursor.fetchone()
                 if not row:
                     return None
@@ -456,6 +451,7 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
                 }
 
     async def upsert_marketplace(self, marketplace: dict[str, Any]) -> None:
+        """Create or update a plugin marketplace record."""
         async with self._connect() as conn:
             await conn.execute(
                 """
@@ -483,72 +479,65 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
             await conn.commit()
 
     async def delete_marketplace(self, name: str) -> bool:
+        """Delete a plugin marketplace by name."""
         async with self._connect() as conn:
-            result = await conn.execute(
-                "DELETE FROM marketplaces WHERE name = ?", (name,)
-            )
+            result = await conn.execute("DELETE FROM marketplaces WHERE name = ?", (name,))
             await conn.commit()
             return bool(result.rowcount and result.rowcount > 0)
 
     # ── Plugin Metadata CRUD ──────────────────────────────
 
     def _row_to_plugin(self, row: aiosqlite.Row) -> dict[str, Any]:
+        d = dict(row)
         return {
-            "plugin_id": row["plugin_id"],
-            "name": row["name"],
-            "marketplace": row["marketplace"],
-            "version": row["version"],
-            "display_name": row["display_name"] if "display_name" in row.keys() else None,
-            "description": row["description"] if "description" in row.keys() else None,
-            "author": row["author"] if "author" in row.keys() else None,
-            "skill_count": row["skill_count"] if "skill_count" in row.keys() else 0,
-            "skill_names": json.loads(row["skill_names"] or "[]") if "skill_names" in row.keys() else [],
-            "mcp_server_names": json.loads(row["mcp_server_names"] or "[]") if "mcp_server_names" in row.keys() else [],
-            "install_path": row["install_path"],
-            "scope": row["scope"],
-            "source_type": row["source_type"],
-            "source_value": row["source_value"],
-            "enabled": bool(row["enabled"]),
-            "config": json.loads(row["config"] or "{}"),
-            "installed_at": row["installed_at"] if "installed_at" in row.keys() else None,
-            "last_updated": row["last_updated"] if "last_updated" in row.keys() else None,
-            "git_commit_sha": row["git_commit_sha"] if "git_commit_sha" in row.keys() else None,
-            "load_error": row["load_error"] if "load_error" in row.keys() else None,
+            "plugin_id": d["plugin_id"],
+            "name": d["name"],
+            "marketplace": d["marketplace"],
+            "version": d["version"],
+            "display_name": d.get("display_name"),
+            "description": d.get("description"),
+            "author": d.get("author"),
+            "skill_count": d.get("skill_count") or 0,
+            "skill_names": json.loads(d["skill_names"] or "[]") if "skill_names" in d else [],
+            "mcp_server_names": json.loads(d["mcp_server_names"] or "[]") if "mcp_server_names" in d else [],
+            "install_path": d["install_path"],
+            "scope": d["scope"],
+            "source_type": d["source_type"],
+            "source_value": d["source_value"],
+            "enabled": bool(d["enabled"]),
+            "config": json.loads(d["config"] or "{}"),
+            "installed_at": d.get("installed_at"),
+            "last_updated": d.get("last_updated"),
+            "git_commit_sha": d.get("git_commit_sha"),
+            "load_error": d.get("load_error"),
         }
 
     async def list_plugins(self) -> list[dict[str, Any]]:
+        """List all installed plugin records."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT * FROM plugins ORDER BY plugin_id"
-            ) as cursor:
+            async with conn.execute("SELECT * FROM plugins ORDER BY plugin_id") as cursor:
                 rows = await cursor.fetchall()
                 return [self._row_to_plugin(row) for row in rows]
 
     async def get_plugin(self, plugin_id: str) -> dict[str, Any] | None:
+        """Retrieve an installed plugin record by ID."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT * FROM plugins WHERE plugin_id = ?", (plugin_id,)
-            ) as cursor:
+            async with conn.execute("SELECT * FROM plugins WHERE plugin_id = ?", (plugin_id,)) as cursor:
                 row = await cursor.fetchone()
                 if not row:
                     return None
                 return self._row_to_plugin(row)
 
     async def upsert_plugin(self, plugin: dict[str, Any]) -> None:
+        """Create or update an installed plugin record."""
         p_id = plugin.get("plugin_id") or f"{plugin['name']}@{plugin.get('marketplace', 'default')}"
         skill_names = plugin.get("skill_names")
-        if isinstance(skill_names, (list, tuple)):
-            skill_names_json = json.dumps(list(skill_names))
-        else:
-            skill_names_json = json.dumps([])
+        skill_names_json = json.dumps(list(skill_names)) if isinstance(skill_names, (list, tuple)) else json.dumps([])
 
         mcp_names = plugin.get("mcp_server_names")
-        if isinstance(mcp_names, (list, tuple)):
-            mcp_names_json = json.dumps(list(mcp_names))
-        else:
-            mcp_names_json = json.dumps([])
+        mcp_names_json = json.dumps(list(mcp_names)) if isinstance(mcp_names, (list, tuple)) else json.dumps([])
 
         async with self._connect() as conn:
             await conn.execute(
@@ -605,21 +594,19 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
             await conn.commit()
 
     async def delete_plugin(self, plugin_id: str) -> bool:
+        """Delete an installed plugin record by ID."""
         async with self._connect() as conn:
-            result = await conn.execute(
-                "DELETE FROM plugins WHERE plugin_id = ?", (plugin_id,)
-            )
+            result = await conn.execute("DELETE FROM plugins WHERE plugin_id = ?", (plugin_id,))
             await conn.commit()
             return bool(result.rowcount and result.rowcount > 0)
 
     # ── Skill Metadata CRUD ───────────────────────────────
 
     async def list_skills(self) -> list[dict[str, Any]]:
+        """List all stored custom skill records."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT * FROM skills ORDER BY name"
-            ) as cursor:
+            async with conn.execute("SELECT * FROM skills ORDER BY name") as cursor:
                 rows = await cursor.fetchall()
                 return [
                     {
@@ -636,6 +623,7 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
                 ]
 
     async def upsert_skill(self, skill: dict[str, Any]) -> None:
+        """Create or update a custom skill record."""
         async with self._connect() as conn:
             await conn.execute(
                 """
@@ -665,21 +653,19 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
             await conn.commit()
 
     async def delete_skill(self, name: str) -> bool:
+        """Delete a custom skill record by name."""
         async with self._connect() as conn:
-            result = await conn.execute(
-                "DELETE FROM skills WHERE name = ?", (name,)
-            )
+            result = await conn.execute("DELETE FROM skills WHERE name = ?", (name,))
             await conn.commit()
             return bool(result.rowcount and result.rowcount > 0)
 
     # ── Subagent Metadata CRUD ────────────────────────────
 
     async def list_subagents(self) -> list[dict[str, Any]]:
+        """List all stored custom subagent records."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT * FROM subagents ORDER BY name"
-            ) as cursor:
+            async with conn.execute("SELECT * FROM subagents ORDER BY name") as cursor:
                 rows = await cursor.fetchall()
                 return [
                     {
@@ -696,6 +682,7 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
                 ]
 
     async def upsert_subagent(self, subagent: dict[str, Any]) -> None:
+        """Create or update a custom subagent record."""
         async with self._connect() as conn:
             await conn.execute(
                 """
@@ -725,21 +712,19 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
             await conn.commit()
 
     async def delete_subagent(self, name: str) -> bool:
+        """Delete a custom subagent record by name."""
         async with self._connect() as conn:
-            result = await conn.execute(
-                "DELETE FROM subagents WHERE name = ?", (name,)
-            )
+            result = await conn.execute("DELETE FROM subagents WHERE name = ?", (name,))
             await conn.commit()
             return bool(result.rowcount and result.rowcount > 0)
 
     # ── Agent Instruction Metadata ────────────────────────
 
     async def list_agent_instructions(self) -> list[dict[str, Any]]:
+        """List custom instructions configured for agents."""
         async with self._connect() as conn:
             conn.row_factory = aiosqlite.Row
-            async with conn.execute(
-                "SELECT * FROM agent_instructions ORDER BY scope"
-            ) as cursor:
+            async with conn.execute("SELECT * FROM agent_instructions ORDER BY scope") as cursor:
                 rows = await cursor.fetchall()
                 return [
                     {
@@ -751,6 +736,7 @@ class SqliteConfigAdapter(ConfigStorageAdapter):
                 ]
 
     async def upsert_agent_instruction(self, instruction: dict[str, Any]) -> None:
+        """Save or update custom instructions for an agent."""
         async with self._connect() as conn:
             await conn.execute(
                 """

@@ -17,7 +17,6 @@ The tools are intentionally constrained:
 
 from __future__ import annotations
 
-import logging
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -26,22 +25,23 @@ from typing import (
     NotRequired,
     TypedDict,
 )
+from unittest.mock import Mock
+import uuid
 
-from langchain.agents.middleware.types import AgentState, PrivateStateAttr
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, interrupt
 from pydantic import Field
 
+import k8s_autopilot.rubrics.generator as rubric_generator
+from k8s_autopilot.rubrics.generator import generate_rubric  # noqa: F401
+from k8s_autopilot.schema.interrupts import GoalReviewResumePayload
 from k8s_autopilot.state.goal_channels import (
     GoalRubricChannels,
     GoalStatus,
     coerce_goal_status,
 )
-from k8s_autopilot.schema.interrupts import GoalReviewResumePayload
-import k8s_autopilot.rubrics.generator as rubric_generator
-from k8s_autopilot.rubrics.generator import generate_rubric
 
 if TYPE_CHECKING:
     pass
@@ -256,27 +256,17 @@ def _update_goal_command(
     goal_status = coerce_goal_status(state.get("_goal_status")) or "active"
     if goal_status in {"paused", "complete"}:
         if goal_status == "paused":
-            message = (
-                "The goal is paused. The user must run `/goal resume` before its "
-                "status can be updated."
-            )
+            message = "The goal is paused. The user must run `/goal resume` before its status can be updated."
         else:
             message = "The goal is already complete and cannot be updated."
-        return Command(
-            update={
-                "messages": [ToolMessage(content=message, tool_call_id=tool_call_id)]
-            }
-        )
+        return Command(update={"messages": [ToolMessage(content=message, tool_call_id=tool_call_id)]})
     clean_note = note.strip()
     if not clean_note:
         return Command(
             update={
                 "messages": [
                     ToolMessage(
-                        content=(
-                            f"Provide a note with evidence before marking the "
-                            f"goal {status}."
-                        ),
+                        content=(f"Provide a note with evidence before marking the goal {status}."),
                         tool_call_id=tool_call_id,
                     )
                 ]
@@ -289,10 +279,7 @@ def _update_goal_command(
                 "_pending_goal_completion_note": clean_note,
                 "messages": [
                     ToolMessage(
-                        content=(
-                            "Goal completion requested. It will be recorded if "
-                            "the accepted rubric is satisfied."
-                        ),
+                        content=("Goal completion requested. It will be recorded if the accepted rubric is satisfied."),
                         tool_call_id=tool_call_id,
                     )
                 ],
@@ -362,18 +349,14 @@ def update_goal(
     status: Annotated[
         Literal["complete", "blocked"],
         Field(
-            description=(
-                "`complete` to attach completion evidence, or `blocked` "
-                "when you are stuck and need the user."
-            )
+            description=("`complete` to attach completion evidence, or `blocked` when you are stuck and need the user.")
         ),
     ],
     note: Annotated[
         str,
         Field(
             description=(
-                "Evidence the criteria are satisfied, or the specific "
-                "blocker. Required when calling this tool."
+                "Evidence the criteria are satisfied, or the specific blocker. Required when calling this tool."
             )
         ),
     ],
@@ -461,7 +444,7 @@ def _parse_goal_response(
             }
         )
     elif payload.decision == "reject":
-        regenerated_obj, regenerated_bullets = draft_goal_criteria(
+        _regenerated_obj, regenerated_bullets = draft_goal_criteria(
             objective,
             feedback=payload.feedback,
             previous_criteria=rubric_str,
@@ -469,8 +452,7 @@ def _parse_goal_response(
         regenerated_criteria = "\n".join(f"- {b}" for b in regenerated_bullets)
 
         result_text = (
-            f"User rejected proposed goal criteria with feedback:\n"
-            f"{payload.feedback or '(No feedback provided)'}\n\n"
+            f"User rejected proposed goal criteria with feedback:\n{payload.feedback or '(No feedback provided)'}\n\n"
         )
         if regenerated_criteria:
             result_text += (
@@ -507,7 +489,6 @@ def _parse_goal_response(
                 ],
             }
         )
-
 
 
 _active_criteria_agent: Any | None = None
@@ -565,8 +546,7 @@ def draft_goal_criteria(
     global _active_criteria_agent, _active_fallback_agent
     if _active_criteria_agent is not None:
         try:
-            import uuid
-            from k8s_autopilot.middleware.goal_criteria import (
+            from k8s_autopilot.middleware.goal_criteria import (  # Lazy import: circular dependency avoidance
                 _goal_criteria_request,
                 _prompt_with_conversation_context,
                 _proposal_from_result,
@@ -633,8 +613,6 @@ def draft_goal_criteria(
 
     # 2. Try generate_rubric LLM generation (support both patched module-level and generator-level mocks)
     try:
-        from unittest.mock import Mock
-
         mod_gen = globals().get("generate_rubric")
         if isinstance(mod_gen, Mock):
             gen_fn = mod_gen
@@ -709,5 +687,3 @@ def propose_goal(
     }
     response = interrupt(review_request)
     return _parse_goal_response(response, obj_to_use, criteria_list, tool_call_id)
-
-

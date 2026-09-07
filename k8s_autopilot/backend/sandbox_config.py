@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from typing import Optional
+import os
 
 
 @dataclass
@@ -14,16 +13,16 @@ class SandboxConfig:
     provider: str = "local"
     """Target provider identifier ('local', 'langsmith', 'daytona', 'modal', 'runloop')."""
 
-    sandbox_id: Optional[str] = None
+    sandbox_id: str | None = None
     """Optional existing remote sandbox ID to reconnect to."""
 
-    image: Optional[str] = None
+    image: str | None = None
     """Optional container base image name or Dockerfile ref."""
 
-    setup_script_path: Optional[str] = None
+    setup_script_path: str | None = None
     """Optional path to a shell script to run inside the sandbox on boot."""
 
-    snapshot_name: Optional[str] = None
+    snapshot_name: str | None = None
     """Optional snapshot or blueprint name to boot from (supported by LangSmith/Runloop)."""
 
     sync_workspace: bool = True

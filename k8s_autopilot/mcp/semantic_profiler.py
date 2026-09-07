@@ -7,8 +7,6 @@ sub-millisecond runtime safety gating without per-turn LLM latency.
 
 from __future__ import annotations
 
-import json
-import logging
 import re
 from typing import Any
 
@@ -57,11 +55,17 @@ class MCPSemanticProfiler:
 
     @classmethod
     def get_instance(cls) -> MCPSemanticProfiler:
+        """Retrieve the singleton instance of MCPSemanticProfiler.
+
+        Returns:
+            MCPSemanticProfiler: The singleton profiler instance.
+        """
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
     def __init__(self) -> None:
+        """Initialize MCPSemanticProfiler with an empty profile registry."""
         # Keyed by f"{server_name}:{tool_name}" and "tool_name"
         self._profiles: dict[str, ToolSafetyProfile] = {}
 
@@ -114,27 +118,68 @@ class MCPSemanticProfiler:
 
         desc = getattr(mcp_tool, "description", "") or ""
         lower_name = original_name.lower()
-        lower_desc = desc.lower()
+        desc.lower()
 
         # Tokenize name by underscores, hyphens, and colons
         name_tokens = set(re.findall(r"[a-z0-9]+", lower_name))
 
         destructive_verbs = {
-            "delete", "destroy", "drop", "drain", "evict", "prune",
-            "zap", "wipe", "uninstall", "purge", "kill", "terminate",
-            "erase", "format", "remove",
+            "delete",
+            "destroy",
+            "drop",
+            "drain",
+            "evict",
+            "prune",
+            "zap",
+            "wipe",
+            "uninstall",
+            "purge",
+            "kill",
+            "terminate",
+            "erase",
+            "format",
+            "remove",
         }
 
         inspection_verbs = {
-            "get", "list", "describe", "view", "status", "query",
-            "read", "inspect", "search", "show", "check", "fetch",
-            "diff", "find", "lookup", "info", "cat", "tail",
-            "watch", "scan", "metrics", "logs", "events", "ping",
-            "test", "validate", "explain", "history", "top", "version",
+            "get",
+            "list",
+            "describe",
+            "view",
+            "status",
+            "query",
+            "read",
+            "inspect",
+            "search",
+            "show",
+            "check",
+            "fetch",
+            "diff",
+            "find",
+            "lookup",
+            "info",
+            "cat",
+            "tail",
+            "watch",
+            "scan",
+            "metrics",
+            "logs",
+            "events",
+            "ping",
+            "test",
+            "validate",
+            "explain",
+            "history",
+            "top",
+            "version",
         }
 
         # Tier 4: Explicit destructive annotation or destructive verb
-        if destructive_hint or any(v in name_tokens for v in destructive_verbs) or any(v in lower_name for v in destructive_verbs):
+        if (
+            destructive_hint
+            or any(v in name_tokens for v in destructive_verbs)
+            or any(v in lower_name for v in destructive_verbs)
+        ):
             return ToolSafetyProfile(
                 tool_name=original_name,
                 inferred_tier=4,
@@ -145,8 +190,25 @@ class MCPSemanticProfiler:
             )
 
         # Tier 1: Explicit annotation or inspection verb anywhere in tool name/tokens
-        if read_only_hint or any(v in name_tokens for v in inspection_verbs) or lower_name.startswith(
-            ("get_", "list_", "describe_", "view_", "status_", "query_", "read_", "inspect_", "search_", "fetch_", "show_", "check_")
+        if (
+            read_only_hint
+            or any(v in name_tokens for v in inspection_verbs)
+            or lower_name.startswith(
+                (
+                    "get_",
+                    "list_",
+                    "describe_",
+                    "view_",
+                    "status_",
+                    "query_",
+                    "read_",
+                    "inspect_",
+                    "search_",
+                    "fetch_",
+                    "show_",
+                    "check_",
+                )
+            )
         ):
             return ToolSafetyProfile(
                 tool_name=original_name,

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import threading
-from typing import Any
+from typing import Any, TypeVar
+
+T = TypeVar("T", bound=type)
 
 
 class BackendRegistry:
@@ -13,6 +16,7 @@ class BackendRegistry:
     _lock = threading.Lock()
 
     def __init__(self) -> None:
+        """Initialize BackendRegistry with an empty provider mapping."""
         self._providers: dict[str, type] = {}
 
     def register(self, name: str, cls: type) -> None:
@@ -45,7 +49,7 @@ def get_backend_registry() -> BackendRegistry:
     return BackendRegistry.get_instance()
 
 
-def register_backend(name: str):  # type: ignore[no-untyped-def]
+def register_backend(name: str) -> Callable[[T], T]:
     """Class decorator to register a backend provider.
 
     Usage::
@@ -55,7 +59,15 @@ def register_backend(name: str):  # type: ignore[no-untyped-def]
             ...
     """
 
-    def decorator(cls: type) -> type:
+    def decorator(cls: T) -> T:
+        """Register the decorated class in the backend registry.
+
+        Args:
+            cls: The backend class to register.
+
+        Returns:
+            T: The unmodified class.
+        """
         get_backend_registry().register(name, cls)
         return cls
 

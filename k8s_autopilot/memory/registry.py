@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import logging
-import threading
 from pathlib import Path
+import threading
 from typing import Any
 
 from langgraph.store.base import BaseStore
@@ -15,18 +14,29 @@ logger = get_logger(__name__)
 
 
 class MemoryRegistry:
-    """Discovers and manages memory files across user and project scopes,
-    as well as thread-isolated memory entries in the LangGraph store.
-    """
+    """Discovers and manages memory files across user and project scopes."""
 
     _instance: MemoryRegistry | None = None
     _lock = threading.Lock()
 
     def __init__(self, store: BaseStore | None = None) -> None:
+        """Initialize MemoryRegistry.
+
+        Args:
+            store: Optional LangGraph BaseStore instance.
+        """
         self._store = store
 
     @classmethod
     def get_instance(cls, store: BaseStore | None = None) -> MemoryRegistry:
+        """Retrieve the singleton instance of MemoryRegistry.
+
+        Args:
+            store: Optional store to configure if not already set.
+
+        Returns:
+            MemoryRegistry: The singleton registry instance.
+        """
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -105,11 +115,7 @@ class MemoryRegistry:
             return [
                 {
                     "key": item.key,
-                    "content": (
-                        item.value.get("content", "")
-                        if isinstance(item.value, dict)
-                        else str(item.value)
-                    ),
+                    "content": (item.value.get("content", "") if isinstance(item.value, dict) else str(item.value)),
                 }
                 for item in items
             ]

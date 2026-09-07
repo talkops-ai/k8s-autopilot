@@ -7,14 +7,14 @@ local, headless, and remote graph execution without a client-side state update.
 
 from __future__ import annotations
 
-import logging
-import math
-import operator
-import threading
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
+import logging
+import math
+import operator
+import threading
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
@@ -64,7 +64,7 @@ _CHECKPOINT_NAMESPACE_METADATA_KEY = "langgraph_checkpoint_ns"
 """Callback metadata key identifying the graph node that made a request."""
 
 
-def _set_configured_provider_metadata(model: object, provider: str) -> None:
+def _set_configured_provider_metadata(model: Any, provider: str) -> None:
     """Attach the configured provider to every request made by a model."""
     if not provider:
         return
@@ -72,7 +72,7 @@ def _set_configured_provider_metadata(model: object, provider: str) -> None:
         current = getattr(model, "metadata", None)
         metadata = dict(current) if isinstance(current, Mapping) else {}
         metadata[_CONFIGURED_PROVIDER_METADATA_KEY] = provider
-        model.metadata = metadata  # type: ignore[unresolved-attribute]
+        model.metadata = metadata
     except Exception:
         logger.debug(
             "Could not attach configured provider metadata to %s",
@@ -93,20 +93,14 @@ def _resolve_pricing_provider(
     if explicit_provider and not prefer_fallback_provider:
         return explicit_provider
     fallback_provider_key = fallback_provider.strip().lower()
-    if fallback_provider_key in _PROVIDER_ALIASES or (
-        fallback_provider_key in _UNPRICEABLE_PROVIDERS
-    ):
+    if fallback_provider_key in _PROVIDER_ALIASES or (fallback_provider_key in _UNPRICEABLE_PROVIDERS):
         return fallback_provider
     return resolved_provider
 
 
 def _token_count(value: object) -> int:
     """Return a non-negative integer token count for a metadata value."""
-    return (
-        value
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0
-        else 0
-    )
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
 def _cache_write_counts(details: Mapping[str, Any]) -> tuple[int, int, int]:
@@ -115,9 +109,7 @@ def _cache_write_counts(details: Mapping[str, Any]) -> tuple[int, int, int]:
     one_hour = _token_count(details.get("ephemeral_1h_input_tokens"))
     if five_minute or one_hour:
         return 0, five_minute, one_hour
-    generic = _token_count(details.get("cache_creation")) or _token_count(
-        details.get("cache_write")
-    )
+    generic = _token_count(details.get("cache_creation")) or _token_count(details.get("cache_write"))
     return generic, 0, 0
 
 
@@ -177,14 +169,13 @@ def pricing_data_available() -> bool:
 
 def _load_pricing() -> tuple[Any, Any] | None:
     """Import `genai-prices` lazily, tracking whether it is currently loadable."""
-    global _PRICING_UNAVAILABLE  # noqa: PLW0603
+    global _PRICING_UNAVAILABLE
     try:
         from genai_prices import Usage, calc_price
     except Exception:
         if not _PRICING_UNAVAILABLE:
             logger.warning(
-                "Could not load genai-prices; cost estimates are unavailable "
-                "for this session.",
+                "Could not load genai-prices; cost estimates are unavailable for this session.",
                 exc_info=True,
             )
         _PRICING_UNAVAILABLE = True
@@ -199,7 +190,7 @@ def estimate_cost(
     provider: str = "",
 ) -> float | None:
     """Estimate one model request's cost in USD from LangChain usage metadata."""
-    global _AUDIO_CACHE_OVERLAP_REPORTED, _PRICING_CONTRACT_BROKEN  # noqa: PLW0603
+    global _AUDIO_CACHE_OVERLAP_REPORTED, _PRICING_CONTRACT_BROKEN
     model_ref = model_name.strip()
     provider_key = provider.strip().lower()
     if not usage_metadata or not model_ref:
@@ -216,8 +207,7 @@ def estimate_cost(
     output_tokens = _token_count(usage_metadata.get("output_tokens"))
     if not input_tokens and not output_tokens:
         logger.debug(
-            "Usage reports only a combined token total, which cannot be priced: "
-            "model=%r provider=%r",
+            "Usage reports only a combined token total, which cannot be priced: model=%r provider=%r",
             model_ref,
             provider,
         )
@@ -264,13 +254,8 @@ def estimate_cost(
 
     original_cache_read = cache_read_tokens
     original_cache_writes = cache_writes
-    cache_read_tokens, cache_writes = _clamp_cache_counts(
-        input_tokens, cache_read_tokens, cache_writes
-    )
-    if (
-        cache_read_tokens != original_cache_read
-        or cache_writes != original_cache_writes
-    ):
+    cache_read_tokens, cache_writes = _clamp_cache_counts(input_tokens, cache_read_tokens, cache_writes)
+    if cache_read_tokens != original_cache_read or cache_writes != original_cache_writes:
         logger.warning(
             "Cache token counts exceed the inclusive input total; clamping for "
             "pricing. model=%r provider=%r input=%d cache_read=%d->%d "
@@ -280,18 +265,10 @@ def estimate_cost(
             input_tokens,
             original_cache_read,
             cache_read_tokens,
-            *(
-                count
-                for pair in zip(original_cache_writes, cache_writes, strict=True)
-                for count in pair
-            ),
+            *(count for pair in zip(original_cache_writes, cache_writes, strict=True) for count in pair),
         )
-    generic_cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens = (
-        cache_writes
-    )
-    cache_write_tokens = generic_cache_write_tokens or (
-        cache_write_5m_tokens + cache_write_1h_tokens
-    )
+    generic_cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens = cache_writes
+    cache_write_tokens = generic_cache_write_tokens or (cache_write_5m_tokens + cache_write_1h_tokens)
 
     if input_audio_tokens and (cache_read_tokens or any(cache_writes)):
         if not _AUDIO_CACHE_OVERLAP_REPORTED:
@@ -438,6 +415,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
     run_inline = True
 
     def __init__(self) -> None:
+        """Initialize _SessionCostRecorder with internal thread tracking locks."""
         self._lock = threading.Lock()
         self._run_contexts: OrderedDict[UUID, _ModelCallContext] = OrderedDict()
         self._records: OrderedDict[str, list[_ModelCallRecord]] = OrderedDict()
@@ -457,17 +435,9 @@ class _SessionCostRecorder(BaseCallbackHandler):
                 while len(self._run_contexts) > _MAX_INFLIGHT_REQUESTS:
                     self._run_contexts.popitem(last=False)
             return
-        provider = (
-            metadata.get(_CONFIGURED_PROVIDER_METADATA_KEY)
-            if metadata is not None
-            else None
-        )
+        provider = metadata.get(_CONFIGURED_PROVIDER_METADATA_KEY) if metadata is not None else None
         configured_provider = provider if isinstance(provider, str) and provider else ""
-        namespace = (
-            metadata.get(_CHECKPOINT_NAMESPACE_METADATA_KEY)
-            if metadata is not None
-            else None
-        )
+        namespace = metadata.get(_CHECKPOINT_NAMESPACE_METADATA_KEY) if metadata is not None else None
         if not isinstance(namespace, str) or not namespace:
             namespace = configurable.get("checkpoint_ns")
         with self._lock:
@@ -488,6 +458,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
+        """Capture context and thread metadata when a chat model begins execution."""
         self._start(run_id, metadata)
 
     def on_llm_start(
@@ -499,6 +470,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
+        """Capture context and thread metadata when an LLM begins execution."""
         self._start(run_id, metadata)
 
     def on_llm_end(
@@ -508,6 +480,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
         run_id: UUID,
         **kwargs: Any,
     ) -> None:
+        """Process usage metadata upon LLM completion and record for cost calculation."""
         with self._lock:
             context = self._run_contexts.pop(run_id, None)
         if context is None:
@@ -531,17 +504,14 @@ class _SessionCostRecorder(BaseCallbackHandler):
             )
         except Exception:
             logger.warning(
-                "Could not read usage from a model response; its cost is "
-                "dropped from the session total.",
+                "Could not read usage from a model response; its cost is dropped from the session total.",
                 exc_info=True,
             )
             return
         if record is None:
             return
         with self._lock:
-            while context.thread_id not in self._records and (
-                len(self._records) >= _MAX_TRACKED_THREADS
-            ):
+            while context.thread_id not in self._records and (len(self._records) >= _MAX_TRACKED_THREADS):
                 self._records.popitem(last=False)
                 logger.debug("Dropped undrained cost records for an inactive thread")
             records = self._records.setdefault(context.thread_id, [])
@@ -563,6 +533,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
         run_id: UUID,
         **kwargs: Any,
     ) -> None:
+        """Clean up in-flight context when an LLM invocation fails."""
         with self._lock:
             self._run_contexts.pop(run_id, None)
 
@@ -572,6 +543,15 @@ class _SessionCostRecorder(BaseCallbackHandler):
         *,
         scope: str | None = None,
     ) -> list[_ModelCallRecord]:
+        """Claim and remove all pending model call records for the given thread.
+
+        Args:
+            thread_id: Target thread identifier.
+            scope: Optional scope filter.
+
+        Returns:
+            List of claimed ModelCallRecords.
+        """
         with self._lock:
             records = self._records.get(thread_id, [])
             if scope is None:
@@ -585,6 +565,12 @@ class _SessionCostRecorder(BaseCallbackHandler):
             return claimed
 
     def restore(self, thread_id: str, records: list[_ModelCallRecord]) -> None:
+        """Restore unclaimed records back to the thread's record queue.
+
+        Args:
+            thread_id: Target thread identifier.
+            records: List of records to return.
+        """
         if not records:
             return
         with self._lock:
@@ -592,9 +578,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
             if existing is None:
                 while len(self._records) >= _MAX_TRACKED_THREADS:
                     self._records.popitem(last=False)
-                    logger.debug(
-                        "Dropped undrained cost records for an inactive thread"
-                    )
+                    logger.debug("Dropped undrained cost records for an inactive thread")
                 existing = []
                 self._records[thread_id] = existing
             existing[:0] = records
@@ -682,6 +666,8 @@ def _restore_recorded_costs(
 
 
 class _CostTransfer(TypedDict):
+    """Internal transfer record for aggregating token costs across subgraphs."""
+
     owner_scope: str
     cost_usd: float
 
@@ -748,6 +734,11 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
     state_schema = CostState
 
     def __init__(self, *, nested: bool = False) -> None:
+        """Initialize CostTrackingMiddleware.
+
+        Args:
+            nested: Whether this middleware is running inside a nested subagent graph.
+        """
         super().__init__()
         self._nested = nested
 
@@ -756,6 +747,15 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         state: CostState,
         runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
+        """Reset session cost to 0 for nested agent execution scopes.
+
+        Args:
+            state: Current cost state.
+            runtime: Agent execution runtime.
+
+        Returns:
+            State update dictionary or None.
+        """
         if not self._nested:
             return None
         return {"_session_cost_usd": Overwrite(0.0)}
@@ -765,6 +765,15 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         state: CostState,
         runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
+        """Asynchronously reset session cost to 0 for nested agent execution scopes.
+
+        Args:
+            state: Current cost state.
+            runtime: Agent execution runtime.
+
+        Returns:
+            State update dictionary or None.
+        """
         return self.before_agent(state, runtime)
 
     def after_model(  # type: ignore[override]
@@ -772,6 +781,15 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         state: CostState,
         runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
+        """Compute and accumulate token costs after each model execution step.
+
+        Args:
+            state: Current cost state.
+            runtime: Agent execution runtime.
+
+        Returns:
+            State update dictionary with updated cost or None.
+        """
         try:
             return self._charge(state, runtime, price_latest_message=True)
         except Exception:
@@ -783,6 +801,15 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         state: CostState,
         runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
+        """Finalize and charge any remaining unbilled model usage upon agent completion.
+
+        Args:
+            state: Final agent cost state.
+            runtime: Agent execution runtime.
+
+        Returns:
+            State update dictionary with finalized cost or None.
+        """
         try:
             return self._after_agent_update(state, runtime)
         except Exception:
@@ -806,9 +833,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
             total_usd = max(float(prior_usd), 0.0) + delta_usd
             scope = _checkpoint_scope(runtime)
             if scope and total_usd > 0:
-                transfers: dict[str, _CostTransfer] = dict(
-                    state.get("_session_cost_transfers") or {}
-                )
+                transfers: dict[str, _CostTransfer] = dict(state.get("_session_cost_transfers") or {})
                 if update:
                     pending = update.get("_session_cost_transfers")
                     if isinstance(pending, Overwrite) and isinstance(pending.value, dict):
@@ -832,11 +857,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
     ) -> dict[str, Any] | None:
         thread_id = _thread_id(runtime)
         fallback = _checkpointed_model_spec(state)
-        message = (
-            _latest_ai_message(state.get("messages") or [])
-            if price_latest_message
-            else None
-        )
+        message = _latest_ai_message(state.get("messages") or []) if price_latest_message else None
         main_message_id = message.id if message is not None else None
         delta_usd = 0.0
         transfers = state.get("_session_cost_transfers") or {}
@@ -872,8 +893,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 )
                 if cost_usd is None:
                     logger.debug(
-                        "Dropping an unpriceable request from the session total: "
-                        "model=%r provider=%r",
+                        "Dropping an unpriceable request from the session total: model=%r provider=%r",
                         record.model_name,
                         provider,
                     )
@@ -895,8 +915,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                     and logger.isEnabledFor(logging.DEBUG)
                 ):
                     logger.debug(
-                        "Not pricing an unidentified main response from state; a "
-                        "drained record may already cover it."
+                        "Not pricing an unidentified main response from state; a drained record may already cover it."
                     )
                 if message is not None and not already_charged:
                     model_name, provider = resolve_message_model(

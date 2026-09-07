@@ -21,9 +21,10 @@ Reference:
 from __future__ import annotations
 
 import json
-from k8s_autopilot.utils.logger import AgentLogger
 from pathlib import Path
 from typing import Any
+
+from k8s_autopilot.utils.logger import AgentLogger
 
 logger = AgentLogger("A2UISchemaLoader")
 
@@ -39,12 +40,12 @@ def load_schema(name: str) -> list[dict[str, Any]]:
         Schema name (with or without ``.json`` extension).
         E.g. ``"helm_release_card"`` or ``"helm_release_card.json"``.
 
-    Returns
+    Returns:
     -------
     list[dict]
         The component list ready for ``a2ui.update_components()``.
 
-    Raises
+    Raises:
     ------
     FileNotFoundError
         If the schema file does not exist.
@@ -53,7 +54,7 @@ def load_schema(name: str) -> list[dict[str, Any]]:
         name = f"{name}.json"
 
     path = _SCHEMAS_DIR / name
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
 
     logger.debug(f"Loaded A2UI schema {name} ({len(data):d} components)")

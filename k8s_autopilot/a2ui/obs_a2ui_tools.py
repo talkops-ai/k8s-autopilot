@@ -11,12 +11,10 @@ Tools:
 from __future__ import annotations
 
 import json
-from k8s_autopilot.utils.logger import AgentLogger
-from typing import Any
 
-from langchain_core.tools import tool as langchain_tool
-from langchain_core.messages import ToolMessage
 from langchain.tools import ToolRuntime
+from langchain_core.messages import ToolMessage
+from langchain_core.tools import tool as langchain_tool
 
 from k8s_autopilot.a2ui.obs_surface_builder import (
     build_alert_status_surface,
@@ -27,6 +25,7 @@ from k8s_autopilot.a2ui.obs_surface_builder import (
     build_trace_timeline_surface,
     serialize_a2ui_ops,
 )
+from k8s_autopilot.utils.logger import AgentLogger
 
 logger = AgentLogger("ObsA2UITools")
 
@@ -59,11 +58,15 @@ def build_obs_a2ui(kind: str, data: str, runtime: ToolRuntime) -> str:
         parsed = None
         messages = runtime.state.get("messages", [])
         for msg in reversed(messages):
-            if isinstance(msg, ToolMessage) and msg.name != "build_obs_a2ui":
-                if isinstance(msg.artifact, dict) and "a2ui_buffered_data" in msg.artifact:
-                    parsed = msg.artifact["a2ui_buffered_data"]
-                    logger.debug(f"build_obs_a2ui: Successfully loaded buffered data from tool: {msg.name}")
-                    break
+            if (
+                isinstance(msg, ToolMessage)
+                and msg.name != "build_obs_a2ui"
+                and isinstance(msg.artifact, dict)
+                and "a2ui_buffered_data" in msg.artifact
+            ):
+                parsed = msg.artifact["a2ui_buffered_data"]
+                logger.debug(f"build_obs_a2ui: Successfully loaded buffered data from tool: {msg.name}")
+                break
         if parsed is None:
             return json.dumps({"error": "Failed to find buffered A2UI data in previous tool messages."})
     else:
@@ -145,11 +148,15 @@ def build_obs_dashboard(kind: str, data: str, runtime: ToolRuntime) -> str:
         parsed = None
         messages = runtime.state.get("messages", [])
         for msg in reversed(messages):
-            if isinstance(msg, ToolMessage) and msg.name != "build_obs_dashboard":
-                if isinstance(msg.artifact, dict) and "a2ui_buffered_data" in msg.artifact:
-                    parsed = msg.artifact["a2ui_buffered_data"]
-                    logger.debug(f"build_obs_dashboard: Successfully loaded buffered data from tool: {msg.name}")
-                    break
+            if (
+                isinstance(msg, ToolMessage)
+                and msg.name != "build_obs_dashboard"
+                and isinstance(msg.artifact, dict)
+                and "a2ui_buffered_data" in msg.artifact
+            ):
+                parsed = msg.artifact["a2ui_buffered_data"]
+                logger.debug(f"build_obs_dashboard: Successfully loaded buffered data from tool: {msg.name}")
+                break
         if parsed is None:
             return json.dumps({"error": "Failed to find buffered dashboard data in previous tool messages."})
     else:

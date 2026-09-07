@@ -13,27 +13,27 @@ Orchestrates the full pipeline:
 
 from __future__ import annotations
 
-from k8s_autopilot.utils.logger import AgentLogger
-import time
 from collections import OrderedDict
+import time
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from slack_bolt.async_app import AsyncApp  # type: ignore[import-not-found]
 from slack_sdk.web.async_client import AsyncWebClient  # type: ignore[import-not-found]
 
-from k8s_autopilot.config.settings import Settings, get_settings
+from k8s_autopilot.config.settings import Settings
 from k8s_autopilot.integrations.base import (
     IncomingMessage,
     InteractionPayload,
     MessagingIntegration,
 )
 from k8s_autopilot.integrations.identity import IdentityMapper
-from k8s_autopilot.integrations.stream_bridge import GraphStreamBridge
-from k8s_autopilot.integrations.thread_store import ThreadStore
 from k8s_autopilot.integrations.slack.mrkdwn import md_to_mrkdwn
 from k8s_autopilot.integrations.slack.operation_gate import SlackOperationGate
 from k8s_autopilot.integrations.slack.stream_sink import SlackStreamSink
+from k8s_autopilot.integrations.stream_bridge import GraphStreamBridge
+from k8s_autopilot.integrations.thread_store import ThreadStore
+from k8s_autopilot.utils.logger import AgentLogger
 
 logger = AgentLogger("SlackIntegration")
 
@@ -47,6 +47,13 @@ class SlackMessagingIntegration(MessagingIntegration):
         bolt_app: AsyncApp,
         graph: Any,
     ) -> None:
+        """Initialize SlackMessagingIntegration with clients and bridge state.
+
+        Args:
+            config: Application configuration settings.
+            bolt_app: Slack Bolt AsyncApp instance.
+            graph: LangGraph compiled graph runner.
+        """
         self.config = config
         self.bolt_app = bolt_app
         self.client = AsyncWebClient(token=config.SLACK_BOT_TOKEN)
@@ -108,16 +115,8 @@ class SlackMessagingIntegration(MessagingIntegration):
                 "Write operation blocked by operation gate",
                 extra={
                     "user": message.user_id,
-                    "agent": (
-                        gate_result.classification.agent
-                        if gate_result.classification
-                        else "unknown"
-                    ),
-                    "reasoning": (
-                        gate_result.classification.reasoning
-                        if gate_result.classification
-                        else ""
-                    ),
+                    "agent": (gate_result.classification.agent if gate_result.classification else "unknown"),
+                    "reasoning": (gate_result.classification.reasoning if gate_result.classification else ""),
                 },
             )
             # NOTE: Do NOT clean up _pending_text_replies here.
@@ -129,8 +128,7 @@ class SlackMessagingIntegration(MessagingIntegration):
                 channel_id=message.channel_id,
                 thread_id=message.thread_id,
                 text=md_to_mrkdwn(
-                    gate_result.block_message
-                    or "This operation is not available via Slack.",
+                    gate_result.block_message or "This operation is not available via Slack.",
                 ),
             )
             return
@@ -172,21 +170,17 @@ class SlackMessagingIntegration(MessagingIntegration):
             try:
                 state = await self.stream_bridge.graph.aget_state(graph_config)
                 has_active_interrupt = bool(state.next) and any(
-                    getattr(task, "interrupts", ())
-                    for task in (state.tasks or ())
+                    getattr(task, "interrupts", ()) for task in (state.tasks or ())
                 )
             except Exception as exc:
-                logger.warning(
-                    f"Could not validate interrupt state: {exc}"
-                )
+                logger.warning(f"Could not validate interrupt state: {exc}")
 
             if not has_active_interrupt:
                 # Graph completed — stale registration.  Remove and treat
                 # this as a fresh request.
                 self._pending_text_replies.pop(message.thread_id, None)
                 logger.info(
-                    "Stale text-reply registration cleared "
-                    "— treating as fresh request",
+                    "Stale text-reply registration cleared — treating as fresh request",
                     extra={
                         "slack_thread": message.thread_id,
                         "lg_thread": lg_thread_id_resume,
@@ -216,12 +210,15 @@ class SlackMessagingIntegration(MessagingIntegration):
                     channel_id=message.channel_id,
                     thread_id=message.thread_id,
                 )
-                
+
                 await self._post_fallback_response_if_needed(sink, graph_config, message.channel_id, message.thread_id)
 
                 # Track if the resumed run also awaits text reply
                 await self._track_pending_reply(
-                    sink, graph_config, message.thread_id, lg_thread_id_resume,
+                    sink,
+                    graph_config,
+                    message.thread_id,
+                    lg_thread_id_resume,
                 )
                 return
 
@@ -250,12 +247,15 @@ class SlackMessagingIntegration(MessagingIntegration):
             channel_id=message.channel_id,
             thread_id=message.thread_id,
         )
-        
+
         await self._post_fallback_response_if_needed(sink, graph_config, message.channel_id, message.thread_id)
 
         # Track if the run ended with a text-reply interrupt
         await self._track_pending_reply(
-            sink, graph_config, message.thread_id, lg_thread_id,
+            sink,
+            graph_config,
+            message.thread_id,
+            lg_thread_id,
         )
 
     async def handle_interaction(self, payload: InteractionPayload) -> None:
@@ -339,12 +339,15 @@ class SlackMessagingIntegration(MessagingIntegration):
             channel_id=payload.channel_id,
             thread_id=payload.thread_id,
         )
-        
+
         await self._post_fallback_response_if_needed(sink, graph_config, payload.channel_id, payload.thread_id)
 
         # Track if the resumed run also awaits text reply
         await self._track_pending_reply(
-            sink, graph_config, payload.thread_id, lg_thread_id,
+            sink,
+            graph_config,
+            payload.thread_id,
+            lg_thread_id,
         )
 
     async def send_text(
@@ -448,10 +451,7 @@ class SlackMessagingIntegration(MessagingIntegration):
         try:
             state = await self.stream_bridge.graph.aget_state(graph_config)
             is_graph_paused = bool(state.next)
-            has_pending_interrupts = any(
-                getattr(task, "interrupts", ())
-                for task in (state.tasks or ())
-            )
+            has_pending_interrupts = any(getattr(task, "interrupts", ()) for task in (state.tasks or ()))
             if is_graph_paused and has_pending_interrupts:
                 self._pending_text_replies[slack_thread_id] = lg_thread_id
                 logger.info(
@@ -504,10 +504,9 @@ class SlackMessagingIntegration(MessagingIntegration):
                             for block in content:
                                 if isinstance(block, str):
                                     text_blocks.append(block)
-                                elif isinstance(block, dict):
-                                    if block.get("type") == "text" and block.get("text"):
-                                        text_blocks.append(block["text"])
-                        
+                                elif isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                                    text_blocks.append(block["text"])
+
                         final_text = "".join(text_blocks).strip()
                         if final_text:
                             await self.send_text(
@@ -515,7 +514,10 @@ class SlackMessagingIntegration(MessagingIntegration):
                                 thread_id=thread_id,
                                 text=md_to_mrkdwn(final_text),
                             )
-                            logger.info("Sent non-streaming fallback AI response to Slack", extra={"text_preview": final_text[:50]})
+                            logger.info(
+                                "Sent non-streaming fallback AI response to Slack",
+                                extra={"text_preview": final_text[:50]},
+                            )
         except Exception as exc:
             logger.warning(f"Failed to check final state for fallback response: {exc}")
 
@@ -530,9 +532,17 @@ class SlackMessagingIntegration(MessagingIntegration):
                         if text_lower in ("approve", "yes", "y", "ok", "go", "proceed", "go ahead"):
                             return {"decisions": [{"type": "approve", "approved_by": user_id}]}
                         elif text_lower in ("reject", "no", "n", "cancel", "stop", "abort"):
-                            return {"decisions": [{"type": "reject", "rejected_by": user_id, "message": "Rejected via text reply"}]}
+                            return {
+                                "decisions": [
+                                    {"type": "reject", "rejected_by": user_id, "message": "Rejected via text reply"}
+                                ]
+                            }
                         else:
-                            return {"decisions": [{"type": "edit", "editedAction": text, "message": text, "edited_by": user_id}]}
+                            return {
+                                "decisions": [
+                                    {"type": "edit", "editedAction": text, "message": text, "edited_by": user_id}
+                                ]
+                            }
         except Exception as e:
             logger.warning(f"Failed to inspect interrupt state for text reply formatting: {e}")
         return text

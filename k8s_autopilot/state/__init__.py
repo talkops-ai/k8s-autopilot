@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from k8s_autopilot.state.base import AgentState, BaseAgentState, K8sAgentState
 from k8s_autopilot.state.goal_channels import (
+    RUBRIC_RESULT_VALUES,
     GoalProposalKind,
     GoalRubricChannels,
     GoalStatus,
-    RUBRIC_RESULT_VALUES,
     coerce_goal_proposal_kind,
     coerce_goal_status,
 )
@@ -39,13 +39,13 @@ from k8s_autopilot.state.session import (
 )
 
 __all__ = [
+    "RUBRIC_RESULT_VALUES",
     "AgentState",
     "BaseAgentState",
     "GoalProposalKind",
     "GoalRubricChannels",
     "GoalStatus",
     "K8sAgentState",
-    "RUBRIC_RESULT_VALUES",
     "SessionManager",
     "ThreadInfo",
     "coerce_goal_proposal_kind",

@@ -2,23 +2,20 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-import logging
-import time
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+import hashlib
+import json
 from pathlib import Path
+import time
 from typing import (
     TYPE_CHECKING,
     Annotated,
     Any,
-    Callable,
     Literal,
     NotRequired,
-    TypeAlias,
     TypedDict,
     TypeGuard,
     TypeVar,
@@ -26,6 +23,11 @@ from typing import (
 )
 from uuid import UUID, uuid5
 
+from langchain.agents.middleware.human_in_the_loop import (
+    ActionRequest,
+    HITLRequest,
+    ReviewConfig,
+)
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -36,7 +38,6 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import (
     AIMessage,
-    BaseMessage,
     HumanMessage,
     ToolCall,
     ToolMessage,
@@ -75,14 +76,10 @@ from k8s_autopilot.hooks.tools import to_wire_tool_name
 from k8s_autopilot.json_types import JsonObject
 from k8s_autopilot.middleware.registry import register_middleware
 from k8s_autopilot.security.approval_mode import ApprovalMode, coerce_approval_mode
-from langchain.agents.middleware.human_in_the_loop import (
-    ActionRequest,
-    HITLRequest,
-    ReviewConfig,
-)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
+
     from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt.tool_node import ToolCallRequest
@@ -101,43 +98,47 @@ _INVOCATION_NAMESPACE = UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 _PRE_TOOL_STATE_KEY = "_hooks_pre_tool_outcomes"
 _STOP_STATE_KEY = "_hooks_stop_continuation_count"
 
-PreToolBehavior: TypeAlias = Literal["allow", "deny", "none"]
+type PreToolBehavior = Literal["allow", "deny", "none"]
 _DEFAULT_DENY_REASON = "Blocked by PreToolUse hook"
 
 
 class _PreToolDenied(TypedDict):
+    """Pre-tool hook outcome indicating the tool call was denied."""
+
     behavior: Literal["deny"]
     reason: str
     context: list[str]
 
 
 class _PreToolPassed(TypedDict):
+    """Pre-tool hook outcome indicating the tool call was approved."""
+
     behavior: Literal["allow", "none"]
     context: list[str]
 
 
-_PreToolState: TypeAlias = _PreToolDenied | _PreToolPassed
+type _PreToolState = _PreToolDenied | _PreToolPassed
 
 
 class ServerHooksState(AgentState[Any]):
     """Agent state extensions for server-owned hook middleware."""
 
     _hooks_stop_continuation_count: NotRequired[Annotated[int, PrivateStateAttr]]
-    _hooks_pre_tool_outcomes: NotRequired[
-        Annotated[dict[str, _PreToolState], PrivateStateAttr]
-    ]
-    _hooks_pending_post_tools: NotRequired[
-        Annotated[dict[str, Any], PrivateStateAttr]
-    ]
+    _hooks_pre_tool_outcomes: NotRequired[Annotated[dict[str, _PreToolState], PrivateStateAttr]]
+    _hooks_pending_post_tools: NotRequired[Annotated[dict[str, Any], PrivateStateAttr]]
 
 
 class _SessionHookGate(TypedDict):
+    """Gate that evaluates session-level hook policies for tool calls."""
+
     snapshot_id: str
     events: frozenset[str]
 
 
 @dataclass(slots=True)
 class _PreToolOutcome:
+    """Outcome of pre-tool hook evaluation containing optional blocked message and context."""
+
     blocked: ToolMessage | None = None
     context: tuple[str, ...] = field(default_factory=tuple)
 
@@ -178,6 +179,14 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         emit_stop: bool = True,
         mcp_tools: Sequence[BaseTool] = (),
     ) -> None:
+        """Initialize the ServerHooksMiddleware.
+
+        Args:
+            cwd: Working directory path for the session.
+            default_deadline: Default timeout duration for hook approval.
+            emit_stop: Whether to emit stop notifications.
+            mcp_tools: Sequence of MCP tools to register.
+        """
         super().__init__()
         self._cwd = cwd
         self._default_deadline = default_deadline
@@ -231,9 +240,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         gate = _session_gate(request.runtime.context)
         call = _tool_call_data(request)
         pre = _pre_tool_outcome(request.state, call)
-        context = _hook_context(
-            request.runtime.context, request.runtime.config, self._cwd
-        )
+        context = _hook_context(request.runtime.context, request.runtime.config, self._cwd)
         if pre.blocked is not None:
             return _append_message_text(pre.blocked, pre.context, call.id)
         started_or_blocked = self._maybe_subagent_start(request, call, context, gate)
@@ -246,17 +253,9 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             from langchain_core.callbacks.manager import dispatch_custom_event
 
             subagent_type = str(
-                call.args.get("subagent_type")
-                or call.args.get("name")
-                or call.args.get("agent")
-                or call.name
+                call.args.get("subagent_type") or call.args.get("name") or call.args.get("agent") or call.name
             )
-            description = str(
-                call.args.get("description")
-                or call.args.get("prompt")
-                or call.args.get("task")
-                or ""
-            )
+            description = str(call.args.get("description") or call.args.get("prompt") or call.args.get("task") or "")
             try:
                 dispatch_custom_event(
                     "subagent",
@@ -296,12 +295,8 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                 logger.debug("Failed to dispatch subagent finish custom event: %s", err)
 
         result = _append_message_text(result, pre.context, call.id)
-        result = self._maybe_post_tool_use(
-            call, context, gate, request.runtime.config, result, duration_ms
-        )
-        return self._maybe_subagent_stop(
-            call, context, gate, request.runtime.config, result
-        )
+        result = self._maybe_post_tool_use(call, context, gate, request.runtime.config, result, duration_ms)
+        return self._maybe_subagent_stop(call, context, gate, request.runtime.config, result)
 
     async def awrap_tool_call(
         self,
@@ -312,9 +307,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         gate = _session_gate(request.runtime.context)
         call = _tool_call_data(request)
         pre = _pre_tool_outcome(request.state, call)
-        context = _hook_context(
-            request.runtime.context, request.runtime.config, self._cwd
-        )
+        context = _hook_context(request.runtime.context, request.runtime.config, self._cwd)
         if pre.blocked is not None:
             return _append_message_text(pre.blocked, pre.context, call.id)
         started_or_blocked = self._maybe_subagent_start(request, call, context, gate)
@@ -327,17 +320,9 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             from langchain_core.callbacks.manager import adispatch_custom_event
 
             subagent_type = str(
-                call.args.get("subagent_type")
-                or call.args.get("name")
-                or call.args.get("agent")
-                or call.name
+                call.args.get("subagent_type") or call.args.get("name") or call.args.get("agent") or call.name
             )
-            description = str(
-                call.args.get("description")
-                or call.args.get("prompt")
-                or call.args.get("task")
-                or ""
-            )
+            description = str(call.args.get("description") or call.args.get("prompt") or call.args.get("task") or "")
             try:
                 await adispatch_custom_event(
                     "subagent",
@@ -377,12 +362,8 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                 logger.debug("Failed to dispatch subagent finish custom event: %s", err)
 
         result = _append_message_text(result, pre.context, call.id)
-        result = self._maybe_post_tool_use(
-            call, context, gate, request.runtime.config, result, duration_ms
-        )
-        return self._maybe_subagent_stop(
-            call, context, gate, request.runtime.config, result
-        )
+        result = self._maybe_post_tool_use(call, context, gate, request.runtime.config, result, duration_ms)
+        return self._maybe_subagent_stop(call, context, gate, request.runtime.config, result)
 
     @hook_config(can_jump_to=["model"])
     def after_agent(
@@ -409,9 +390,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         context: HookContext,
         gate: _SessionHookGate | None,
     ) -> ToolCallRequest | ToolMessage:
-        if call.name not in _SUBAGENT_TOOL_NAMES or not _event_enabled(
-            gate, HookEvent.SUBAGENT_START
-        ):
+        if call.name not in _SUBAGENT_TOOL_NAMES or not _event_enabled(gate, HookEvent.SUBAGENT_START):
             return request
         agent = _task_agent_identity(call)
         decision = _invoke_hook(
@@ -456,11 +435,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             reason: str | None = None
             hook_context: list[str] = []
             if precompact_enabled and call.name == _COMPACT_TOOL_NAME:
-                trigger = (
-                    CompactTrigger.MANUAL
-                    if call.args.get("force") is True
-                    else CompactTrigger.AUTO
-                )
+                trigger = CompactTrigger.MANUAL if call.args.get("force") is True else CompactTrigger.AUTO
                 compact = _invoke_hook(
                     context,
                     PreCompactEvent(event=HookEvent.PRE_COMPACT, trigger=trigger),
@@ -490,11 +465,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                 hook_context.extend(decision.context)
                 if not decision.continue_processing or permission.behavior == "deny":
                     behavior = "deny"
-                    reason = (
-                        permission.reason
-                        or decision.stop_reason
-                        or _DEFAULT_DENY_REASON
-                    )
+                    reason = permission.reason or decision.stop_reason or _DEFAULT_DENY_REASON
                 elif permission.behavior == "ask":
                     blocked = _ask_permission_via_hitl(call, permission)
                     if blocked is None:
@@ -502,11 +473,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                     else:
                         behavior = "deny"
                         blocked_content = blocked.content
-                        reason = (
-                            blocked_content
-                            if isinstance(blocked_content, str)
-                            else str(blocked_content)
-                        )
+                        reason = blocked_content if isinstance(blocked_content, str) else str(blocked_content)
                 elif permission.behavior == "allow":
                     behavior = "allow"
             if behavior == "deny":
@@ -557,9 +524,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         config: Mapping[str, Any] | None,
         result: ToolMessage | Command[Any],
     ) -> ToolMessage | Command[Any]:
-        if call.name not in _SUBAGENT_TOOL_NAMES or not _event_enabled(
-            gate, HookEvent.SUBAGENT_STOP
-        ):
+        if call.name not in _SUBAGENT_TOOL_NAMES or not _event_enabled(gate, HookEvent.SUBAGENT_STOP):
             return result
         agent = _task_agent_identity(call)
         decision = _invoke_hook(
@@ -605,9 +570,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             if continuation:
                 return {_STOP_STATE_KEY: 0}
             return None
-        feedback = "\n".join(decision.feedback).strip() or (
-            decision.stop_reason or "Continue working."
-        )
+        feedback = "\n".join(decision.feedback).strip() or (decision.stop_reason or "Continue working.")
         return {
             "messages": [HumanMessage(content=feedback)],
             "jump_to": "model",
@@ -618,7 +581,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
 _DecisionT = TypeVar("_DecisionT", bound=BaseHookDecision)
 
 
-def _require_decision(
+def _require_decision[DecisionT: BaseHookDecision](
     decision: HookDecision,
     expected: type[_DecisionT],
 ) -> _DecisionT:
@@ -691,14 +654,7 @@ def _pre_tool_outcome(state: object, call: ToolCallData) -> _PreToolOutcome:
 
 def _invoke_hook(
     context: HookContext,
-    event: (
-        PreToolUseEvent
-        | PostToolUseEvent
-        | PreCompactEvent
-        | StopEvent
-        | SubagentStartEvent
-        | SubagentStopEvent
-    ),
+    event: (PreToolUseEvent | PostToolUseEvent | PreCompactEvent | StopEvent | SubagentStartEvent | SubagentStopEvent),
     *,
     gate: _SessionHookGate | None,
     config: Mapping[str, Any] | None,
@@ -748,9 +704,7 @@ def _hook_context(
         thread_id=thread_id,
         cwd=cwd,
         prompt_id=prompt_id,
-        approval_mode=(
-            approval if isinstance(approval, ApprovalMode) else ApprovalMode.MANUAL
-        ),
+        approval_mode=(approval if isinstance(approval, ApprovalMode) else ApprovalMode.MANUAL),
     )
 
 
@@ -790,14 +744,7 @@ def _invocation_id(
     *,
     snapshot_id: str,
     context: HookContext,
-    event: (
-        PreToolUseEvent
-        | PostToolUseEvent
-        | PreCompactEvent
-        | StopEvent
-        | SubagentStartEvent
-        | SubagentStopEvent
-    ),
+    event: (PreToolUseEvent | PostToolUseEvent | PreCompactEvent | StopEvent | SubagentStartEvent | SubagentStopEvent),
     logical_event_id: str | None = None,
 ) -> UUID:
     identity = {
@@ -817,14 +764,7 @@ def _invocation_id(
 
 
 def _logical_event_identity(
-    event: (
-        PreToolUseEvent
-        | PostToolUseEvent
-        | PreCompactEvent
-        | StopEvent
-        | SubagentStartEvent
-        | SubagentStopEvent
-    ),
+    event: (PreToolUseEvent | PostToolUseEvent | PreCompactEvent | StopEvent | SubagentStartEvent | SubagentStopEvent),
     *,
     logical_event_id: str | None = None,
 ) -> str:
@@ -867,10 +807,7 @@ def _tool_call_data_from_call(
 ) -> ToolCallData:
     raw_args = tool_call.get("args")
     args: dict[str, Any]
-    if isinstance(raw_args, dict):
-        args = {str(key): value for key, value in raw_args.items()}
-    else:
-        args = {}
+    args = {str(key): value for key, value in raw_args.items()} if isinstance(raw_args, dict) else {}
     return ToolCallData(
         id=str(tool_call.get("id") or ""),
         name=str(tool_call.get("name") or ""),
@@ -1029,21 +966,14 @@ def _tool_result_failed(result: ToolMessage | Command[Any], call_id: str) -> boo
         if result.status == "error":
             return True
         content = getattr(result, "content", "")
-        if isinstance(content, str) and (
-            content.startswith("Error:") or content.startswith("Traceback")
-        ):
-            return True
-        return False
+        return bool(isinstance(content, str) and (content.startswith("Error:") or content.startswith("Traceback")))
     return any(
         _is_call_result(message, call_id)
         and (
             message.status == "error"
             or (
                 isinstance(getattr(message, "content", ""), str)
-                and (
-                    str(message.content).startswith("Error:")
-                    or str(message.content).startswith("Traceback")
-                )
+                and (str(message.content).startswith("Error:") or str(message.content).startswith("Traceback"))
             )
         )
         for message in _command_messages(result)
@@ -1087,10 +1017,7 @@ def _inject_subagent_start_context(
     original = request.tool_call
     raw_args = original.get("args")
     args: dict[str, Any]
-    if isinstance(raw_args, dict):
-        args = {key: value for key, value in raw_args.items()}
-    else:
-        args = {}
+    args = {key: value for key, value in raw_args.items()} if isinstance(raw_args, dict) else {}
     description = args.get("description")
     prefix = "\n".join(decision.context)
     if isinstance(description, str) and description:
@@ -1118,11 +1045,7 @@ def _task_agent_identity(call: ToolCallData | dict[str, Any] | Any) -> AgentIden
         call_id = str(getattr(call, "id", "") or "")
     if not isinstance(args, dict):
         args = {}
-    name = (
-        args.get("subagent_type")
-        or args.get("name")
-        or args.get("agent")
-    )
+    name = args.get("subagent_type") or args.get("name") or args.get("agent")
     if not isinstance(name, str) or not name:
         name = "unknown"
     return AgentIdentity(id=call_id or name, name=name)
@@ -1132,11 +1055,7 @@ def _tool_result_text(result: ToolMessage | Command[Any], call_id: str) -> str:
     if isinstance(result, ToolMessage):
         content = result.content
         return content if isinstance(content, str) else str(content)
-    return "\n".join(
-        str(message.content)
-        for message in _command_messages(result)
-        if _is_call_result(message, call_id)
-    )
+    return "\n".join(str(message.content) for message in _command_messages(result) if _is_call_result(message, call_id))
 
 
 def _last_ai_message(messages: Sequence[Any]) -> AIMessage | None:

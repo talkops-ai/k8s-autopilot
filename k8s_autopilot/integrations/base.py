@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -80,7 +80,7 @@ class InteractionPayload:
     platform: str
     """Platform key: ``"slack"``, ``"teams"``, ``"discord"``, etc."""
 
-    value: Optional[str] = None
+    value: str | None = None
     """Button value, selected option text, or freeform input."""
 
     raw_payload: dict[str, Any] = field(default_factory=dict)

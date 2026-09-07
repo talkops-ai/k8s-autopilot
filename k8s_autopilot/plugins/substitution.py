@@ -64,7 +64,9 @@ def substitute_string(
         String with supported plugin variables substituted.
     """
     env = plugin_environment(
-        plugin_root=plugin_root, plugin_data=plugin_data, project_dir=project_dir,
+        plugin_root=plugin_root,
+        plugin_data=plugin_data,
+        project_dir=project_dir,
     )
     result = value
     for key, replacement in env.items():

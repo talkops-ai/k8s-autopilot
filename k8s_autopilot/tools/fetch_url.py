@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-import logging
+from collections.abc import Callable
 from html.parser import HTMLParser
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from langchain_core.tools import tool
+from markdownify import markdownify
+import requests
 
 from k8s_autopilot.security.url_validation import (
-    _UrlValidationError,
     _pinned_dns,
+    _UrlValidationError,
     _validate_url,
 )
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -29,19 +30,36 @@ class _TextExtractor(HTMLParser):
     _SKIP_TAGS = frozenset({"script", "style", "noscript", "template"})
 
     def __init__(self) -> None:
+        """Initialize _TextExtractor with empty parts and zero skip depth."""
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self._skip_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Track start tag and increment skip depth for ignored tags.
+
+        Args:
+            tag: HTML tag name.
+            attrs: List of attribute (name, value) pairs.
+        """
         if tag in self._SKIP_TAGS:
             self._skip_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
+        """Track end tag and decrement skip depth for ignored tags.
+
+        Args:
+            tag: HTML tag name.
+        """
         if tag in self._SKIP_TAGS and self._skip_depth:
             self._skip_depth -= 1
 
     def handle_data(self, data: str) -> None:
+        """Process text data when outside skipped tags.
+
+        Args:
+            data: Raw text data from HTML parser.
+        """
         if self._skip_depth:
             return
         text = " ".join(data.split())
@@ -49,6 +67,11 @@ class _TextExtractor(HTMLParser):
             self.parts.append(text)
 
     def get_text(self) -> str:
+        """Return accumulated extracted plain text separated by blank lines.
+
+        Returns:
+            str: Extracted plain text content.
+        """
         return "\n\n".join(self.parts)
 
 
@@ -71,8 +94,6 @@ def _html_to_markdown_content(html: str, markdownify: Callable[[str], str]) -> s
 
 def _fetch_with_redirects(url: str, *, timeout: int) -> Any:
     """Fetch URL, re-validating redirects against SSRF blocks and pinning DNS at each hop."""
-    import requests
-
     current_url = url
     session = requests.Session()
     session.trust_env = False
@@ -118,12 +139,6 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
         url: The URL to fetch (must be a valid HTTP/HTTPS URL)
         timeout: Request timeout in seconds (default: 30)
     """
-    try:
-        import requests
-        from markdownify import markdownify
-    except ImportError as exc:
-        return {"error": f"Required package not installed: {exc.name}."}
-
     try:
         response = _fetch_with_redirects(url, timeout=timeout)
     except _UrlValidationError as e:

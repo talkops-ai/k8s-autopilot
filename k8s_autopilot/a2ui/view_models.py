@@ -57,12 +57,14 @@ class LogsViewModel:
 
     kind: str = "logs"
     title: str = ""
-    columns: list[dict[str, Any]] = field(default_factory=lambda: [
-        {"key": "severity", "label": "Level", "sortable": True},
-        {"key": "template", "label": "Message Pattern", "sortable": False},
-        {"key": "count", "label": "Count", "sortable": True},
-        {"key": "sample", "label": "Sample", "sortable": False},
-    ])
+    columns: list[dict[str, Any]] = field(
+        default_factory=lambda: [
+            {"key": "severity", "label": "Level", "sortable": True},
+            {"key": "template", "label": "Message Pattern", "sortable": False},
+            {"key": "count", "label": "Count", "sortable": True},
+            {"key": "sample", "label": "Sample", "sortable": False},
+        ]
+    )
     rows: list[dict[str, Any]] = field(default_factory=list)
     total_lines: int = 0
     query: str = ""
@@ -117,9 +119,13 @@ class AlertsViewModel:
     kind: str = "alerts"
     title: str = ""
     alerts: list[dict[str, Any]] = field(default_factory=list)
-    summary: dict[str, int] = field(default_factory=lambda: {
-        "critical": 0, "warning": 0, "info": 0,
-    })
+    summary: dict[str, int] = field(
+        default_factory=lambda: {
+            "critical": 0,
+            "warning": 0,
+            "info": 0,
+        }
+    )
 
 
 @dataclass
@@ -141,12 +147,14 @@ class OTelViewModel:
 
     kind: str = "otel"
     title: str = ""
-    columns: list[dict[str, Any]] = field(default_factory=lambda: [
-        {"key": "name", "label": "Name", "sortable": True},
-        {"key": "status", "label": "Status", "sortable": True},
-        {"key": "pipeline", "label": "Pipeline", "sortable": False},
-        {"key": "uptime", "label": "Uptime", "sortable": True},
-    ])
+    columns: list[dict[str, Any]] = field(
+        default_factory=lambda: [
+            {"key": "name", "label": "Name", "sortable": True},
+            {"key": "status", "label": "Status", "sortable": True},
+            {"key": "pipeline", "label": "Pipeline", "sortable": False},
+            {"key": "uptime", "label": "Uptime", "sortable": True},
+        ]
+    )
     rows: list[dict[str, Any]] = field(default_factory=list)
     overall_severity: str = "success"
     overall_status_label: str = "Status"
@@ -155,11 +163,5 @@ class OTelViewModel:
 
 # ── Type alias for dispatch ───────────────────────────────────────────────
 
-ObsViewModel = (
-    MetricsViewModel
-    | LogsViewModel
-    | TracesViewModel
-    | AlertsViewModel
-    | OTelViewModel
-)
+ObsViewModel = MetricsViewModel | LogsViewModel | TracesViewModel | AlertsViewModel | OTelViewModel
 """Union type for all observability view models."""

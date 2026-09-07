@@ -99,7 +99,8 @@ class GoalRubricChannels(AgentState):
     """Proposed criteria awaiting user acceptance."""
 
     _pending_goal_kind: Annotated[
-        NotRequired[GoalProposalKind | None], PrivateStateAttr,
+        NotRequired[GoalProposalKind | None],
+        PrivateStateAttr,
     ]
     """Whether the pending review creates or amends a goal."""
 

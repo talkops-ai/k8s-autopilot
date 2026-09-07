@@ -16,7 +16,6 @@ maintains the mapping in both directions so that:
 from __future__ import annotations
 
 import uuid
-from typing import Optional
 
 
 class ThreadStore:
@@ -29,6 +28,11 @@ class ThreadStore:
     """
 
     def __init__(self, backend: str = "memory") -> None:
+        """Initialize ThreadStore mapping platform and LangGraph threads.
+
+        Args:
+            backend: Storage backend identifier (default: "memory").
+        """
         # In-memory dicts keyed by composite key "platform:thread_id"
         self._platform_to_lg: dict[str, str] = {}
         self._lg_to_platform: dict[str, dict[str, str]] = {}
@@ -60,7 +64,7 @@ class ThreadStore:
 
     # ── Reverse lookup ────────────────────────────────────────────────
 
-    def reverse_lookup(self, lg_thread_id: str) -> Optional[dict[str, str]]:
+    def reverse_lookup(self, lg_thread_id: str) -> dict[str, str] | None:
         """Look up platform info from a LangGraph thread_id.
 
         Returns:

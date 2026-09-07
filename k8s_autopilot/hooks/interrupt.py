@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
 from k8s_autopilot.hooks.models.adapters import HOOK_INVOCATION_RESPONSE_ADAPTER
-from k8s_autopilot.hooks.models.transport import HookInvocationRequest, HookInvocationResponse
+from k8s_autopilot.hooks.models.transport import (
+    HookInvocationRequest,
+    HookInvocationResponse,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -26,7 +29,7 @@ class HookInvocationInterrupt(BaseModel):
 
 HOOK_INVOCATION_INTERRUPT_ADAPTER: TypeAdapter[HookInvocationInterrupt] = TypeAdapter(HookInvocationInterrupt)
 
-HookResumeValue: TypeAlias = dict[str, Any]
+type HookResumeValue = dict[str, Any]
 
 
 def build_hook_interrupt_payload(request: HookInvocationRequest) -> dict[str, Any]:
@@ -39,10 +42,7 @@ def build_hook_interrupt_payload(request: HookInvocationRequest) -> dict[str, An
 
 def parse_hook_interrupt_payload(value: object) -> HookInvocationRequest | None:
     """Parse a hook invocation interrupt payload when present."""
-    if (
-        not isinstance(value, dict)
-        or value.get("type") != HOOK_INVOCATION_INTERRUPT_TYPE
-    ):
+    if not isinstance(value, dict) or value.get("type") != HOOK_INVOCATION_INTERRUPT_TYPE:
         return None
     interrupt_data = HOOK_INVOCATION_INTERRUPT_ADAPTER.validate_python(value)
     return interrupt_data.request

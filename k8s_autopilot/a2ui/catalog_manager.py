@@ -1,5 +1,4 @@
-"""
-A2UI Catalog Manager
+"""A2UI Catalog Manager.
 
 Generic, extensible catalog manager for A2UI schema negotiation.
 Replaces the hardcoded approach with a registry-aware approach where catalogs are registered dynamically.
@@ -23,18 +22,17 @@ Usage::
 """
 
 import copy
-import json
-import logging
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 # Import constants from the SDK to avoid duplication (DRY)
 try:
     from a2ui.core.schema.constants import (
         A2UI_CLIENT_CAPABILITIES_KEY,
-        SUPPORTED_CATALOG_IDS_KEY,
         INLINE_CATALOGS_KEY,
+        SUPPORTED_CATALOG_IDS_KEY,
     )
 except ImportError:
     # Fallback if SDK not on path
@@ -48,8 +46,7 @@ logger = AgentLogger("A2UICatalogManager")
 
 # ── Well-known constants ──────────────────────────────────────────────
 STANDARD_CATALOG_ID = (
-    "https://github.com/google/A2UI/blob/main/specification/"
-    "v0_9/json/standard_catalog_definition.json"
+    "https://github.com/google/A2UI/blob/main/specification/v0_9/json/standard_catalog_definition.json"
 )
 
 OBSERVABILITY_CATALOG_ID = "https://talkops.ai/a2ui/observability_catalog.json"
@@ -64,7 +61,7 @@ class CatalogEntry:
     catalog_id: str
     """Primary URI identifier (GitHub URL or other canonical ID)."""
 
-    local_path: Optional[Path] = None
+    local_path: Path | None = None
     """Path to the local JSON file. ``None`` for the built-in standard catalog."""
 
     aliases: list[str] = field(default_factory=list)
@@ -78,8 +75,7 @@ class CatalogEntry:
 
 
 class CatalogManager:
-    """
-    Generic, extensible A2UI catalog manager.
+    """Generic, extensible A2UI catalog manager.
 
     Features:
     - **Dynamic registration**: any agent can register custom catalogs.
@@ -90,13 +86,18 @@ class CatalogManager:
     - **Caching**: loaded catalogs and merged schemas are cached.
     """
 
-    def __init__(self, catalogs_dir: Optional[Path] = None) -> None:
+    def __init__(self, catalogs_dir: Path | None = None) -> None:
+        """Initialize A2UICatalogManager and register standard catalogs.
+
+        Args:
+            catalogs_dir: Optional custom directory containing catalog definition files.
+        """
         self._catalogs_dir = catalogs_dir or Path(__file__).parent
-        self._entries: Dict[str, CatalogEntry] = {}  # id → entry
-        self._alias_map: Dict[str, str] = {}  # alias → canonical id
-        self._file_cache: Dict[str, Dict[str, Any]] = {}  # path → parsed json
-        self._base_schema: Optional[Dict[str, Any]] = None
-        self._merged_cache: Dict[str, Tuple[str, Dict[str, Any]]] = {}  # id → (id, merged)
+        self._entries: dict[str, CatalogEntry] = {}  # id → entry
+        self._alias_map: dict[str, str] = {}  # alias → canonical id
+        self._file_cache: dict[str, dict[str, Any]] = {}  # path → parsed json
+        self._base_schema: dict[str, Any] | None = None
+        self._merged_cache: dict[str, tuple[str, dict[str, Any]]] = {}  # id → (id, merged)
 
         # Always register the standard catalog at lowest priority
         self.register_catalog(
@@ -117,8 +118,7 @@ class CatalogManager:
                 aliases=["observability", "obs-catalog"],
                 priority=10,
                 description=(
-                    "Observability domain components "
-                    "(MetricChart, DataTable, TraceTimeline, StatusIndicator)"
+                    "Observability domain components (MetricChart, DataTable, TraceTimeline, StatusIndicator)"
                 ),
             )
         )
@@ -126,8 +126,7 @@ class CatalogManager:
     # ── Registration ──────────────────────────────────────────────────
 
     def register_catalog(self, entry: CatalogEntry) -> None:
-        """
-        Register a catalog entry.
+        """Register a catalog entry.
 
         Args:
             entry: The catalog entry to register.
@@ -149,15 +148,15 @@ class CatalogManager:
 
     # ── Querying ──────────────────────────────────────────────────────
 
-    def get_supported_catalog_ids(self) -> List[str]:
+    def get_supported_catalog_ids(self) -> list[str]:
         """Return all catalog IDs + aliases this agent advertises."""
-        ids: List[str] = []
+        ids: list[str] = []
         for entry in self._entries.values():
             ids.append(entry.catalog_id)
             ids.extend(entry.aliases)
         return ids
 
-    def list_catalogs(self) -> List[Dict[str, Any]]:
+    def list_catalogs(self) -> list[dict[str, Any]]:
         """Return registered catalogs as dicts (for debugging / introspection)."""
         return [
             {
@@ -170,7 +169,7 @@ class CatalogManager:
             for e in sorted(self._entries.values(), key=lambda e: -e.priority)
         ]
 
-    def resolve_id(self, raw_id: str) -> Optional[str]:
+    def resolve_id(self, raw_id: str) -> str | None:
         """Resolve an alias or canonical ID to its canonical ID."""
         if raw_id in self._entries:
             return raw_id
@@ -178,7 +177,7 @@ class CatalogManager:
 
     # ── Schema loading & merging ──────────────────────────────────────
 
-    def _load_json(self, path: Path) -> Optional[Dict[str, Any]]:
+    def _load_json(self, path: Path) -> dict[str, Any] | None:
         """Load and cache a JSON file."""
         cache_key = str(path)
         if cache_key in self._file_cache:
@@ -187,7 +186,7 @@ class CatalogManager:
             logger.warning(f"Catalog file not found: {path}")
             return None
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 data = json.load(f)
             self._file_cache[cache_key] = data
             return data
@@ -195,7 +194,7 @@ class CatalogManager:
             logger.error(f"Failed to load {path}: {e}")
             return None
 
-    def _load_base_schema(self) -> Dict[str, Any]:
+    def _load_base_schema(self) -> dict[str, Any]:
         """Load the base A2UI server-to-client schema."""
         if self._base_schema:
             return self._base_schema
@@ -223,13 +222,13 @@ class CatalogManager:
 
     def _merge_catalog_into_schema(
         self,
-        base: Dict[str, Any],
-        catalog: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        base: dict[str, Any],
+        catalog: dict[str, Any],
+    ) -> dict[str, Any]:
         """Merge catalog definitions/components into a base schema."""
         merged = copy.deepcopy(base)
 
-        sources: List[Dict[str, Any]] = []
+        sources: list[dict[str, Any]] = []
         if "definitions" in catalog:
             sources.append(catalog["definitions"])
         if "components" in catalog:
@@ -245,10 +244,9 @@ class CatalogManager:
 
         # Inject into surfaceUpdate component wrapper for valid component types
         try:
-            comp_wrapper = (
-                merged["properties"]["surfaceUpdate"]["properties"]
-                ["components"]["items"]["properties"]["component"]
-            )
+            comp_wrapper = merged["properties"]["surfaceUpdate"]["properties"]["components"]["items"]["properties"][
+                "component"
+            ]
             comp_wrapper.setdefault("properties", {})
             for key, value in merged["definitions"].items():
                 comp_wrapper["properties"][key] = value
@@ -261,10 +259,9 @@ class CatalogManager:
 
     def select_catalog(
         self,
-        client_capabilities: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[str, Dict[str, Any]]:
-        """
-        Negotiate the best catalog based on client capabilities.
+        client_capabilities: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Negotiate the best catalog based on client capabilities.
 
         Selection logic (priority order):
         1. If client lists ``supportedCatalogIds``, pick the highest-priority
@@ -283,10 +280,7 @@ class CatalogManager:
 
         # Rule: supportedCatalogIds takes precedence over inlineCatalogs
         if supported_ids and inline_catalogs:
-            logger.warning(
-                "Both supportedCatalogIds and inlineCatalogs provided; "
-                "using supportedCatalogIds"
-            )
+            logger.warning("Both supportedCatalogIds and inlineCatalogs provided; using supportedCatalogIds")
             inline_catalogs = None
 
         # Match client-supported IDs against registered catalogs by priority
@@ -298,11 +292,7 @@ class CatalogManager:
         # Inline catalogs
         if inline_catalogs:
             try:
-                inline = (
-                    json.loads(inline_catalogs)
-                    if isinstance(inline_catalogs, str)
-                    else inline_catalogs
-                )
+                inline = json.loads(inline_catalogs) if isinstance(inline_catalogs, str) else inline_catalogs
                 base = self._load_base_schema()
                 merged = self._merge_catalog_into_schema(base, inline)
                 return ("inline", merged)
@@ -312,11 +302,9 @@ class CatalogManager:
         # Fallback
         return self._load_and_merge_best()
 
-    def _best_match(self, client_ids: List[str]) -> Optional[str]:
-        """
-        Find the highest-priority registered catalog that the client supports.
-        """
-        matches: List[Tuple[int, str]] = []
+    def _best_match(self, client_ids: list[str]) -> str | None:
+        """Find the highest-priority registered catalog that the client supports."""
+        matches: list[tuple[int, str]] = []
         for cid in client_ids:
             canonical = self.resolve_id(cid)
             if canonical and canonical in self._entries:
@@ -328,18 +316,16 @@ class CatalogManager:
         matches.sort(key=lambda x: -x[0])
         return matches[0][1]
 
-    def _load_and_merge_best(self) -> Tuple[str, Dict[str, Any]]:
+    def _load_and_merge_best(self) -> tuple[str, dict[str, Any]]:
         """Load and merge the highest-priority custom catalog."""
         # Pick highest priority non-standard catalog, or standard if none
-        candidates = sorted(
-            self._entries.values(), key=lambda e: -e.priority
-        )
+        candidates = sorted(self._entries.values(), key=lambda e: -e.priority)
         for c in candidates:
             if c.catalog_id != STANDARD_CATALOG_ID:
                 return self._load_and_merge(c.catalog_id)
         return self._load_and_merge(STANDARD_CATALOG_ID)
 
-    def _load_and_merge(self, catalog_id: str) -> Tuple[str, Dict[str, Any]]:
+    def _load_and_merge(self, catalog_id: str) -> tuple[str, dict[str, Any]]:
         """Load a catalog by ID and merge with base + standard schemas."""
         if catalog_id in self._merged_cache:
             return self._merged_cache[catalog_id]
@@ -380,17 +366,14 @@ class CatalogManager:
 
     @staticmethod
     def validate_a2ui_message(
-        message: Dict[str, Any],
-    ) -> Tuple[bool, Optional[str]]:
-        """
-        Validate that an A2UI message has the expected structure.
+        message: dict[str, Any],
+    ) -> tuple[bool, str | None]:
+        """Validate that an A2UI message has the expected structure.
 
         This is a lightweight structural check, not full JSON-schema
         validation.
         """
-        valid_types = {
-            "beginRendering", "surfaceUpdate", "dataModelUpdate", "deleteSurface"
-        }
+        valid_types = {"beginRendering", "surfaceUpdate", "dataModelUpdate", "deleteSurface"}
         if not any(k in message for k in valid_types):
             return False, f"Message must contain one of: {sorted(valid_types)}"
 
@@ -398,22 +381,16 @@ class CatalogManager:
             su = message["surfaceUpdate"]
             for comp in su.get("components", []):
                 if "component" not in comp:
-                    return False, (
-                        f"Component {comp.get('id', '?')} missing 'component'"
-                    )
+                    return False, (f"Component {comp.get('id', '?')} missing 'component'")
                 if not isinstance(comp["component"], dict) or len(comp["component"]) != 1:
-                    return False, (
-                        f"Component {comp.get('id', '?')} must have exactly "
-                        "one component type"
-                    )
+                    return False, (f"Component {comp.get('id', '?')} must have exactly one component type")
 
         return True, None
 
     # ── SDK integration ───────────────────────────────────────────────
 
     def get_agent_extension(self, version: str = "0.9"):
-        """
-        Build an ``AgentExtension`` for the agent card using the SDK.
+        """Build an ``AgentExtension`` for the agent card using the SDK.
 
         Returns:
             An ``AgentExtension`` object, or a dict fallback if the SDK
@@ -421,13 +398,11 @@ class CatalogManager:
         """
         try:
             from a2ui.a2a import get_a2ui_agent_extension
+
             return get_a2ui_agent_extension(
                 version=version,
                 accepts_inline_catalogs=True,
-                supported_catalog_ids=[
-                    e.catalog_id
-                    for e in self._entries.values()
-                ],
+                supported_catalog_ids=[e.catalog_id for e in self._entries.values()],
             )
         except ImportError:
             # Fallback for environments where SDK is not on the path
@@ -436,16 +411,14 @@ class CatalogManager:
                 "description": "Provides agent driven UI using the A2UI JSON format.",
                 "params": {
                     "acceptsInlineCatalogs": True,
-                    "supportedCatalogIds": [
-                        e.catalog_id for e in self._entries.values()
-                    ],
+                    "supportedCatalogIds": [e.catalog_id for e in self._entries.values()],
                 },
             }
 
 
 # ── Global singleton ──────────────────────────────────────────────────
 
-_catalog_manager: Optional[CatalogManager] = None
+_catalog_manager: CatalogManager | None = None
 
 
 def get_catalog_manager() -> CatalogManager:

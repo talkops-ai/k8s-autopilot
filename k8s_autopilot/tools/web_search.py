@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import Any, Literal
 
 from langchain_core.tools import tool
+import requests
 
 from k8s_autopilot.config.settings import get_settings
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -26,7 +25,7 @@ def _get_tavily_client() -> Any:
     api_key = getattr(settings, "tavily_api_key", None) or os.environ.get("TAVILY_API_KEY")
     if api_key:
         try:
-            from tavily import TavilyClient
+            from tavily import TavilyClient  # Lazy import: optional dependency
 
             _tavily_client = TavilyClient(api_key=api_key)
         except ImportError:
@@ -63,8 +62,7 @@ def web_search(
         - query: The original search query
     """
     try:
-        import requests
-        from tavily import (
+        from tavily import (  # Lazy import: optional dependency
             BadRequestError,
             InvalidAPIKeyError,
             MissingAPIKeyError,

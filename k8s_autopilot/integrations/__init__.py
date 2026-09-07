@@ -9,20 +9,20 @@ from k8s_autopilot.integrations.base import (
     InteractionPayload,
     MessagingIntegration,
 )
+from k8s_autopilot.integrations.identity import IdentityMapper, UserIdentity
 from k8s_autopilot.integrations.stream_bridge import (
     GraphStreamBridge,
     StreamSink,
 )
 from k8s_autopilot.integrations.thread_store import ThreadStore
-from k8s_autopilot.integrations.identity import IdentityMapper, UserIdentity
 
 __all__ = [
+    "GraphStreamBridge",
+    "IdentityMapper",
     "IncomingMessage",
     "InteractionPayload",
     "MessagingIntegration",
-    "GraphStreamBridge",
     "StreamSink",
     "ThreadStore",
-    "IdentityMapper",
     "UserIdentity",
 ]

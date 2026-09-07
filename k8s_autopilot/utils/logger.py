@@ -1,5 +1,4 @@
-"""
-Logging module for K8s Autopilot Agent.
+"""Logging module for K8s Autopilot Agent.
 
 Provides color-coded, multi-sink (console + file + websocket) logging with
 both structured (JSON) and human-readable output modes.
@@ -19,23 +18,26 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Callable
+import contextlib
+from datetime import UTC, datetime
+from enum import Enum
 import json
 import logging
 import sys
 import threading
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 from colorama import Fore, Style
-
 
 # ---------------------------------------------------------------------------
 # Color palettes
 # ---------------------------------------------------------------------------
 
+
 class _LevelColor(Enum):
     """Traffic-light colors for log levels."""
+
     DEBUG = Fore.LIGHTBLACK_EX
     INFO = Fore.BLUE
     WARNING = Fore.YELLOW
@@ -47,7 +49,7 @@ class _LevelColor(Enum):
 # Singleton config accessor (lazy — avoids circular imports)
 # ---------------------------------------------------------------------------
 
-_config_cache: Optional[Any] = ...  # sentinel: `...` means "not loaded yet"
+_config_cache: Any | None = ...  # sentinel: `...` means "not loaded yet"
 
 
 def _get_config() -> Any:
@@ -75,9 +77,9 @@ def _cfg(key: str, fallback: Any) -> Any:
 # Colored console formatter (for StreamHandler)
 # ---------------------------------------------------------------------------
 
+
 class _ColorFormatter(logging.Formatter):
-    """
-    Applies per-level color to log records for console output.
+    """Applies per-level color to log records for console output.
 
     Reads ``LOG_DATE_FORMAT`` from config for timestamp formatting.
     Keeps ANSI codes OUT of the ``logging.FileHandler`` path automatically
@@ -85,10 +87,19 @@ class _ColorFormatter(logging.Formatter):
     """
 
     def __init__(self) -> None:
+        """Initialize _ConsoleColorFormatter with configured date format."""
         super().__init__()
         self._date_fmt: str = _cfg("LOG_DATE_FORMAT", "%Y-%m-%dT%H:%M:%S")
 
     def format(self, record: logging.LogRecord) -> str:
+        """Format a LogRecord with ANSI color-coded log levels and structured metadata.
+
+        Args:
+            record: The logging record to format.
+
+        Returns:
+            str: Colorized and formatted log line string.
+        """
         level = record.levelname
         agent = getattr(record, "agent_name", "BASE")
 
@@ -98,7 +109,7 @@ class _ColorFormatter(logging.Formatter):
         except KeyError:
             lc = Fore.WHITE
 
-        ts = datetime.now(timezone.utc).strftime(self._date_fmt)
+        ts = datetime.now(UTC).strftime(self._date_fmt)
         msg = record.getMessage()
 
         extras = getattr(record, "_structured_extra", None)
@@ -108,11 +119,7 @@ class _ColorFormatter(logging.Formatter):
         else:
             extra_str = ""
 
-        formatted = (
-            f"{lc}[{level}]{Style.RESET_ALL} "
-            f"{agent}: "
-            f"[{ts}] {msg}{extra_str}"
-        )
+        formatted = f"{lc}[{level}]{Style.RESET_ALL} {agent}: [{ts}] {msg}{extra_str}"
         if record.exc_info:
             if not record.exc_text:
                 record.exc_text = self.formatException(record.exc_info)
@@ -125,12 +132,21 @@ class _ColorFormatter(logging.Formatter):
 # Structured (JSON) formatter (for both file and console when enabled)
 # ---------------------------------------------------------------------------
 
+
 class _JsonFormatter(logging.Formatter):
     """Emits each log record as a single JSON line (structured logging)."""
 
     def format(self, record: logging.LogRecord) -> str:
+        """Format a LogRecord as a single JSON line with timestamp and structured fields.
+
+        Args:
+            record: The logging record to serialize.
+
+        Returns:
+            str: JSON string representing the log entry.
+        """
         entry: dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "level": record.levelname,
             "agent": getattr(record, "agent_name", None),
             "message": record.getMessage(),
@@ -151,14 +167,15 @@ class _JsonFormatter(logging.Formatter):
 # File formatter (plain text, no color codes)
 # ---------------------------------------------------------------------------
 
+
 class _PlainFormatter(logging.Formatter):
-    """
-    Plain-text format for file output — no ANSI escape codes.
+    """Plain-text format for file output — no ANSI escape codes.
 
     Respects ``LOG_FORMAT`` and ``LOG_DATE_FORMAT`` from config.
     """
 
     def __init__(self) -> None:
+        """Initialize _PlainFormatter with configured plain log and date formats."""
         log_fmt: str = _cfg(
             "LOG_FORMAT",
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -167,6 +184,14 @@ class _PlainFormatter(logging.Formatter):
         super().__init__(fmt=log_fmt, datefmt=date_fmt)
 
     def format(self, record: logging.LogRecord) -> str:
+        """Format a LogRecord as plain text without ANSI codes.
+
+        Args:
+            record: The logging record to format.
+
+        Returns:
+            str: Formatted plain text log line string.
+        """
         # Inject agent_name into the record so %(name)s shows it
         record.name = getattr(record, "agent_name", record.name)
         msg = super().format(record)
@@ -184,13 +209,12 @@ class _PlainFormatter(logging.Formatter):
 # ---------------------------------------------------------------------------
 
 _initialised_loggers: set[str] = set()
-_active_loggers: dict[str, "AgentLogger"] = {}
+_active_loggers: dict[str, AgentLogger] = {}
 _active_loggers_lock = threading.RLock()
 
 
 def _ensure_handlers(py_logger: logging.Logger, agent_name: str) -> None:
-    """
-    Attach console + file handlers exactly once per logger name.
+    """Attach console + file handlers exactly once per logger name.
 
     Prevents duplicate handlers when multiple loggers share a name.
     """
@@ -234,8 +258,7 @@ def configure_logging(
     to_file: bool | None = None,
     file_path: str | None = None,
 ) -> None:
-    """
-    Dynamically reconfigure all active loggers from updated settings.
+    """Dynamically reconfigure all active loggers from updated settings.
 
     Can be invoked when settings change (e.g. from ConfigStore or API)
     without restarting the server process.
@@ -260,10 +283,8 @@ def configure_logging(
             # Close and clear existing handlers
             for h in list(py_logger.handlers):
                 if isinstance(h, logging.FileHandler):
-                    try:
+                    with contextlib.suppress(Exception):
                         h.close()
-                    except Exception:
-                        pass
             py_logger.handlers.clear()
 
             # Re-attach console handler
@@ -308,9 +329,11 @@ def get_logger(name: str = "k8s_autopilot") -> AgentLogger:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 class AgentLogger:
-    """
-    Per-agent logger with color-coded console output, structured JSON support,
+    """Per-agent logger with structured JSON support and websocket streaming.
+
+    Provides color-coded console output, structured JSON support,
     file logging, and optional websocket streaming.
 
     Usage::
@@ -321,13 +344,18 @@ class AgentLogger:
         log.warning("Drift detected", task_id="deploy-42", context_id="sess-abc")
     """
 
-    __slots__ = ("agent_name", "_logger", "_websocket", "_stream_fn")
+    __slots__ = ("_logger", "_stream_fn", "_websocket", "agent_name")
 
     def __init__(self, agent_name: str = "BASE") -> None:
+        """Initialize AgentLogger for a specific named agent.
+
+        Args:
+            agent_name: Name of the agent prefixing log entries.
+        """
         self.agent_name = agent_name
         self._logger = logging.getLogger(f"agent.{agent_name}")
         self._websocket: Any = None
-        self._stream_fn: Optional[Callable[..., Any]] = None
+        self._stream_fn: Callable[..., Any] | None = None
 
         _ensure_handlers(self._logger, agent_name)
 
@@ -338,33 +366,78 @@ class AgentLogger:
 
     @property
     def level(self) -> int:
+        """Current effective logging level.
+
+        Returns:
+            int: Logging level integer.
+        """
         return self._logger.level
 
     @property
     def handlers(self) -> list[logging.Handler]:
+        """List of active handlers attached to underlying logger.
+
+        Returns:
+            list[logging.Handler]: Attached logging handlers.
+        """
         return self._logger.handlers
 
     @property
     def name(self) -> str:
+        """Agent name associated with this logger.
+
+        Returns:
+            str: The agent name.
+        """
         return self.agent_name
 
     def setLevel(self, level: int | str) -> None:
+        """Set logging threshold level for underlying logger.
+
+        Args:
+            level: Level name string or integer value.
+        """
         if isinstance(level, str):
             level = getattr(logging, level.upper(), logging.INFO)
         self._logger.setLevel(level)
 
     def isEnabledFor(self, level: int) -> bool:
+        """Check whether underlying logger is enabled for the specified level.
+
+        Args:
+            level: Logging level integer to check.
+
+        Returns:
+            bool: True if logger will emit messages at this level.
+        """
         return self._logger.isEnabledFor(level)
 
     def addHandler(self, hdlr: logging.Handler) -> None:
+        """Add a custom handler to the underlying logger.
+
+        Args:
+            hdlr: Handler instance to attach.
+        """
         self._logger.addHandler(hdlr)
 
     def removeHandler(self, hdlr: logging.Handler) -> None:
+        """Remove a handler from the underlying logger.
+
+        Args:
+            hdlr: Handler instance to detach.
+        """
         self._logger.removeHandler(hdlr)
 
     # ── Convenience level methods (sync — suitable for most call-sites) ──
 
     def debug(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        """Log a message at DEBUG level.
+
+        Args:
+            msg: Message format string.
+            *args: Format string interpolation arguments.
+            **kwargs: Extra attributes and logging flags.
+        """
         if args:
             try:
                 msg = msg % args
@@ -373,6 +446,13 @@ class AgentLogger:
         self._emit(logging.DEBUG, msg, **kwargs)
 
     def info(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        """Log a message at INFO level.
+
+        Args:
+            msg: Message format string.
+            *args: Format string interpolation arguments.
+            **kwargs: Extra attributes and logging flags.
+        """
         if args:
             try:
                 msg = msg % args
@@ -381,6 +461,13 @@ class AgentLogger:
         self._emit(logging.INFO, msg, **kwargs)
 
     def warning(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        """Log a message at WARNING level.
+
+        Args:
+            msg: Message format string.
+            *args: Format string interpolation arguments.
+            **kwargs: Extra attributes and logging flags.
+        """
         if args:
             try:
                 msg = msg % args
@@ -389,6 +476,13 @@ class AgentLogger:
         self._emit(logging.WARNING, msg, **kwargs)
 
     def error(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        """Log a message at ERROR level.
+
+        Args:
+            msg: Message format string.
+            *args: Format string interpolation arguments.
+            **kwargs: Extra attributes and logging flags.
+        """
         if args:
             try:
                 msg = msg % args
@@ -407,6 +501,13 @@ class AgentLogger:
         self._emit(logging.ERROR, msg, **kwargs)
 
     def critical(self, msg: str, *args: Any, **kwargs: Any) -> None:
+        """Log a message at CRITICAL level.
+
+        Args:
+            msg: Message format string.
+            *args: Format string interpolation arguments.
+            **kwargs: Extra attributes and logging flags.
+        """
         if args:
             try:
                 msg = msg % args
@@ -415,6 +516,14 @@ class AgentLogger:
         self._emit(logging.CRITICAL, msg, **kwargs)
 
     def log(self, level: int, msg: str, *args: Any, **kwargs: Any) -> None:
+        """Log a message at a specified custom integer level.
+
+        Args:
+            level: Integer severity level.
+            msg: Message format string.
+            *args: Format string interpolation arguments.
+            **kwargs: Extra attributes and logging flags.
+        """
         if args:
             try:
                 msg = msg % args
@@ -429,17 +538,16 @@ class AgentLogger:
         level: int,
         message: str,
         *,
-        task_id: Optional[str] = None,
-        context_id: Optional[str] = None,
-        turn_id: Optional[str] = None,
-        extra: Optional[dict[str, Any]] = None,
+        task_id: str | None = None,
+        context_id: str | None = None,
+        turn_id: str | None = None,
+        extra: dict[str, Any] | None = None,
         exc_info: Any = None,
         **kwargs: Any,
     ) -> None:
         """Single code-path that feeds console, file, and websocket."""
         if exc_info:
             if exc_info is True:
-                import sys
                 exc_info = sys.exc_info()
             elif isinstance(exc_info, BaseException):
                 exc_info = (type(exc_info), exc_info, exc_info.__traceback__)
@@ -476,12 +584,11 @@ class AgentLogger:
         self,
         level: str = "INFO",
         message: str = "",
-        task_id: Optional[str] = None,
-        context_id: Optional[str] = None,
-        extra: Optional[dict[str, Any]] = None,
+        task_id: str | None = None,
+        context_id: str | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> None:
-        """
-        Backward-compatible structured log call.
+        """Backward-compatible structured log call.
 
         Prefer ``log.info(...)``, ``log.error(...)`` etc. for new code.
         """
@@ -502,10 +609,8 @@ class AgentLogger:
 
         # Websocket push (fire-and-forget)
         if self._websocket and self._stream_fn:
-            try:
+            with contextlib.suppress(Exception):
                 await self._stream_fn("logs", self.agent_name, message, self._websocket)
-            except Exception:
-                pass  # never let WS failure crash the agent
 
     def set_websocket(self, websocket: Any, stream_fn: Callable[..., Any]) -> None:
         """Attach a websocket sink for live streaming."""
@@ -515,7 +620,7 @@ class AgentLogger:
     # ── Factory ──────────────────────────────────────────────────────────
 
     @classmethod
-    def create(cls, agent_name: str) -> "AgentLogger":
+    def create(cls, agent_name: str) -> AgentLogger:
         """Factory method (alias for constructor)."""
         return cls(agent_name)
 
@@ -542,8 +647,8 @@ def log_async(func: Callable) -> Callable:
 
 __all__ = [
     "AgentLogger",
-    "get_logger",
     "configure_logging",
-    "log_sync",
+    "get_logger",
     "log_async",
+    "log_sync",
 ]

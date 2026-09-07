@@ -17,7 +17,6 @@ for troubleshooting.
 
 from __future__ import annotations
 
-import logging
 import re
 
 from k8s_autopilot.utils.logger import get_logger
@@ -83,7 +82,7 @@ def is_internal_message(text: str) -> bool:
 
 
 def filter_internal_content(text: str) -> str:
-    """Remove internal protocol lines, return user-facing text.
+    r"""Remove internal protocol lines, return user-facing text.
 
     Operates line-by-line: any line matching an internal pattern is
     removed and logged at DEBUG level.  Returns the cleaned text

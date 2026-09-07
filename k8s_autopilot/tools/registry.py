@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Callable
+import contextlib
+import threading
 from typing import Any
 
 from langchain_core.tools import BaseTool
@@ -16,11 +17,17 @@ class ToolRegistry:
     _lock = threading.Lock()
 
     def __init__(self) -> None:
+        """Initialize ToolRegistry with empty registry and category mappings."""
         self._registry: dict[str, Callable[..., BaseTool] | BaseTool] = {}
         self._categories: dict[str, str] = {}
 
     @classmethod
     def get_instance(cls) -> ToolRegistry:
+        """Retrieve the singleton instance of ToolRegistry.
+
+        Returns:
+            ToolRegistry: The singleton tool registry instance.
+        """
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -77,10 +84,8 @@ class ToolRegistry:
         if names is not None:
             tools: list[BaseTool] = []
             for name in names:
-                try:
+                with contextlib.suppress(KeyError):
                     tools.append(self.build_tool(name, **kwargs))
-                except KeyError:
-                    pass
             return tools
 
         tools = []
@@ -90,14 +95,11 @@ class ToolRegistry:
                 continue
             if include_categories and cat not in include_categories:
                 continue
-            try:
+            with contextlib.suppress(Exception):
                 tools.append(self.build_tool(name, **kwargs))
-            except Exception:
-                pass
         return tools
 
 
 def get_tool_registry() -> ToolRegistry:
     """Return the singleton ToolRegistry instance."""
     return ToolRegistry.get_instance()
-

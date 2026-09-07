@@ -1,7 +1,9 @@
-import logging
-import uuid
+"""Thread service layer — business logic for conversation management."""
+
+import contextlib
 from datetime import UTC, datetime
 from typing import Any
+import uuid
 
 from langgraph.checkpoint.base import Checkpoint, empty_checkpoint
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -20,7 +22,6 @@ from k8s_autopilot.api.models import (
     ThreadUpdate,
     UsageTelemetry,
 )
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -30,6 +31,7 @@ class ThreadService:
     """Orchestrates thread operations natively using LangGraph Checkpointer."""
 
     def __init__(self, checkpointer: Any, executor: Any = None) -> None:
+        """Initialize the thread service with a checkpointer and optional executor."""
         self._checkpointer = checkpointer
         self._executor = executor
         if isinstance(checkpointer, AsyncPostgresSaver):
@@ -53,16 +55,16 @@ class ThreadService:
                 "response_metadata": getattr(msg, "response_metadata", {}) or {},
             }
             if hasattr(msg, "tool_calls") and msg.tool_calls:
-                msg_dict["tool_calls"] = [
-                    tc.dict() if hasattr(tc, "dict") else dict(tc) for tc in msg.tool_calls
-                ]
+                msg_dict["tool_calls"] = [tc.dict() if hasattr(tc, "dict") else dict(tc) for tc in msg.tool_calls]
             return msg_dict
         elif isinstance(msg, dict):
             return dict(msg)
         return {"type": "ai", "content": str(msg)}
 
     def _extract_thread_response(
-        self, thread_id: str, checkpoint_meta: dict[str, Any] | None,
+        self,
+        thread_id: str,
+        checkpoint_meta: dict[str, Any] | None,
     ) -> ThreadResponse:
         """Helper to build a ThreadResponse from checkpoint metadata."""
         meta = checkpoint_meta or {}
@@ -86,15 +88,11 @@ class ThreadService:
 
         # Remove internal fields from raw metadata payload for the response
         clean_metadata = {
-            k: v for k, v in meta.items()
-            if k not in ["title", "status", "user_id", "created_at", "updated_at"]
+            k: v for k, v in meta.items() if k not in ["title", "status", "user_id", "created_at", "updated_at"]
         }
 
         effective_title = (
-            title
-            or meta.get("initial_prompt")
-            or meta.get("user_query")
-            or f"Conversation {thread_id[:8]}"
+            title or meta.get("initial_prompt") or meta.get("user_query") or f"Conversation {thread_id[:8]}"
         )
         if not effective_title.startswith("Conversation "):
             clean_metadata.setdefault("initial_prompt", effective_title)
@@ -117,8 +115,11 @@ class ThreadService:
         )
 
     async def create_thread(
-        self, req: ThreadCreate, user_id: str = "default",
+        self,
+        req: ThreadCreate,
+        user_id: str = "default",
     ) -> ThreadResponse:
+        """Create a new conversation thread and establish its initial checkpoint."""
         thread_id = req.thread_id or uuid.uuid4()
         str_tid = str(thread_id)
         config = {"configurable": {"thread_id": str_tid, "checkpoint_ns": ""}}
@@ -140,11 +141,12 @@ class ThreadService:
 
         # Write an empty checkpoint just to establish the thread in the checkpointer
         checkpoint = empty_checkpoint()
-        await self._checkpointer.aput(config, checkpoint, metadata, new_versions={}) # type: ignore[arg-type]
+        await self._checkpointer.aput(config, checkpoint, metadata, new_versions={})  # type: ignore[arg-type]
 
         return self._extract_thread_response(str_tid, metadata)
 
     async def get_thread(self, thread_id: uuid.UUID | str) -> ThreadResponse | None:
+        """Retrieve thread metadata and state by ID."""
         str_tid = str(thread_id)
         config = {"configurable": {"thread_id": str_tid, "checkpoint_ns": ""}}
         checkpoint_tuple = await self._checkpointer.aget_tuple(config)  # type: ignore[arg-type]
@@ -197,7 +199,8 @@ class ThreadService:
                     "message_count": t.get("message_count", 0),
                     "git_branch": t.get("git_branch"),
                     "cwd": t.get("cwd"),
-                    "initial_prompt": t.get("initial_prompt") or (title if not title.startswith("Conversation ") else None),
+                    "initial_prompt": t.get("initial_prompt")
+                    or (title if not title.startswith("Conversation ") else None),
                     "user_query": t.get("initial_prompt") or (title if not title.startswith("Conversation ") else None),
                 }
 
@@ -237,7 +240,9 @@ class ThreadService:
 
                     cp_meta = dict(checkpoint_tuple.metadata or {})
                     if not cp_meta.get("title") and getattr(checkpoint_tuple, "checkpoint", None):
-                        from k8s_autopilot.state.session import _initial_prompt_from_messages
+                        from k8s_autopilot.state.session import (
+                            _initial_prompt_from_messages,
+                        )
 
                         cp_dict = checkpoint_tuple.checkpoint if isinstance(checkpoint_tuple.checkpoint, dict) else {}
                         msgs = cp_dict.get("channel_values", {}).get("messages", [])
@@ -255,11 +260,14 @@ class ThreadService:
         reverse = req.sort_order.lower() == "desc"
         results.sort(key=lambda r: getattr(r, sort_field), reverse=reverse)
 
-        return results[:req.limit]
+        return results[: req.limit]
 
     async def update_thread(
-        self, thread_id: uuid.UUID | str, req: ThreadUpdate,
+        self,
+        thread_id: uuid.UUID | str,
+        req: ThreadUpdate,
     ) -> ThreadResponse | None:
+        """Update thread metadata, title, or status in the checkpointer."""
         str_tid = str(thread_id)
         config = {"configurable": {"thread_id": str_tid, "checkpoint_ns": ""}}
         checkpoint_tuple = await self._checkpointer.aget_tuple(config)  # type: ignore[arg-type]
@@ -267,7 +275,7 @@ class ThreadService:
             return None
 
         now_iso = datetime.now(UTC).isoformat()
-        current_meta = dict(checkpoint_tuple.metadata or {}) # type: ignore[arg-type]
+        current_meta = dict(checkpoint_tuple.metadata or {})  # type: ignore[arg-type]
 
         if "step" not in current_meta:
             current_meta["step"] = -1
@@ -293,23 +301,22 @@ class ThreadService:
         }
 
         await self._checkpointer.aput(
-            put_config, # type: ignore[arg-type]
+            put_config,  # type: ignore[arg-type]
             checkpoint_tuple.checkpoint,
-            current_meta, # type: ignore[arg-type]
+            current_meta,  # type: ignore[arg-type]
             new_versions={},
         )
 
         return self._extract_thread_response(str_tid, current_meta)
 
     async def delete_thread(self, thread_id: uuid.UUID | str) -> bool:
+        """Delete a conversation thread and its associated checkpoints."""
         from k8s_autopilot.state.session import delete_thread as session_delete_thread
 
         str_tid = str(thread_id)
         deleted = False
-        try:
+        with contextlib.suppress(Exception):
             deleted = await session_delete_thread(str_tid, backend=self._backend)
-        except Exception:
-            pass
 
         if hasattr(self._checkpointer, "adelete_thread"):
             try:
@@ -346,7 +353,8 @@ class ThreadService:
         return False
 
     async def get_thread_state(
-        self, thread_id: uuid.UUID | str,
+        self,
+        thread_id: uuid.UUID | str,
     ) -> ThreadStateResponse | None:
         """Get thread metadata + messages + structured state from the latest checkpoint.
 
@@ -367,7 +375,9 @@ class ThreadService:
 
         # 1. Primary: Reconstruct full multi-turn conversation messages via SessionManager
         try:
-            from k8s_autopilot.middleware.goal_state_notice import is_conversation_control_message
+            from k8s_autopilot.middleware.goal_state_notice import (
+                is_conversation_control_message,
+            )
             from k8s_autopilot.state.session import SessionManager
 
             raw_msgs = await SessionManager().get_thread_messages(str_tid)
@@ -490,7 +500,9 @@ class ThreadService:
         )
 
     async def get_thread_history(
-        self, thread_id: uuid.UUID | str, limit: int = 10,
+        self,
+        thread_id: uuid.UUID | str,
+        limit: int = 10,
     ) -> ThreadHistoryResponse | None:
         """Get checkpoint history for time-travel/debugging."""
         str_tid = str(thread_id)
@@ -522,7 +534,8 @@ class ThreadService:
         )
 
     async def get_thread_telemetry(
-        self, thread_id: uuid.UUID | str,
+        self,
+        thread_id: uuid.UUID | str,
     ) -> ThreadTelemetryResponse | None:
         """Get authoritative status bar telemetry for a thread.
 
@@ -564,7 +577,7 @@ class ThreadService:
                     state_snapshot = await agent.aget_state(config)
                     if state_snapshot and state_snapshot.values:
                         values = state_snapshot.values
-                        if "approval_mode" in values and values["approval_mode"]:
+                        if values.get("approval_mode"):
                             approval_mode = str(values["approval_mode"])
                         if "_goal_status" in values:
                             goal_status = values["_goal_status"]
@@ -572,7 +585,9 @@ class ThreadService:
                             r_stat = str(values["_rubric_status"]).lower()
                             if r_stat in ("satisfied", "passed", "complete"):
                                 goal_status = "complete"
-                            elif r_stat in ("max_iterations_reached", "failed", "blocked") and goal_status != "complete":
+                            elif (
+                                r_stat in ("max_iterations_reached", "failed", "blocked") and goal_status != "complete"
+                            ):
                                 goal_status = "blocked"
                         if "_goal_objective" in values:
                             goal_obj = values["_goal_objective"]
@@ -589,15 +604,11 @@ class ThreadService:
                             rubric_text = raw_rubric
 
                         if "_session_cost_usd" in values:
-                            try:
+                            with contextlib.suppress(Exception):
                                 cost_usd = float(values["_session_cost_usd"])
-                            except Exception:
-                                pass
                         elif "cost_usd" in values:
-                            try:
+                            with contextlib.suppress(Exception):
                                 cost_usd = float(values["cost_usd"])
-                            except Exception:
-                                pass
             except Exception as exc:
                 logger.debug(f"Telemetry state snapshot retrieval: {exc}")
 
@@ -638,7 +649,11 @@ class ThreadService:
             rubric_label = "Active"
 
         # 6. Model metadata
-        model_spec = getattr(settings, "model", None) or getattr(settings, "model_name", "google_genai:gemini-3.7-flash") or "google_genai:gemini-3.7-flash"
+        model_spec = (
+            getattr(settings, "model", None)
+            or getattr(settings, "model_name", "google_genai:gemini-3.7-flash")
+            or "google_genai:gemini-3.7-flash"
+        )
         provider, model_name = resolve_model_spec(model_spec)
         reasoning_effort = getattr(settings, "reasoning_effort", "medium") or "medium"
 
@@ -652,6 +667,7 @@ class ThreadService:
                     subagents.append(SubagentTelemetry(name=str(sa_name), status="idle"))
 
             from k8s_autopilot.subagents.loader import load_async_subagents
+
             async_subs = load_async_subagents()
             for asa in async_subs:
                 asa_name = asa.get("name") if isinstance(asa, dict) else getattr(asa, "name", "")
@@ -691,8 +707,11 @@ class ThreadService:
         )
 
     async def auto_touch(
-        self, thread_id: str, user_id: str = "default",
-        agent_id: str = "", user_query: str = "",
+        self,
+        thread_id: str,
+        user_id: str = "default",
+        agent_id: str = "",
+        user_query: str = "",
     ) -> None:
         """Upsert the conversation record (used by a2a_executor)."""
         if not thread_id:
@@ -730,7 +749,7 @@ class ThreadService:
             "updated_at": now_iso,
         }
         checkpoint = empty_checkpoint()
-        await self._checkpointer.aput(config, checkpoint, metadata, new_versions={}) # type: ignore[arg-type]
+        await self._checkpointer.aput(config, checkpoint, metadata, new_versions={})  # type: ignore[arg-type]
 
     @staticmethod
     def _extract_title_from_checkpoint(checkpoint: Checkpoint | None) -> str:
@@ -762,9 +781,13 @@ class ThreadService:
 # Singleton service reference for the auto-touch hook
 _thread_service: ThreadService | None = None
 
+
 def get_thread_service() -> ThreadService | None:
+    """Retrieve the global ThreadService singleton instance."""
     return _thread_service
 
+
 def set_thread_service(service: ThreadService) -> None:
-    global _thread_service  # noqa: PLW0603
+    """Set the global ThreadService singleton instance."""
+    global _thread_service
     _thread_service = service

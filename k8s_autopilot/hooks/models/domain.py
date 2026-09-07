@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 from uuid import UUID
 
 from langchain_core.messages import ToolMessage
@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 
 class _DomainModel(BaseModel):
+    """Base model for hook domain objects with common serialization."""
+
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
 
@@ -79,7 +81,7 @@ class CompactTrigger(StrEnum):
     AUTO = "auto"
 
 
-EffortLevel: TypeAlias = Literal["none", "low", "medium", "high", "xhigh", "max"]
+type EffortLevel = Literal["none", "low", "medium", "high", "xhigh", "max"]
 
 
 class ToolCallData(_DomainModel):
@@ -200,6 +202,16 @@ class PostToolUseEvent(_DomainModel):
         call: ToolCallData,
         duration_ms: int | None = None,
     ) -> PostToolUseEvent:
+        """Construct a PostToolUseEvent from a tool execution result.
+
+        Args:
+            result: Tool execution result message or command.
+            call: Associated tool call data.
+            duration_ms: Execution duration in milliseconds, if available.
+
+        Returns:
+            PostToolUseEvent: Constructed domain event model.
+        """
         if isinstance(result, ToolMessage):
             value: object = result.model_dump(mode="json")
         else:
@@ -249,7 +261,7 @@ class SubagentStopEvent(_DomainModel):
     session_crons: list[SessionCronSnapshot] = Field(default_factory=list)
 
 
-HookDomainEvent: TypeAlias = Annotated[
+type HookDomainEvent = Annotated[
     SessionStartEvent
     | UserPromptSubmitEvent
     | SessionEndEvent
@@ -378,7 +390,7 @@ class SubagentStopDecision(BaseHookDecision):
     context: list[str] = Field(default_factory=list)
 
 
-HookDecision: TypeAlias = Annotated[
+type HookDecision = Annotated[
     SessionStartDecision
     | UserPromptSubmitDecision
     | SessionEndDecision

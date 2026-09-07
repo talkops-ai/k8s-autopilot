@@ -37,6 +37,7 @@ TALKOPS_CATALOG_ID = "talkops-reasoning-catalog"
 
 # ── toolExecutionCard ─────────────────────────────────────────────────────
 
+
 def build_tool_execution_surface(
     surface_id: str,
     tool_name: str,
@@ -64,29 +65,35 @@ def build_tool_execution_surface(
     """
     return [
         a2ui.create_surface(surface_id, catalog_id=TALKOPS_CATALOG_ID),
-        a2ui.update_components(surface_id, [
-            {
-                "id": "root",
-                "component": {
-                    "toolExecutionCard": {
-                        "toolName": {"path": "/toolName"},
-                        "status": {"path": "/status"},
-                        "parameters": {"path": "/parameters"},
-                        "terminalOutput": {"path": "/terminalOutput"},
-                        "environment": {"path": "/environment"},
-                        "durationMs": {"path": "/durationMs"},
-                    }
+        a2ui.update_components(
+            surface_id,
+            [
+                {
+                    "id": "root",
+                    "component": {
+                        "toolExecutionCard": {
+                            "toolName": {"path": "/toolName"},
+                            "status": {"path": "/status"},
+                            "parameters": {"path": "/parameters"},
+                            "terminalOutput": {"path": "/terminalOutput"},
+                            "environment": {"path": "/environment"},
+                            "durationMs": {"path": "/durationMs"},
+                        }
+                    },
                 },
+            ],
+        ),
+        a2ui.update_data_model(
+            surface_id,
+            {
+                "toolName": tool_name,
+                "status": status,
+                "parameters": parameters or {},
+                "terminalOutput": terminal_output,
+                "environment": environment,
+                "durationMs": duration_ms,
             },
-        ]),
-        a2ui.update_data_model(surface_id, {
-            "toolName": tool_name,
-            "status": status,
-            "parameters": parameters or {},
-            "terminalOutput": terminal_output,
-            "environment": environment,
-            "durationMs": duration_ms,
-        }),
+        ),
     ]
 
 
@@ -110,6 +117,7 @@ def update_tool_execution_data(
 
 # ── thoughtBlock ──────────────────────────────────────────────────────────
 
+
 def build_thought_block_surface(
     surface_id: str,
     title: str = "",
@@ -129,23 +137,29 @@ def build_thought_block_surface(
     """
     return [
         a2ui.create_surface(surface_id, catalog_id=TALKOPS_CATALOG_ID),
-        a2ui.update_components(surface_id, [
-            {
-                "id": "root",
-                "component": {
-                    "thoughtBlock": {
-                        "title": {"path": "/title"},
-                        "summary": {"path": "/summary"},
-                        "severity": {"path": "/severity"},
-                    }
+        a2ui.update_components(
+            surface_id,
+            [
+                {
+                    "id": "root",
+                    "component": {
+                        "thoughtBlock": {
+                            "title": {"path": "/title"},
+                            "summary": {"path": "/summary"},
+                            "severity": {"path": "/severity"},
+                        }
+                    },
                 },
+            ],
+        ),
+        a2ui.update_data_model(
+            surface_id,
+            {
+                "title": title,
+                "summary": summary,
+                "severity": severity,
             },
-        ]),
-        a2ui.update_data_model(surface_id, {
-            "title": title,
-            "summary": summary,
-            "severity": severity,
-        }),
+        ),
     ]
 
 
@@ -166,6 +180,7 @@ def update_thought_block_data(
 
 
 # ── hitlApprovalCard ──────────────────────────────────────────────────────
+
 
 def build_hitl_approval_surface(
     surface_id: str,
@@ -214,34 +229,41 @@ def build_hitl_approval_surface(
 
     return [
         a2ui.create_surface(surface_id, catalog_id=TALKOPS_CATALOG_ID),
-        a2ui.update_components(surface_id, [
-            {
-                "id": "root",
-                "component": {
-                    "hitlApprovalCard": {
-                        "proposedAction": {"path": "/proposedAction"},
-                        "justification": {"path": "/justification"},
-                        "riskLevel": {"path": "/riskLevel"},
-                        "options": {"path": "/options"},
-                        "onDecisionActionId": {"path": "/onDecisionActionId"},
-                        "parameters": {"path": "/parameters"},
-                    }
+        a2ui.update_components(
+            surface_id,
+            [
+                {
+                    "id": "root",
+                    "component": {
+                        "hitlApprovalCard": {
+                            "proposedAction": {"path": "/proposedAction"},
+                            "justification": {"path": "/justification"},
+                            "riskLevel": {"path": "/riskLevel"},
+                            "options": {"path": "/options"},
+                            "onDecisionActionId": {"path": "/onDecisionActionId"},
+                            "parameters": {"path": "/parameters"},
+                        }
+                    },
                 },
+            ],
+        ),
+        a2ui.update_data_model(
+            surface_id,
+            {
+                "proposedAction": proposed_action,
+                "justification": justification,
+                "riskLevel": risk_str,
+                "options": options,
+                "onDecisionActionId": action_id,
+                "phaseId": phase,
+                "parameters": parameters or [],
             },
-        ]),
-        a2ui.update_data_model(surface_id, {
-            "proposedAction": proposed_action,
-            "justification": justification,
-            "riskLevel": risk_str,
-            "options": options,
-            "onDecisionActionId": action_id,
-            "phaseId": phase,
-            "parameters": parameters or [],
-        }),
+        ),
     ]
 
 
 # ── planTodoList ──────────────────────────────────────────────────────────
+
 
 def build_plan_todo_surface(
     surface_id: str,
@@ -266,25 +288,31 @@ def build_plan_todo_surface(
     """
     return [
         a2ui.create_surface(surface_id, catalog_id=TALKOPS_CATALOG_ID),
-        a2ui.update_components(surface_id, [
-            {
-                "id": "root",
-                "component": {
-                    "planTodoList": {
-                        "todos": {"path": "/todos"},
-                        "planTitle": {"path": "/planTitle"},
-                        "planVersion": {"path": "/planVersion"},
-                        "coordinator": {"path": "/coordinator"},
-                    }
+        a2ui.update_components(
+            surface_id,
+            [
+                {
+                    "id": "root",
+                    "component": {
+                        "planTodoList": {
+                            "todos": {"path": "/todos"},
+                            "planTitle": {"path": "/planTitle"},
+                            "planVersion": {"path": "/planVersion"},
+                            "coordinator": {"path": "/coordinator"},
+                        }
+                    },
                 },
+            ],
+        ),
+        a2ui.update_data_model(
+            surface_id,
+            {
+                "todos": todos,
+                "planTitle": plan_title,
+                "planVersion": plan_version,
+                "coordinator": coordinator,
             },
-        ]),
-        a2ui.update_data_model(surface_id, {
-            "todos": todos,
-            "planTitle": plan_title,
-            "planVersion": plan_version,
-            "coordinator": coordinator,
-        }),
+        ),
     ]
 
 
@@ -308,6 +336,7 @@ def update_plan_todo_data(
 
 
 # ── executionWalkthrough ──────────────────────────────────────────────────
+
 
 def build_walkthrough_surface(
     surface_id: str,
@@ -334,27 +363,33 @@ def build_walkthrough_surface(
     """
     return [
         a2ui.create_surface(surface_id, catalog_id=TALKOPS_CATALOG_ID),
-        a2ui.update_components(surface_id, [
-            {
-                "id": "root",
-                "component": {
-                    "executionWalkthrough": {
-                        "walkthrough": {"path": "/walkthrough"},
-                        "coordinator": {"path": "/coordinator"},
-                        "status": {"path": "/status"},
-                        "totalTasks": {"path": "/totalTasks"},
-                        "completedTasks": {"path": "/completedTasks"},
-                    }
+        a2ui.update_components(
+            surface_id,
+            [
+                {
+                    "id": "root",
+                    "component": {
+                        "executionWalkthrough": {
+                            "walkthrough": {"path": "/walkthrough"},
+                            "coordinator": {"path": "/coordinator"},
+                            "status": {"path": "/status"},
+                            "totalTasks": {"path": "/totalTasks"},
+                            "completedTasks": {"path": "/completedTasks"},
+                        }
+                    },
                 },
+            ],
+        ),
+        a2ui.update_data_model(
+            surface_id,
+            {
+                "walkthrough": walkthrough,
+                "coordinator": coordinator,
+                "status": status,
+                "totalTasks": total_tasks,
+                "completedTasks": completed_tasks,
             },
-        ]),
-        a2ui.update_data_model(surface_id, {
-            "walkthrough": walkthrough,
-            "coordinator": coordinator,
-            "status": status,
-            "totalTasks": total_tasks,
-            "completedTasks": completed_tasks,
-        }),
+        ),
     ]
 
 
@@ -375,6 +410,7 @@ def update_walkthrough_data(
 
 
 # ── askUserCard ───────────────────────────────────────────────────────────
+
 
 def build_ask_user_surface(
     surface_id: str,
@@ -402,25 +438,31 @@ def build_ask_user_surface(
 
     return [
         a2ui.create_surface(surface_id, catalog_id=TALKOPS_CATALOG_ID),
-        a2ui.update_components(surface_id, [
-            {
-                "id": "root",
-                "component": {
-                    "askUserCard": {
-                        "title": {"path": "/title"},
-                        "questions": {"path": "/questions"},
-                        "onAnswerActionId": {"path": "/onAnswerActionId"},
-                        "status": {"path": "/status"},
-                    }
+        a2ui.update_components(
+            surface_id,
+            [
+                {
+                    "id": "root",
+                    "component": {
+                        "askUserCard": {
+                            "title": {"path": "/title"},
+                            "questions": {"path": "/questions"},
+                            "onAnswerActionId": {"path": "/onAnswerActionId"},
+                            "status": {"path": "/status"},
+                        }
+                    },
                 },
+            ],
+        ),
+        a2ui.update_data_model(
+            surface_id,
+            {
+                "title": card_title,
+                "questions": questions,
+                "onAnswerActionId": action_id,
+                "status": "pending",
             },
-        ]),
-        a2ui.update_data_model(surface_id, {
-            "title": card_title,
-            "questions": questions,
-            "onAnswerActionId": action_id,
-            "status": "pending",
-        }),
+        ),
     ]
 
 
@@ -441,6 +483,7 @@ def update_ask_user_data(
 
 
 # ── goalConfirmationCard ──────────────────────────────────────────────────
+
 
 def build_goal_confirmation_surface(
     surface_id: str,
@@ -465,25 +508,31 @@ def build_goal_confirmation_surface(
     """
     return [
         a2ui.create_surface(surface_id, catalog_id=TALKOPS_CATALOG_ID),
-        a2ui.update_components(surface_id, [
-            {
-                "id": "root",
-                "component": {
-                    "goalConfirmationCard": {
-                        "goalText": {"path": "/goalText"},
-                        "criteria": {"path": "/criteria"},
-                        "status": {"path": "/status"},
-                        "onDecisionActionId": {"path": "/onDecisionActionId"},
-                    }
+        a2ui.update_components(
+            surface_id,
+            [
+                {
+                    "id": "root",
+                    "component": {
+                        "goalConfirmationCard": {
+                            "goalText": {"path": "/goalText"},
+                            "criteria": {"path": "/criteria"},
+                            "status": {"path": "/status"},
+                            "onDecisionActionId": {"path": "/onDecisionActionId"},
+                        }
+                    },
                 },
+            ],
+        ),
+        a2ui.update_data_model(
+            surface_id,
+            {
+                "goalText": goal_text,
+                "criteria": criteria or [],
+                "status": status,
+                "onDecisionActionId": action_id,
             },
-        ]),
-        a2ui.update_data_model(surface_id, {
-            "goalText": goal_text,
-            "criteria": criteria or [],
-            "status": status,
-            "onDecisionActionId": action_id,
-        }),
+        ),
     ]
 
 
@@ -493,5 +542,3 @@ def update_goal_confirmation_data(
 ) -> dict[str, Any]:
     """Build an ``updateDataModel`` operation for an existing goalConfirmationCard surface."""
     return a2ui.update_data_model(surface_id, updates)
-
-

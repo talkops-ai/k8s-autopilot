@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
-import logging
-import re
 from pathlib import Path, PureWindowsPath
+import re
 from typing import Any
 
 from k8s_autopilot.plugins.models import (
@@ -14,7 +13,6 @@ from k8s_autopilot.plugins.models import (
     PluginManifest,
     UnsupportedComponent,
 )
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -46,15 +44,8 @@ def find_manifest_path(root: Path) -> Path | None:
     return None
 
 
-def _validate_name(
-    name: object, *, fallback: str | None = None, allow_at: bool = True
-) -> str:
-    if (
-        isinstance(name, str)
-        and name
-        and _NAME_RE.fullmatch(name)
-        and (allow_at or "@" not in name)
-    ):
+def _validate_name(name: object, *, fallback: str | None = None, allow_at: bool = True) -> str:
+    if isinstance(name, str) and name and _NAME_RE.fullmatch(name) and (allow_at or "@" not in name):
         return name
     if fallback and _NAME_RE.fullmatch(fallback) and (allow_at or "@" not in fallback):
         return fallback
@@ -73,9 +64,7 @@ def _resolve_component_path(
     warnings: list[str],
 ) -> Path | None:
     if not declaration.startswith("./"):
-        warnings.append(
-            f"ignoring {field_name}: path must start with './' relative to plugin root"
-        )
+        warnings.append(f"ignoring {field_name}: path must start with './' relative to plugin root")
         return None
     relative = declaration[2:]
     if not relative:
@@ -92,9 +81,7 @@ def _resolve_component_path(
         root_resolved = plugin_root.resolve()
         resolved = (plugin_root / path).resolve()
     except OSError as exc:
-        warnings.append(
-            f"ignoring {field_name}: could not resolve {declaration!r}: {exc}"
-        )
+        warnings.append(f"ignoring {field_name}: could not resolve {declaration!r}: {exc}")
         return None
     if not resolved.is_relative_to(root_resolved):
         warnings.append(f"ignoring {field_name}: path escapes plugin root")
@@ -119,9 +106,7 @@ def _resolve_component_paths(
             if not isinstance(item, str)
         )
     else:
-        warnings.append(
-            f"ignoring {field_name}: expected path string or list of strings"
-        )
+        warnings.append(f"ignoring {field_name}: expected path string or list of strings")
         return ()
     paths: list[Path] = []
     for raw_path in raw_paths:
@@ -190,12 +175,8 @@ def load_manifest(
         version=version,
         component_paths=component_paths,
         inline_mcp=_inline_mcp(raw.get("mcpServers")),
-        display_name=(
-            display_name_value if isinstance(display_name_value, str) else None
-        ),
-        description=(
-            description_value if isinstance(description_value, str) else None
-        ),
+        display_name=(display_name_value if isinstance(display_name_value, str) else None),
+        description=(description_value if isinstance(description_value, str) else None),
         author=author_value,
         skills_dir=skills_dir,
         agents_dir=agents_dir,
@@ -316,7 +297,7 @@ def inspect_plugin_components(
             pass
 
     if manifest and manifest.inline_mcp:
-        for k in manifest.inline_mcp.keys():
+        for k in manifest.inline_mcp:
             if k not in mcp_server_names:
                 mcp_server_names.append(k)
 

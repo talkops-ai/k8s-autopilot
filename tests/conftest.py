@@ -125,12 +125,13 @@ def mock_config():
 def in_memory_store():
     return InMemoryStore()
 
+from typing import Any, cast
 from langgraph.graph.state import CompiledStateGraph
 
-original_ainvoke = CompiledStateGraph.ainvoke
-original_invoke = CompiledStateGraph.invoke
+original_ainvoke: Any = CompiledStateGraph.ainvoke
+original_invoke: Any = CompiledStateGraph.invoke
 
-async def patched_ainvoke(self, input, config=None, **kwargs):
+async def patched_ainvoke(self: Any, input: Any, config: Any = None, **kwargs: Any) -> Any:
     if config is None:
         config = {"configurable": {"thread_id": "test-thread-id"}}
     elif "configurable" not in config:
@@ -139,7 +140,7 @@ async def patched_ainvoke(self, input, config=None, **kwargs):
         config["configurable"]["thread_id"] = "test-thread-id"
     return await original_ainvoke(self, input, config, **kwargs)
 
-def patched_invoke(self, input, config=None, **kwargs):
+def patched_invoke(self: Any, input: Any, config: Any = None, **kwargs: Any) -> Any:
     if config is None:
         config = {"configurable": {"thread_id": "test-thread-id"}}
     elif "configurable" not in config:
@@ -148,8 +149,8 @@ def patched_invoke(self, input, config=None, **kwargs):
         config["configurable"]["thread_id"] = "test-thread-id"
     return original_invoke(self, input, config, **kwargs)
 
-CompiledStateGraph.ainvoke = patched_ainvoke
-CompiledStateGraph.invoke = patched_invoke
+CompiledStateGraph.ainvoke = cast(Any, patched_ainvoke)
+CompiledStateGraph.invoke = cast(Any, patched_invoke)
 
 @pytest.fixture
 def memory_saver():
@@ -228,4 +229,9 @@ def isolate_test_data_dir(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(p, "HISTORY_PATH", test_state / "history.jsonl")
     monkeypatch.setattr(p, "MCP_TRUST_PATH", test_state / "mcp_trust.json")
     monkeypatch.setattr(p, "SKILL_TRUST_PATH", test_state / "skill_trust.json")
+
+    import os
+
+    if not any(k in os.environ for k in ("OPENAI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY")):
+        monkeypatch.setenv("GOOGLE_API_KEY", "mock-test-key")
 

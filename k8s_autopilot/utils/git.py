@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import logging
-import re
 from pathlib import Path
-from typing import NamedTuple
+import re
 
 from k8s_autopilot.utils.logger import get_logger
 

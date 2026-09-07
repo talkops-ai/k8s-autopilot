@@ -12,54 +12,62 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-_CONFIRM_DECISIONS: frozenset[str] = frozenset({
-    "accept",
-    "confirm",
-    "accepted",
-    "confirmed",
-    "approve",
-    "approved",
-    "approval",
-    "auto_approve_all",
-    "auto",
-    "enable_auto",
-    "proceed",
-    "continue",
-    "y",
-    "yes",
-    "ok",
-    "true",
-    "1",
-    "goal_response",
-})
-_EDIT_DECISIONS: frozenset[str] = frozenset({
-    "edit",
-    "edited",
-    "e",
-    "modify",
-    "modified",
-    "update",
-    "updated",
-})
-_REJECT_DECISIONS: frozenset[str] = frozenset({
-    "reject",
-    "rejected",
-    "r",
-    "deny",
-    "denied",
-    "disapprove",
-    "disapproved",
-})
-_CANCEL_DECISIONS: frozenset[str] = frozenset({
-    "cancel",
-    "cancelled",
-    "dismiss",
-    "dismissed",
-    "close",
-    "closed",
-    "n",
-    "no",
-})
+_CONFIRM_DECISIONS: frozenset[str] = frozenset(
+    {
+        "accept",
+        "confirm",
+        "accepted",
+        "confirmed",
+        "approve",
+        "approved",
+        "approval",
+        "auto_approve_all",
+        "auto",
+        "enable_auto",
+        "proceed",
+        "continue",
+        "y",
+        "yes",
+        "ok",
+        "true",
+        "1",
+        "goal_response",
+    }
+)
+_EDIT_DECISIONS: frozenset[str] = frozenset(
+    {
+        "edit",
+        "edited",
+        "e",
+        "modify",
+        "modified",
+        "update",
+        "updated",
+    }
+)
+_REJECT_DECISIONS: frozenset[str] = frozenset(
+    {
+        "reject",
+        "rejected",
+        "r",
+        "deny",
+        "denied",
+        "disapprove",
+        "disapproved",
+    }
+)
+_CANCEL_DECISIONS: frozenset[str] = frozenset(
+    {
+        "cancel",
+        "cancelled",
+        "dismiss",
+        "dismissed",
+        "close",
+        "closed",
+        "n",
+        "no",
+    }
+)
 
 
 class HitlDecision(BaseModel):
@@ -76,8 +84,10 @@ class HitlResumePayload(BaseModel):
     auto_approve_requested: bool = False
 
     @classmethod
-    def from_raw(  # noqa: PLR0911, PLR0912, PLR0915
-        cls, data: Any, count: int = 1,
+    def from_raw(
+        cls,
+        data: Any,
+        count: int = 1,
     ) -> HitlResumePayload:
         """Parse arbitrary client data (dict, list, string) into HitlResumePayload."""
         if isinstance(data, cls):
@@ -104,9 +114,13 @@ class HitlResumePayload(BaseModel):
                 decisions: list[HitlDecision] = []
                 for item in decisions_raw:
                     if isinstance(item, dict):
-                        raw_t = str(
-                            item.get("type") or item.get("decision") or "approve",
-                        ).lower().strip()
+                        raw_t = (
+                            str(
+                                item.get("type") or item.get("decision") or "approve",
+                            )
+                            .lower()
+                            .strip()
+                        )
                         if raw_t in (
                             "auto_approve_all",
                             "enable_auto",
@@ -176,18 +190,12 @@ class HitlResumePayload(BaseModel):
                 or parsed.get("status")
             )
             dec_str = str(raw_dec).lower().strip() if raw_dec is not None else ""
-            msg = (
-                parsed.get("message")
-                or parsed.get("feedback")
-                or parsed.get("rejectionReason")
-            )
+            msg = parsed.get("message") or parsed.get("feedback") or parsed.get("rejectionReason")
             msg_str = str(msg).strip() if msg else None
 
             if dec_str in ("auto_approve_all", "enable_auto", "auto", "a"):
                 return cls(
-                    decisions=[
-                        HitlDecision(type="approve") for _ in range(target_count)
-                    ],
+                    decisions=[HitlDecision(type="approve") for _ in range(target_count)],
                     auto_approve_requested=True,
                 )
             if dec_str in (
@@ -203,23 +211,16 @@ class HitlResumePayload(BaseModel):
                 "hitl_response",
             ):
                 return cls(
-                    decisions=[
-                        HitlDecision(type="approve") for _ in range(target_count)
-                    ],
+                    decisions=[HitlDecision(type="approve") for _ in range(target_count)],
                     auto_approve_requested=False,
                 )
             if dec_str in ("reject", "deny", "cancel", "no", "n"):
                 return cls(
-                    decisions=[
-                        HitlDecision(type="reject", message=msg_str)
-                        for _ in range(target_count)
-                    ],
+                    decisions=[HitlDecision(type="reject", message=msg_str) for _ in range(target_count)],
                     auto_approve_requested=False,
                 )
             return cls(
-                decisions=[
-                    HitlDecision(type="approve") for _ in range(target_count)
-                ],
+                decisions=[HitlDecision(type="approve") for _ in range(target_count)],
                 auto_approve_requested=False,
             )
 
@@ -244,9 +245,7 @@ class HitlResumePayload(BaseModel):
             s = parsed.lower().strip()
             if s in ("auto_approve_all", "enable_auto", "auto", "a"):
                 return cls(
-                    decisions=[
-                        HitlDecision(type="approve") for _ in range(target_count)
-                    ],
+                    decisions=[HitlDecision(type="approve") for _ in range(target_count)],
                     auto_approve_requested=True,
                 )
             if s in (
@@ -261,29 +260,21 @@ class HitlResumePayload(BaseModel):
                 "1",
             ):
                 return cls(
-                    decisions=[
-                        HitlDecision(type="approve") for _ in range(target_count)
-                    ],
+                    decisions=[HitlDecision(type="approve") for _ in range(target_count)],
                     auto_approve_requested=False,
                 )
             if s in ("reject", "deny", "cancel", "no", "n"):
                 return cls(
-                    decisions=[
-                        HitlDecision(type="reject") for _ in range(target_count)
-                    ],
+                    decisions=[HitlDecision(type="reject") for _ in range(target_count)],
                     auto_approve_requested=False,
                 )
             return cls(
-                decisions=[
-                    HitlDecision(type="approve") for _ in range(target_count)
-                ],
+                decisions=[HitlDecision(type="approve") for _ in range(target_count)],
                 auto_approve_requested=False,
             )
 
         return cls(
-            decisions=[
-                HitlDecision(type="approve") for _ in range(target_count)
-            ],
+            decisions=[HitlDecision(type="approve") for _ in range(target_count)],
             auto_approve_requested=False,
         )
 
@@ -295,7 +286,7 @@ class AskUserResumePayload(BaseModel):
     answers: list[str] = Field(default_factory=list)
 
     @classmethod
-    def from_raw(  # noqa: PLR0911, PLR0912
+    def from_raw(
         cls,
         data: Any,
         questions: list[Any] | None = None,
@@ -326,11 +317,7 @@ class AskUserResumePayload(BaseModel):
 
             if "answers" in parsed:
                 raw_ans = parsed["answers"]
-                ans_list = (
-                    [str(x) for x in raw_ans]
-                    if isinstance(raw_ans, list)
-                    else [str(raw_ans)]
-                )
+                ans_list = [str(x) for x in raw_ans] if isinstance(raw_ans, list) else [str(raw_ans)]
                 return cls(status="answered", answers=ans_list)
 
             if "choice" in parsed:
@@ -370,8 +357,9 @@ class GoalReviewResumePayload(BaseModel):
     feedback: str | None = None
 
     @classmethod
-    def from_raw(  # noqa: PLR0911, PLR0912, PLR0915
-        cls, data: Any,
+    def from_raw(
+        cls,
+        data: Any,
     ) -> GoalReviewResumePayload:
         """Parse arbitrary client data into GoalReviewResumePayload."""
         if isinstance(data, cls):
@@ -417,25 +405,15 @@ class GoalReviewResumePayload(BaseModel):
             # Check decisions list from HITL
             decisions_val = parsed.get("decisions")
             answers_val = parsed.get("answers")
-            if (
-                isinstance(decisions_val, list)
-                and decisions_val
-            ):
+            if isinstance(decisions_val, list) and decisions_val:
                 first = decisions_val[0]
                 if isinstance(first, dict):
-                    raw_dec = (
-                        first.get("type")
-                        or first.get("decision")
-                        or "confirm"
-                    )
+                    raw_dec = first.get("type") or first.get("decision") or "confirm"
                     feedback = first.get("message") or first.get("feedback")
                 else:
                     raw_dec = str(first)
                     feedback = None
-            elif (
-                isinstance(answers_val, list)
-                and answers_val
-            ):
+            elif isinstance(answers_val, list) and answers_val:
                 raw_dec = answers_val[0]
                 feedback = None
             else:
@@ -447,11 +425,7 @@ class GoalReviewResumePayload(BaseModel):
                     or parsed.get("status")
                     or "confirm"
                 )
-                feedback = (
-                    parsed.get("feedback")
-                    or parsed.get("rejectionReason")
-                    or parsed.get("message")
-                )
+                feedback = parsed.get("feedback") or parsed.get("rejectionReason") or parsed.get("message")
 
             raw_str = str(raw_dec).lower().strip()
             fb_str = str(feedback).strip() if feedback else None
@@ -460,9 +434,7 @@ class GoalReviewResumePayload(BaseModel):
             criteria_list: list[str] | None = None
             crit_val = parsed.get("criteria")
             if isinstance(crit_val, list):
-                criteria_list = [
-                    str(x).strip() for x in crit_val if str(x).strip()
-                ]
+                criteria_list = [str(x).strip() for x in crit_val if str(x).strip()]
             elif isinstance(crit_val, str) and crit_val.strip():
                 criteria_list = [
                     line.strip().lstrip("-*•0123456789.) ").strip()
@@ -472,20 +444,26 @@ class GoalReviewResumePayload(BaseModel):
 
             if raw_str in _EDIT_DECISIONS:
                 return cls(
-                    decision="edit", criteria=criteria_list, feedback=fb_str,
+                    decision="edit",
+                    criteria=criteria_list,
+                    feedback=fb_str,
                 )
-            if raw_str in _REJECT_DECISIONS or (
-                fb_str and raw_str not in _CONFIRM_DECISIONS
-            ):
+            if raw_str in _REJECT_DECISIONS or (fb_str and raw_str not in _CONFIRM_DECISIONS):
                 return cls(
-                    decision="reject", criteria=criteria_list, feedback=fb_str,
+                    decision="reject",
+                    criteria=criteria_list,
+                    feedback=fb_str,
                 )
             if raw_str in _CANCEL_DECISIONS:
                 return cls(
-                    decision="cancel", criteria=criteria_list, feedback=fb_str,
+                    decision="cancel",
+                    criteria=criteria_list,
+                    feedback=fb_str,
                 )
             return cls(
-                decision="confirm", criteria=criteria_list, feedback=fb_str,
+                decision="confirm",
+                criteria=criteria_list,
+                feedback=fb_str,
             )
 
         if isinstance(parsed, str):

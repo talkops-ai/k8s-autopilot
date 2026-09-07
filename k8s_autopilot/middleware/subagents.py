@@ -12,24 +12,24 @@ Lifecycle:
 
 from __future__ import annotations
 
-import logging
-from typing import Any, TYPE_CHECKING
 from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
+from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ModelRequest,
     ModelResponse,
 )
-from langchain_core.messages import SystemMessage
-from deepagents.middleware._utils import append_to_system_message
 
 from k8s_autopilot.middleware.registry import register_middleware
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
     from langgraph.runtime import Runtime
+
     from k8s_autopilot.subagents.types import SubagentMetadata
 
 from k8s_autopilot.utils.logger import get_logger
@@ -57,6 +57,12 @@ class SubagentsMiddleware(AgentMiddleware):
         subagent_metas: Sequence[SubagentMetadata] | None = None,
         planning_mode: bool = False,
     ) -> None:
+        """Initialize the SubagentsMiddleware with available subagent definitions.
+
+        Args:
+            subagent_metas: Optional sequence of metadata dicts for available subagents.
+            planning_mode: Whether planning mode is currently active.
+        """
         super().__init__()
         self._planning_mode = planning_mode
         self._registry: dict[str, SubagentMetadata] = {}
@@ -103,11 +109,7 @@ class SubagentsMiddleware(AgentMiddleware):
         """Determine whether a subagent is plugin-provided based on runtime metadata."""
         name = meta.get("name", "")
         source = str(meta.get("source", ""))
-        return (
-            "plugin" in source.lower()
-            or "@" in name
-            or bool(meta.get("is_plugin"))
-        )
+        return "plugin" in source.lower() or "@" in name or bool(meta.get("is_plugin"))
 
     def _build_prompt_block(self) -> str:
         """Build the system-prompt fragment dynamically listing available subagents."""
@@ -146,9 +148,7 @@ class SubagentsMiddleware(AgentMiddleware):
         # 1. Built-in Subagents
         if builtin_agents:
             lines.append("\n### 1. Built-in Subagents (Direct `task` Tool)")
-            lines.append(
-                "Use the native `task` tool call directly from chat for these core subagents:\n"
-            )
+            lines.append("Use the native `task` tool call directly from chat for these core subagents:\n")
             for meta in builtin_agents:
                 name = meta.get("name", "")
                 desc = meta.get("description", "No description provided.")
@@ -192,10 +192,7 @@ class SubagentsMiddleware(AgentMiddleware):
         lines.append("\n---\n")
         lines.append("### Automatic Routing Rules (Zero User Intervention)\n")
         lines.append("1. **Auto-Detect Origin**: Check the dynamically generated lists above:")
-        lines.append(
-            "   - If the target subagent is listed under **Built-in Subagents**, "
-            "call `task(...)` directly."
-        )
+        lines.append("   - If the target subagent is listed under **Built-in Subagents**, call `task(...)` directly.")
         lines.append(
             "   - If the target subagent is listed under **Plugin & Extension Subagents**, "
             "call `js_eval(...)` running `await task({...})`."

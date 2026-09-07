@@ -9,25 +9,22 @@ Works for:
 
 from __future__ import annotations
 
-import logging
-import time
-import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Sequence
+import time
+from typing import Any
+import uuid
 
 from langchain_core.messages import (
     AIMessage,
-    AnyMessage,
     HumanMessage,
     SystemMessage,
-    ToolCall,
     ToolMessage,
 )
 
 from k8s_autopilot.integrations.stream_bridge import _extract_text_and_thinking
 from k8s_autopilot.middleware.goal_state_notice import is_conversation_control_message
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -137,11 +134,7 @@ class MessageParser:
             call_id = getattr(msg, "tool_call_id", "") or ""
             name = getattr(msg, "name", "tool") or "tool"
             content = str(msg.content)
-            status = (
-                ToolCallStatus.ERROR
-                if getattr(msg, "status", None) == "error"
-                else ToolCallStatus.SUCCESS
-            )
+            status = ToolCallStatus.ERROR if getattr(msg, "status", None) == "error" else ToolCallStatus.SUCCESS
             tc = ParsedToolCall(
                 id=call_id,
                 name=name,

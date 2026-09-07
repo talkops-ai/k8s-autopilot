@@ -16,29 +16,25 @@
 
 from __future__ import annotations
 
-import logging
-import warnings
 from typing import TYPE_CHECKING, Any, NotRequired, cast
+import warnings
 
-import httpx
+# Private SDK helpers accessed at runtime via getattr
+import deepagents.middleware.rubric as _rubric_mod
 from deepagents.middleware.rubric import (
     RUBRIC_GRADER_MESSAGE_SOURCE,
     GraderResponse,
     RubricMiddleware as BaseRubricMiddleware,
     RubricState,
 )
-
-# Private SDK helpers accessed at runtime via getattr
-import deepagents.middleware.rubric as _rubric_mod
-
-_strategy_from_result = getattr(_rubric_mod, "_strategy_from_result", None)
-
+import httpx
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, hook_config
 from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphBubbleUp
 
 from k8s_autopilot.middleware.goal_state_notice import is_conversation_control_message
 from k8s_autopilot.middleware.registry import register_middleware
+from k8s_autopilot.utils.logger import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
@@ -49,9 +45,9 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
 
-from k8s_autopilot.utils.logger import get_logger
-
 logger = get_logger(__name__)
+
+_strategy_from_result = getattr(_rubric_mod, "_strategy_from_result", None)
 
 __all__ = ["ReliableRubricMiddleware", "RubricMiddleware"]
 
@@ -109,9 +105,7 @@ def _without_internal_control_messages(state: RubricState) -> RubricState:
     messages = state.get("messages", [])
     if not isinstance(messages, list):
         return state
-    filtered: list[AnyMessage] = [
-        message for message in messages if not is_conversation_control_message(message)
-    ]
+    filtered: list[AnyMessage] = [message for message in messages if not is_conversation_control_message(message)]
     if len(filtered) == len(messages):
         return state
     updated = dict(state)
@@ -177,6 +171,17 @@ with warnings.catch_warnings():
             max_iterations: int = 3,
             on_evaluation: Callable[[RubricEvaluation], None] | None = None,
         ) -> None:
+            """Initialize the ReliableRubricMiddleware with grading model, prompt, and options.
+
+            Args:
+                model: Optional chat model or model spec string for grading.
+                system_prompt: Optional custom evaluation prompt.
+                tools: Optional tools accessible to the grader agent.
+                grader_middleware: Optional sequence of middleware for the grader agent.
+                grader_context_schema: Optional context schema type for the grader.
+                max_iterations: Maximum evaluation loop iterations.
+                on_evaluation: Optional callback invoked upon rubric evaluation.
+            """
             kwargs: dict[str, Any] = {}
             if model is not None:
                 kwargs["model"] = model
@@ -211,7 +216,7 @@ with warnings.catch_warnings():
                 )
             except GraphBubbleUp:
                 raise
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return self._handle_grader_exception(
                     runtime,
                     state,
@@ -248,7 +253,7 @@ with warnings.catch_warnings():
                 )
             except GraphBubbleUp:
                 raise
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return self._handle_grader_exception(
                     runtime,
                     state,
@@ -289,8 +294,7 @@ with warnings.catch_warnings():
                 elif result in ("max_iterations_reached", "failed"):
                     update["_goal_status"] = "blocked"
                     update["_goal_status_note"] = (
-                        evaluation.get("explanation")
-                        or "Acceptance criteria not satisfied within iteration limit."
+                        evaluation.get("explanation") or "Acceptance criteria not satisfied within iteration limit."
                     )
                     logger.warning(
                         "Goal '%s' marked blocked: rubric evaluation terminated with %s",
@@ -313,7 +317,7 @@ with warnings.catch_warnings():
             if self._grader is not None:
                 return self._grader
 
-            from deepagents._models import resolve_model  # noqa: PLC2701
+            from deepagents._models import resolve_model
             from langchain.agents import create_agent
 
             resolved_model = resolve_model(self._model)
@@ -392,14 +396,8 @@ with warnings.catch_warnings():
                 config=self._get_invocation_config(metadata),
                 context=context,
             )
-            strategy = (
-                _strategy_from_result(result)
-                if _strategy_from_result is not None
-                else None
-            )
-            self._record_trace_metadata(
-                self._get_trace_metadata(effective_strategy=strategy)
-            )
+            strategy = _strategy_from_result(result) if _strategy_from_result is not None else None
+            self._record_trace_metadata(self._get_trace_metadata(effective_strategy=strategy))
             return self._extract_graded(result)
 
         async def _agrade_once(
@@ -418,14 +416,8 @@ with warnings.catch_warnings():
                 config=self._get_invocation_config(metadata),
                 context=context,
             )
-            strategy = (
-                _strategy_from_result(result)
-                if _strategy_from_result is not None
-                else None
-            )
-            self._record_trace_metadata(
-                self._get_trace_metadata(effective_strategy=strategy)
-            )
+            strategy = _strategy_from_result(result) if _strategy_from_result is not None else None
+            self._record_trace_metadata(self._get_trace_metadata(effective_strategy=strategy))
             return self._extract_graded(result)
 
         def _grade(

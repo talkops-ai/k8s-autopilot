@@ -1,5 +1,7 @@
+"""Request and response models for the K8s Autopilot REST API."""
+
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -8,7 +10,7 @@ from pydantic import BaseModel, Field
 class ThreadCreate(BaseModel):
     """POST /threads — request body."""
 
-    thread_id: Optional[UUID | str] = None
+    thread_id: UUID | str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     title: str = ""
 
@@ -16,16 +18,16 @@ class ThreadCreate(BaseModel):
 class ThreadUpdate(BaseModel):
     """PATCH /threads/{thread_id} — request body."""
 
-    title: Optional[str] = None
-    metadata: Optional[dict[str, Any]] = None
+    title: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class ThreadSearch(BaseModel):
     """POST /threads/search — request body."""
 
     user_id: str = "default"
-    agent_id: Optional[str] = None
-    status: Optional[str] = None
+    agent_id: str | None = None
+    status: str | None = None
     limit: int = 20
     offset: int = 0
     sort_by: str = "updated_at"
@@ -77,13 +79,14 @@ class ThreadHistoryResponse(BaseModel):
 
 # ── Status Bar & Telemetry Models ─────────────────────────────────────────
 
+
 class GoalTelemetry(BaseModel):
     """Goal & Rubric telemetry state."""
 
-    objective: Optional[str] = None
-    status: Optional[str] = None
-    rubric_label: Optional[str] = None
-    rubric: Optional[str] = None
+    objective: str | None = None
+    status: str | None = None
+    rubric_label: str | None = None
+    rubric: str | None = None
 
 
 class UsageTelemetry(BaseModel):
@@ -116,7 +119,7 @@ class ThreadTelemetryResponse(BaseModel):
 
     thread_id: UUID | str
     approval_mode: str = "manual"
-    goal: Optional[GoalTelemetry] = None
+    goal: GoalTelemetry | None = None
     usage: UsageTelemetry = Field(default_factory=UsageTelemetry)
     model: ModelTelemetry
     subagents: list[SubagentTelemetry] = Field(default_factory=list)
@@ -126,7 +129,7 @@ class ApprovalModeUpdateRequest(BaseModel):
     """POST /api/settings/approval-mode — request body."""
 
     mode: str
-    thread_id: Optional[str] = None
+    thread_id: str | None = None
 
 
 class ApprovalModeResponse(BaseModel):

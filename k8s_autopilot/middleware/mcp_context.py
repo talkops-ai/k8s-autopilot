@@ -9,14 +9,17 @@ Uses preloaded ``MCPServerInfo`` metadata — no live session connections needed
 
 from __future__ import annotations
 
-import logging
-from typing import Any, Callable, Awaitable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any
 
-from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from deepagents.middleware._utils import append_to_system_message
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    ModelRequest,
+    ModelResponse,
+)
 
 from k8s_autopilot.middleware.registry import register_middleware
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -72,27 +75,18 @@ def _build_mcp_context_from_infos(
                     "user's task specifically requires operations with this server."
                 )
             elif status == "disabled":
-                lines.append(
-                    f"- **{name}** ({transport}): (disabled by user)"
-                )
+                lines.append(f"- **{name}** ({transport}): (disabled by user)")
             else:
-                lines.append(
-                    f"- **{name}** ({transport}): (no tools registered)"
-                )
+                lines.append(f"- **{name}** ({transport}): (no tools registered)")
             continue
 
         tool_names = [getattr(t, "name", str(t)) for t in tools]
         if len(tool_names) > _TOOL_NAME_DISPLAY_LIMIT:
             shown = ", ".join(tool_names[:_TOOL_NAME_DISPLAY_LIMIT])
             remaining = len(tool_names) - _TOOL_NAME_DISPLAY_LIMIT
-            lines.append(
-                f"- **{name}** ({transport}): "
-                f"{shown}, and {remaining} more"
-            )
+            lines.append(f"- **{name}** ({transport}): {shown}, and {remaining} more")
         else:
-            lines.append(
-                f"- **{name}** ({transport}): {', '.join(tool_names)}"
-            )
+            lines.append(f"- **{name}** ({transport}): {', '.join(tool_names)}")
 
     return "\n".join(lines)
 
@@ -138,6 +132,13 @@ class MCPContextMiddleware(AgentMiddleware):
         mcp_config: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
+        """Initialize MCPContextMiddleware with server info or raw config.
+
+        Args:
+            mcp_server_info: Optional sequence of MCPServerInfo objects.
+            mcp_config: Optional fallback MCP configuration dictionary.
+            **kwargs: Additional keyword arguments passed to superclass.
+        """
         super().__init__()
         self._server_info = list(mcp_server_info) if mcp_server_info else []
         self._config = mcp_config or {}
@@ -162,6 +163,15 @@ class MCPContextMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
+        """Wrap synchronous model call to inject MCP server inventory into system message.
+
+        Args:
+            request: Model request to modify.
+            handler: Synchronous model execution handler.
+
+        Returns:
+            ModelResponse from the handler.
+        """
         modified_request = self._get_modified_request(request)
         return handler(modified_request)
 
@@ -170,5 +180,14 @@ class MCPContextMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
+        """Wrap asynchronous model call to inject MCP server inventory into system message.
+
+        Args:
+            request: Model request to modify.
+            handler: Asynchronous model execution handler.
+
+        Returns:
+            ModelResponse from the handler.
+        """
         modified_request = self._get_modified_request(request)
         return await handler(modified_request)

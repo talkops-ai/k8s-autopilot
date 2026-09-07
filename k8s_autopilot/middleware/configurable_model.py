@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import logging
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from deepagents._models import (
     get_model_identifier,
@@ -18,7 +18,6 @@ from langchain.agents.middleware.types import (
 from langgraph.types import Command
 
 from k8s_autopilot.middleware.registry import register_middleware
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -50,6 +49,11 @@ class ConfigurableModelMiddleware(AgentMiddleware):
     """Swap the model or per-call settings from runtime.context."""
 
     def __init__(self, *, persist_model_state: bool = True) -> None:
+        """Initialize ConfigurableModelMiddleware.
+
+        Args:
+            persist_model_state: Whether to record selected model state in checkpoints.
+        """
         self._persist_model_state = persist_model_state
 
     def wrap_model_call(
@@ -57,14 +61,19 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse | ExtendedModelResponse:
+        """Wrap synchronous model call to apply model or runtime parameter overrides.
+
+        Args:
+            request: Inbound model request.
+            handler: Synchronous handler for model execution.
+
+        Returns:
+            ModelResponse or ExtendedModelResponse with checkpoint state updates.
+        """
         resolved_req, resolved_spec, resolved_params = self._apply_overrides(request)
         response = handler(resolved_req)
 
-        command = (
-            self._checkpoint_command(resolved_spec, resolved_params)
-            if self._persist_model_state
-            else None
-        )
+        command = self._checkpoint_command(resolved_spec, resolved_params) if self._persist_model_state else None
         if command is None:
             return response
         return ExtendedModelResponse(model_response=response, command=command)
@@ -74,23 +83,24 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse | ExtendedModelResponse:
-        resolved_req, resolved_spec, resolved_params = await self._apply_overrides_async(
-            request
-        )
+        """Wrap asynchronous model call to apply model or runtime parameter overrides.
+
+        Args:
+            request: Inbound model request.
+            handler: Asynchronous handler for model execution.
+
+        Returns:
+            ModelResponse or ExtendedModelResponse with checkpoint state updates.
+        """
+        resolved_req, resolved_spec, resolved_params = await self._apply_overrides_async(request)
         response = await handler(resolved_req)
 
-        command = (
-            self._checkpoint_command(resolved_spec, resolved_params)
-            if self._persist_model_state
-            else None
-        )
+        command = self._checkpoint_command(resolved_spec, resolved_params) if self._persist_model_state else None
         if command is None:
             return response
         return ExtendedModelResponse(model_response=response, command=command)
 
-    def _apply_overrides(
-        self, request: ModelRequest
-    ) -> tuple[ModelRequest, str | None, dict[str, Any] | None]:
+    def _apply_overrides(self, request: ModelRequest) -> tuple[ModelRequest, str | None, dict[str, Any] | None]:
         """Apply model/param overrides synchronously."""
         ctx = self._get_context(request)
         if ctx is None:
@@ -101,8 +111,8 @@ class ConfigurableModelMiddleware(AgentMiddleware):
 
         model_result = None
         if model_spec and not model_matches_spec(request.model, model_spec):
-            from k8s_autopilot.model.factory import create_model
             from k8s_autopilot.exceptions import ModelConfigError
+            from k8s_autopilot.model.factory import create_model
 
             try:
                 model_result = create_model(model_spec)
@@ -132,8 +142,8 @@ class ConfigurableModelMiddleware(AgentMiddleware):
 
         model_result = None
         if model_spec and not model_matches_spec(request.model, model_spec):
-            from k8s_autopilot.model.factory import create_model
             from k8s_autopilot.exceptions import ModelConfigError
+            from k8s_autopilot.model.factory import create_model
 
             try:
                 model_result = await asyncio.to_thread(create_model, model_spec)
@@ -162,18 +172,18 @@ class ConfigurableModelMiddleware(AgentMiddleware):
 
             if request.system_prompt:
                 from deepagents._models import get_model_provider
+
                 from k8s_autopilot.config.settings import get_settings
-                from k8s_autopilot.prompts import MODEL_IDENTITY_RE, build_model_identity_section
+                from k8s_autopilot.prompts import (
+                    MODEL_IDENTITY_RE,
+                    build_model_identity_section,
+                )
 
                 settings = get_settings()
 
                 provider = _get_ls_provider(new_model) or get_model_provider(new_model) or "unknown"
                 name = get_model_identifier(new_model) or "unknown"
-                limit = (
-                    model_result.context_limit
-                    if model_result is not None
-                    else settings.model_context_limit
-                )
+                limit = model_result.context_limit if model_result is not None else settings.model_context_limit
 
                 new_identity = build_model_identity_section(
                     name=name,
@@ -181,9 +191,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                     context_limit=limit,
                 )
 
-                new_prompt = MODEL_IDENTITY_RE.sub(
-                    new_identity.rstrip() + "\n", request.system_prompt
-                )
+                new_prompt = MODEL_IDENTITY_RE.sub(new_identity.rstrip() + "\n", request.system_prompt)
                 overrides["system_prompt"] = new_prompt
 
         if model_params:
@@ -194,9 +202,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             settings_dict = overrides.get("model_settings", request.model_settings)
             dropped = settings_dict.keys() & _ANTHROPIC_ONLY_SETTINGS
             if dropped:
-                overrides["model_settings"] = {
-                    k: v for k, v in settings_dict.items() if k not in dropped
-                }
+                overrides["model_settings"] = {k: v for k, v in settings_dict.items() if k not in dropped}
 
         if not overrides:
             return request
@@ -233,9 +239,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             return f"{model_result.provider}:{model_result.model_name}"
         return self._model_spec_from_model(model)
 
-    def _checkpoint_command(
-        self, model_spec: str | None, model_params: dict[str, Any] | None
-    ) -> Command[Any] | None:
+    def _checkpoint_command(self, model_spec: str | None, model_params: dict[str, Any] | None) -> Command[Any] | None:
         update: dict[str, Any] = {}
         if model_spec:
             update["_model_spec"] = model_spec

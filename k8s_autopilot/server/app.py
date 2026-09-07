@@ -10,12 +10,10 @@ import contextlib
 import json
 import logging as _logging
 import os
-import sys
 from pathlib import Path
+import sys
 from typing import Any
 
-import click
-import uvicorn
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import (
     create_agent_card_routes,
@@ -24,16 +22,16 @@ from a2a.server.routes import (
 )
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCard
+import click
 from google.protobuf.json_format import ParseDict  # type: ignore[import-untyped]
 from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from starlette.routing import Route
+import uvicorn
 
-from k8s_autopilot.agent import create_k8s_autopilot_agent
 from k8s_autopilot.config.settings import get_settings
 from k8s_autopilot.server.executor import A2AAutoPilotExecutor
-
 from k8s_autopilot.utils.logger import configure_logging, get_logger, log_sync
 
 
@@ -41,13 +39,19 @@ class _TracerExceptionFilter(_logging.Filter):
     """Suppress 'No indexed run ID' messages from LangChain's callback manager."""
 
     def filter(self, record: _logging.LogRecord) -> bool:
+        """Filter out log records containing 'No indexed run ID'.
+
+        Args:
+            record: The logging record being evaluated.
+
+        Returns:
+            bool: False if the record should be suppressed, True otherwise.
+        """
         msg = record.getMessage()
         return "No indexed run ID" not in msg
 
 
-_logging.getLogger("langchain_core.callbacks.manager").addFilter(
-    _TracerExceptionFilter()
-)
+_logging.getLogger("langchain_core.callbacks.manager").addFilter(_TracerExceptionFilter())
 
 logger = get_logger(__name__)
 server_logger = logger
@@ -107,8 +111,7 @@ def create_app(
             raw_interfaces if isinstance(raw_interfaces, list) else [{"protocol_binding": "JSONRPC"}]
         )
         card_data["supported_interfaces"] = [
-            {**(iface if isinstance(iface, dict) else {}), "url": dynamic_url}
-            for iface in interfaces_list
+            {**(iface if isinstance(iface, dict) else {}), "url": dynamic_url} for iface in interfaces_list
         ]
 
     agent_card_obj: AgentCard = ParseDict(card_data, AgentCard())
@@ -137,14 +140,20 @@ def create_app(
         enable_v0_3_compat=True,
     )
 
-
-
     from k8s_autopilot.api.routes import create_thread_routes
 
     thread_routes = create_thread_routes()
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
+        """Manage server lifecycle, store initialization, and credential sync.
+
+        Args:
+            app: Starlette application instance.
+
+        Yields:
+            None: Server operational context.
+        """
         from k8s_autopilot.api.service import ThreadService, set_thread_service
         from k8s_autopilot.api.settings_routes import set_config_store
         from k8s_autopilot.config.store_factory import create_config_store
@@ -194,7 +203,7 @@ def create_app(
                     and not entry.key.startswith("credentials.")
                     and entry.value
                 ):
-                    os.environ[entry.key] = str(entry.value)
+                    os.environ[entry.key] = entry.value
                     custom_count += 1
             if custom_count > 0:
                 logger.info("Rehydrated %d custom environment variables from store", custom_count)
@@ -202,18 +211,16 @@ def create_app(
             logger.warning("Error rehydrating custom config entries: %s", exc)
 
         # Hydrate Settings singleton from ConfigStore
+        from k8s_autopilot.config.langsmith import apply_tracing_settings
         from k8s_autopilot.config.settings import reload_from_store
         from k8s_autopilot.model.config import (
             AVAILABLE_MODELS,
             PROVIDER_API_KEY_ENV,
             apply_stored_credentials,
         )
-        from k8s_autopilot.config.langsmith import apply_tracing_settings
 
         hydrated_settings = await reload_from_store(config_store)
-        logger.info(
-            "Settings rehydrated from store (model=%s)", hydrated_settings.model
-        )
+        logger.info("Settings rehydrated from store (model=%s)", hydrated_settings.model)
 
         for prov in sorted(set(AVAILABLE_MODELS.keys()) | set(PROVIDER_API_KEY_ENV.keys())):
             apply_stored_credentials(prov)
@@ -228,6 +235,7 @@ def create_app(
         # Auto-rehydrate marketplaces and installed plugins from DB onto local cache
         try:
             from k8s_autopilot.plugins.discovery import discover_plugins_async
+
             rehydrated = await discover_plugins_async(store=config_store)
             logger.info(
                 "Marketplaces & plugins auto-rehydrated: %d active plugins",
@@ -239,6 +247,7 @@ def create_app(
         # Sync enabled MCP servers from DB into runtime session manager
         try:
             from k8s_autopilot.mcp.discovery import MCPDiscovery
+
             await MCPDiscovery(store=config_store).discover_and_sync_async(store=config_store)
             logger.info("MCP servers synced from ConfigStore to session manager")
         except Exception as exc:
@@ -265,6 +274,7 @@ def create_app(
             # Clean up active MCP sessions on event loop before server shutdown
             try:
                 from k8s_autopilot.mcp.session_manager import MCPSessionManager
+
                 mgr = MCPSessionManager.get_instance()
                 await mgr.cleanup()
             except Exception as e:
@@ -286,7 +296,6 @@ def create_app(
         *jsonrpc_routes,
         *agent_card_routes,
         *rest_routes,
-
     ]
 
     app = Starlette(routes=app_routes, lifespan=lifespan)

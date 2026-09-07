@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,7 +12,6 @@ from k8s_autopilot.security.approval_mode import (
     coerce_approval_mode,
     read_approval_mode_from_store,
 )
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -52,9 +50,7 @@ class ApprovalPolicyResolver:
         Returns the key on success, ``None`` on mismatch or invalid input.
         """
         if not isinstance(thread_id, str) or not thread_id:
-            logger.warning(
-                "Thread ID missing or invalid for approval-mode key validation"
-            )
+            logger.warning("Thread ID missing or invalid for approval-mode key validation")
             return None
         expected = approval_mode_key(thread_id)
         if raw_key != expected:
@@ -75,9 +71,18 @@ class ApprovalPolicyResolver:
         legacy_auto: object = None
         has_typed_mode = False
 
-        if hasattr(context, "approval_mode_key") or hasattr(context, "approval_mode") or hasattr(context, "thread_id") or hasattr(context, "context_id"):
+        if (
+            hasattr(context, "approval_mode_key")
+            or hasattr(context, "approval_mode")
+            or hasattr(context, "thread_id")
+            or hasattr(context, "context_id")
+        ):
             raw_key = getattr(context, "approval_mode_key", None)
-            thread_id = getattr(context, "thread_id", None) or getattr(context, "context_id", None) or getattr(context, "session_id", None)
+            thread_id = (
+                getattr(context, "thread_id", None)
+                or getattr(context, "context_id", None)
+                or getattr(context, "session_id", None)
+            )
             raw_mode = getattr(context, "approval_mode", None)
             legacy_auto = getattr(context, "auto_approve", None)
             has_typed_mode = raw_mode is not None
@@ -159,10 +164,7 @@ class ApprovalPolicyResolver:
                 service = get_thread_service()
                 if service:
                     store_obj = getattr(service, "_checkpointer", None)
-                    if store_obj and hasattr(store_obj, "store"):
-                        store_obj = store_obj.store
-                    else:
-                        store_obj = None
+                    store_obj = store_obj.store if store_obj and hasattr(store_obj, "store") else None
                     if store_obj and store_obj is not store:
                         mode = read_approval_mode_from_store(store_obj, source.key)
             except Exception:
@@ -188,10 +190,7 @@ class ApprovalPolicyResolver:
                         service = get_thread_service()
                         if service:
                             store_obj = getattr(service, "_checkpointer", None)
-                            if store_obj and hasattr(store_obj, "store"):
-                                store_obj = store_obj.store
-                            else:
-                                store_obj = None
+                            store_obj = store_obj.store if store_obj and hasattr(store_obj, "store") else None
                             if store_obj and store_obj is not store:
                                 mode = read_approval_mode_from_store(store_obj, root_key)
                     except Exception:
@@ -201,9 +200,7 @@ class ApprovalPolicyResolver:
             mode = coerce_approval_mode(context.get("approval_mode"))
 
         if mode is None:
-            logger.warning(
-                "Approval-mode store item is unavailable; interrupting for safety"
-            )
+            logger.warning("Approval-mode store item is unavailable; interrupting for safety")
             return ApprovalMode.MANUAL
         return mode
 
@@ -221,10 +218,7 @@ class ApprovalPolicyResolver:
                 service = get_thread_service()
                 if service:
                     store_obj = getattr(service, "_checkpointer", None)
-                    if store_obj and hasattr(store_obj, "store"):
-                        store_obj = store_obj.store
-                    else:
-                        store_obj = None
+                    store_obj = store_obj.store if store_obj and hasattr(store_obj, "store") else None
                     if store_obj and store_obj is not store:
                         mode = await aread_approval_mode_from_store(store_obj, source.key)
             except Exception:
@@ -250,10 +244,7 @@ class ApprovalPolicyResolver:
                         service = get_thread_service()
                         if service:
                             store_obj = getattr(service, "_checkpointer", None)
-                            if store_obj and hasattr(store_obj, "store"):
-                                store_obj = store_obj.store
-                            else:
-                                store_obj = None
+                            store_obj = store_obj.store if store_obj and hasattr(store_obj, "store") else None
                             if store_obj and store_obj is not store:
                                 mode = await aread_approval_mode_from_store(store_obj, root_key)
                     except Exception:
@@ -263,9 +254,7 @@ class ApprovalPolicyResolver:
             mode = coerce_approval_mode(context.get("approval_mode"))
 
         if mode is None:
-            logger.warning(
-                "Approval-mode store item is unavailable; interrupting for safety"
-            )
+            logger.warning("Approval-mode store item is unavailable; interrupting for safety")
             return ApprovalMode.MANUAL
         return mode
 

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path, PurePosixPath
 from typing import Any
-from langchain_core.tools import BaseTool, tool
+
 from deepagents.middleware import GRADER_SYSTEM_PROMPT
+from langchain_core.tools import BaseTool, tool
 
 from k8s_autopilot.utils.logger import get_logger
 
@@ -51,7 +51,7 @@ def _create_rubric_grader_tools(backend: Any = None) -> list[BaseTool]:
             p = Path(file_path)
             if not p.exists():
                 return f"File {file_path} not found."
-            with open(p, "r", encoding="utf-8") as f:
+            with open(p, encoding="utf-8") as f:
                 content = f.read()
             lines = content.splitlines()
             sliced = lines[offset : offset + limit]

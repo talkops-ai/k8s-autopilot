@@ -6,9 +6,8 @@ k8s_autopilot reads or writes at runtime. It is intentionally dependency-free.
 
 from __future__ import annotations
 
-import errno
-import logging
 from enum import StrEnum
+import errno
 from pathlib import Path
 from typing import Final
 
@@ -85,13 +84,29 @@ PROJECT_ROOT_MARKERS: Final[tuple[str, ...]] = (
 
 DOTENV_DENIED_ENV_KEYS: Final[frozenset[str]] = frozenset(
     {
-        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "DISPLAY",
-        "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES",
-        "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME",
-        "NODE_PATH", "NODE_OPTIONS",
-        "HISTFILE", "HISTSIZE",
-        "SSH_AUTH_SOCK", "GPG_AGENT_INFO",
-        "TMPDIR", "TEMP", "TMP",
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TERM",
+        "DISPLAY",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONHOME",
+        "NODE_PATH",
+        "NODE_OPTIONS",
+        "HISTFILE",
+        "HISTSIZE",
+        "SSH_AUTH_SOCK",
+        "GPG_AGENT_INFO",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
     }
 )
 
@@ -99,28 +114,59 @@ DOTENV_DENIED_ENV_KEYS: Final[frozenset[str]] = frozenset(
 
 RELOADABLE_FIELDS: Final[frozenset[str]] = frozenset(
     {
-        "openai_api_key", "anthropic_api_key", "google_api_key",
-        "groq_api_key", "deepseek_api_key", "tavily_api_key",
-        "kubeconfig", "kube_context", "kube_namespace",
-        "project_root", "shell_allow_list",
+        "openai_api_key",
+        "anthropic_api_key",
+        "google_api_key",
+        "groq_api_key",
+        "deepseek_api_key",
+        "tavily_api_key",
+        "kubeconfig",
+        "kube_context",
+        "kube_namespace",
+        "project_root",
+        "shell_allow_list",
     }
 )
 
 # K8s and DevOps specific env vars to preserve in shell execution
 K8S_PRESERVE_ENV_VARS: Final[tuple[str, ...]] = (
-    "KUBECONFIG", "KUBE_CONTEXT", "KUBE_NAMESPACE", "KUBE_CLUSTER",
-    "HELM_HOME", "HELM_CACHE_HOME", "HELM_CONFIG_HOME", "HELM_DATA_HOME",
-    "HELM_DRIVER", "HELM_REGISTRY_CONFIG", "HELM_REPOSITORY_CONFIG",
-    "ARGOCD_SERVER", "ARGOCD_AUTH_TOKEN", "ARGOCD_OPTS", "ARGOCD_GRPC_WEB", "ARGOCD_SERVER_NAME",
-    "PROMETHEUS_URL", "ALERTMANAGER_URL", "LOKI_URL", "TEMPO_URL", "GRAFANA_URL", "GRAFANA_TOKEN",
+    "KUBECONFIG",
+    "KUBE_CONTEXT",
+    "KUBE_NAMESPACE",
+    "KUBE_CLUSTER",
+    "HELM_HOME",
+    "HELM_CACHE_HOME",
+    "HELM_CONFIG_HOME",
+    "HELM_DATA_HOME",
+    "HELM_DRIVER",
+    "HELM_REGISTRY_CONFIG",
+    "HELM_REPOSITORY_CONFIG",
+    "ARGOCD_SERVER",
+    "ARGOCD_AUTH_TOKEN",
+    "ARGOCD_OPTS",
+    "ARGOCD_GRPC_WEB",
+    "ARGOCD_SERVER_NAME",
+    "PROMETHEUS_URL",
+    "ALERTMANAGER_URL",
+    "LOKI_URL",
+    "TEMPO_URL",
+    "GRAFANA_URL",
+    "GRAFANA_TOKEN",
     "TRAEFIK_API_URL",
-    "AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_SHARED_CREDENTIALS_FILE",
-    "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "CLOUDSDK_CORE_PROJECT",
-    "AZURE_SUBSCRIPTION_ID", "AZURE_TENANT_ID",
+    "AWS_PROFILE",
+    "AWS_REGION",
+    "AWS_DEFAULT_REGION",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "CLOUDSDK_CORE_PROJECT",
+    "AZURE_SUBSCRIPTION_ID",
+    "AZURE_TENANT_ID",
 )
 
 
 # ── Directory helpers ────────────────────────────────────
+
 
 def agent_dir(name: str = DEFAULT_ASSISTANT_ID) -> Path:
     """Return ``~/.k8s_autopilot/{name}/``."""
@@ -178,6 +224,7 @@ def find_project_root(start: Path | None = None) -> Path:
 
 
 # ── Ensure directories exist ─────────────────────────────
+
 
 def ensure_data_dir() -> Path:
     """Create ``~/.k8s_autopilot/`` if it doesn't exist."""

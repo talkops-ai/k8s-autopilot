@@ -18,9 +18,9 @@ from k8s_autopilot.server.server_graph import make_graph
 from k8s_autopilot.server.thread_handler import A2AThreadHandler
 
 __all__ = [
+    "SERVER_ENV_PREFIX",
     "A2AAutoPilotExecutor",
     "A2AThreadHandler",
-    "SERVER_ENV_PREFIX",
     "ServerConfig",
     "create_app",
     "get_server_url",

@@ -14,11 +14,11 @@ It can be hydrated from:
 
 from __future__ import annotations
 
-import logging
-import os
-import threading
+import contextlib
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
+import threading
 from typing import Any
 
 from k8s_autopilot.config import paths
@@ -26,7 +26,6 @@ from k8s_autopilot.config.paths import (
     DOTENV_DENIED_ENV_KEYS,
     ENV_PREFIX,
 )
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -34,8 +33,11 @@ logger = get_logger(__name__)
 
 # ── Bootstrap State ──────────────────────────────────────
 
+
 @dataclass
 class _BootstrapState:
+    """Internal state tracker for settings initialization lifecycle."""
+
     done: bool = False
     start_path: Path | None = None
 
@@ -87,6 +89,7 @@ def _ensure_bootstrap() -> None:
 
 # ── Env-Var Resolution ───────────────────────────────────
 
+
 def resolve_env_var(name: str, fallback_names: tuple[str, ...] = ()) -> str | None:
     """Resolve env var with K8S_AUTOPILOT_ prefix priority and Settings fallback."""
     _ensure_bootstrap()
@@ -117,6 +120,7 @@ def resolve_env_var(name: str, fallback_names: tuple[str, ...] = ()) -> str | No
 
 # ── Dotenv Loading ───────────────────────────────────────
 
+
 def _load_dotenv(*, start_path: Path | None = None, refresh_loaded: bool = False) -> None:
     """Load .env files: project-level (walk-up), then global ~/.k8s_autopilot/.env."""
     try:
@@ -137,17 +141,13 @@ def _load_dotenv(*, start_path: Path | None = None, refresh_loaded: bool = False
     # Global ~/.k8s_autopilot/.env
     global_env = paths.GLOBAL_ENV_PATH
     if global_env.is_file():
-        try:
+        with contextlib.suppress(Exception):
             loaded_vals.update(dotenv_values(global_env))
-        except Exception:
-            pass
 
     # Project/CWD .env (higher priority)
     if project_env:
-        try:
+        with contextlib.suppress(Exception):
             loaded_vals.update(dotenv_values(project_env))
-        except Exception:
-            pass
 
     # Filter out denied keys
     for key in DOTENV_DENIED_ENV_KEYS:
@@ -157,9 +157,8 @@ def _load_dotenv(*, start_path: Path | None = None, refresh_loaded: bool = False
 
     # Apply to os.environ
     for k, v in loaded_vals.items():
-        if v is not None:
-            if refresh_loaded or k not in os.environ:
-                os.environ[k] = v
+        if v is not None and (refresh_loaded or k not in os.environ):
+            os.environ[k] = v
 
 
 def parse_shell_allow_list(value: str | None) -> list[str] | None:
@@ -172,6 +171,7 @@ def parse_shell_allow_list(value: str | None) -> list[str] | None:
 
 
 # ── Settings Dataclass ───────────────────────────────────
+
 
 @dataclass
 class Settings:
@@ -323,7 +323,7 @@ class Settings:
     # ── Store-Hydrated Factory ────────────────────────────
 
     @classmethod
-    async def from_store(cls, store: Any) -> "Settings":
+    async def from_store(cls, store: Any) -> Settings:
         """Create settings by resolving every manifest option through the store."""
         from k8s_autopilot.config.manifest import get_config_options
 
@@ -340,7 +340,7 @@ class Settings:
         return cls(**kwargs)
 
     @classmethod
-    def from_env(cls, start_path: Path | None = None) -> "Settings":
+    def from_env(cls, start_path: Path | None = None) -> Settings:
         """Create settings from environment variables only (bootstrap fallback)."""
         _ensure_bootstrap()
 
@@ -396,15 +396,20 @@ class Settings:
             tavily_api_key=resolve_env_var("TAVILY_API_KEY"),
             azure_openai_api_key=resolve_env_var("AZURE_OPENAI_API_KEY"),
             langchain_api_key=resolve_env_var("LANGCHAIN_API_KEY", ("LANGSMITH_API_KEY",)),
-            langchain_tracing=_get("LANGCHAIN_TRACING_V2", "false", ("LANGSMITH_TRACING",)).lower() in ("1", "true", "yes", "on"),
-            langchain_project=_get("LANGCHAIN_PROJECT", "k8s-autopilot", ("LANGSMITH_PROJECT", "K8S_AUTOPILOT_LANGSMITH_PROJECT")),
+            langchain_tracing=_get("LANGCHAIN_TRACING_V2", "false", ("LANGSMITH_TRACING",)).lower()
+            in ("1", "true", "yes", "on"),
+            langchain_project=_get(
+                "LANGCHAIN_PROJECT", "k8s-autopilot", ("LANGSMITH_PROJECT", "K8S_AUTOPILOT_LANGSMITH_PROJECT")
+            ),
             langchain_endpoint=_get("LANGCHAIN_ENDPOINT", "https://api.smith.langchain.com", ("LANGSMITH_ENDPOINT",)),
             slack_bot_token=resolve_env_var("SLACK_BOT_TOKEN"),
             slack_signing_secret=resolve_env_var("SLACK_SIGNING_SECRET"),
             argocd_auth_token=resolve_env_var("ARGOCD_AUTH_TOKEN"),
             loki_auth_token=resolve_env_var("LOKI_AUTH_TOKEN"),
             tempo_auth_header=resolve_env_var("TEMPO_AUTH_HEADER"),
-            prometheus_base_url=_get("PROMETHEUS_BASE_URL", "http://prometheus-operated.monitoring.svc:9090", ("PROMETHEUS_URL",)),
+            prometheus_base_url=_get(
+                "PROMETHEUS_BASE_URL", "http://prometheus-operated.monitoring.svc:9090", ("PROMETHEUS_URL",)
+            ),
             prometheus_verify_ssl=_get("PROMETHEUS_VERIFY_SSL", "false").lower() in ("1", "true", "yes", "on"),
             alertmanager_base_url=_get("ALERTMANAGER_BASE_URL", "http://alertmanager-operated.monitoring.svc:9093"),
             alertmanager_verify_ssl=_get("ALERTMANAGER_VERIFY_SSL", "false").lower() in ("1", "true", "yes", "on"),
@@ -447,6 +452,14 @@ class Settings:
         return written
 
     def ensure_agent_dir(self, assistant_id: str | None = None) -> Path:
+        """Ensure the agent directory and required subdirectories exist.
+
+        Args:
+            assistant_id: Optional assistant identifier. Defaults to the configured assistant_id.
+
+        Returns:
+            Resolved Path to the agent directory.
+        """
         target_id = assistant_id or self.assistant_id or "k8s-autopilot"
         return paths.ensure_agent_dir(target_id)
 

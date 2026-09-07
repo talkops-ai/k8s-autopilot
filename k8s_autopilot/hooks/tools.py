@@ -20,11 +20,7 @@ def _bash_input(args: JsonObject) -> JsonObject:
     result = _select(args, "command")
     if "timeout" in args:
         timeout = args["timeout"]
-        result["timeout"] = (
-            timeout * 1000
-            if isinstance(timeout, int) and not isinstance(timeout, bool)
-            else timeout
-        )
+        result["timeout"] = timeout * 1000 if isinstance(timeout, int) and not isinstance(timeout, bool) else timeout
     return result
 
 
@@ -40,11 +36,7 @@ def _read_input(args: JsonObject) -> JsonObject:
     result = _select(args, "file_path", "limit")
     if "offset" in args:
         offset = args["offset"]
-        result["offset"] = (
-            offset + 1
-            if isinstance(offset, int) and not isinstance(offset, bool)
-            else offset
-        )
+        result["offset"] = offset + 1 if isinstance(offset, int) and not isinstance(offset, bool) else offset
     return result
 
 

@@ -9,8 +9,8 @@ Features:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
-import logging
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -20,6 +20,8 @@ logger = get_logger(__name__)
 
 
 class MCPServerConfig(TypedDict, total=False):
+    """Configuration for a discovered MCP server (command, args, env, transport)."""
+
     command: str | None
     args: list[str] | None
     env: dict[str, str] | None
@@ -39,7 +41,7 @@ def _load_mcp_json(path: Path) -> dict[str, dict[str, Any]]:
     if not path.is_file():
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
         servers = data.get("mcpServers")
         if isinstance(servers, dict):
@@ -53,12 +55,18 @@ class MCPDiscovery:
     """Discovers, syncs, and loads MCP servers with DB as source of truth."""
 
     def __init__(self, store: Any = None) -> None:
+        """Initialize MCPDiscovery with optional configuration store.
+
+        Args:
+            store: Optional ConfigStore instance.
+        """
         self._store = store
 
     def _get_store(self) -> Any:
         if self._store is None:
             try:
                 from k8s_autopilot.api.settings_routes import _config_store
+
                 if _config_store is not None:
                     self._store = _config_store
             except Exception:
@@ -66,6 +74,7 @@ class MCPDiscovery:
         if self._store is None:
             try:
                 from k8s_autopilot.config.store_factory import create_config_store_sync
+
                 self._store = create_config_store_sync()
             except Exception as exc:
                 logger.debug("Could not create fallback ConfigStore: %s", exc)
@@ -78,10 +87,8 @@ class MCPDiscovery:
         effective_project_root = project_root or Path.cwd()
         active_store = store or self._get_store()
         if active_store is not None and not getattr(active_store, "_initialized", False):
-            try:
+            with contextlib.suppress(Exception):
                 await active_store.initialize()
-            except Exception:
-                pass
 
         candidates: list[tuple[Path, str]] = []
         from k8s_autopilot.config import paths
@@ -149,10 +156,7 @@ class MCPDiscovery:
                         command = config.get("command")
                         transport = config.get("transport") or config.get("type")
                         if not transport:
-                            if url:
-                                transport = "sse" if "sse" in str(url).lower() else "http"
-                            else:
-                                transport = "stdio"
+                            transport = ("sse" if "sse" in str(url).lower() else "http") if url else "stdio"
 
                         enabled = True
                         if "disabled" in config:
@@ -241,10 +245,9 @@ class MCPDiscovery:
             if loop is not None and loop.is_running():
                 # We are in an existing event loop, create task or fallback
                 import concurrent.futures
+
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    return pool.submit(
-                        asyncio.run, self.discover_and_sync_async(project_root)
-                    ).result()
+                    return pool.submit(asyncio.run, self.discover_and_sync_async(project_root)).result()
             return asyncio.run(self.discover_and_sync_async(project_root))
         except Exception:
             return self._discover_sync_fallback(project_root)

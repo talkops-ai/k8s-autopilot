@@ -2,8 +2,15 @@
 
 from pydantic import TypeAdapter
 
-from k8s_autopilot.hooks.models.domain import HookDecision, HookDomainEvent, HookInvocation
-from k8s_autopilot.hooks.models.transport import HookInvocationRequest, HookInvocationResponse
+from k8s_autopilot.hooks.models.domain import (
+    HookDecision,
+    HookDomainEvent,
+    HookInvocation,
+)
+from k8s_autopilot.hooks.models.transport import (
+    HookInvocationRequest,
+    HookInvocationResponse,
+)
 
 HOOK_DOMAIN_EVENT_ADAPTER: TypeAdapter[HookDomainEvent] = TypeAdapter(HookDomainEvent)
 HOOK_INVOCATION_ADAPTER: TypeAdapter[HookInvocation] = TypeAdapter(HookInvocation)

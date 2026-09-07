@@ -94,6 +94,7 @@ dev = [
     "asyncclick>=8.3.0.7",
     "agentevals>=0.0.9",
     "types-protobuf>=7.35.1.20260827",
+    "isort>=9.0.1",
 ]
 
 [build-system]
@@ -104,15 +105,51 @@ build-backend = "hatchling.build"
 packages = ["k8s_autopilot"]
 
 [tool.ruff]
-line-length = 88
 target-version = "py312"
+line-length = 120
+src = ["k8s_autopilot"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "C90", "I", "N", "UP", "YTT", "S", "BLE", "FBT", "B", "A", "COM", "C4", "DTZ", "T10", "EM", "EXE", "FA", "ISC", "ICN", "G", "INP", "PIE", "T20", "PYI", "PT", "Q", "RSE", "RET", "SLF", "SIM", "TID", "TCH", "ARG", "PTH", "ERA", "PD", "PGH", "PL", "TRY", "FLY", "NPY", "AIR", "PERF", "FURB", "LOG", "RUF"]
-ignore = ["S101", "PLR0913", "PLR2004", "C901", "W191"]
+select = [
+    "F",       # Pyflakes — unused imports, undefined names
+    "E",       # pycodestyle errors
+    "W",       # pycodestyle warnings
+    "I",       # isort — import ordering
+    "D",       # pydocstyle — docstring presence and format
+    "UP",      # pyupgrade — modern Python idioms
+    "B",       # flake8-bugbear — common bugs
+    "SIM",     # flake8-simplify — simplifiable code
+    "RUF",     # Ruff-specific rules
+]
+ignore = [
+    "D100",    # Missing module docstring (enable after Phase 3 complete)
+    "D104",    # Missing public package docstring
+    "D105",    # Missing magic method docstring
+    "D107",    # Missing __init__ docstring (enable after Phase 3 complete)
+    "D203",    # Conflicts with D211 (no-blank-line-before-class)
+    "D213",    # Conflicts with D212 (multi-line-summary-second-line)
+    "E501",    # Line too long — handled by formatter
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["k8s_autopilot"]
+force-sort-within-sections = true
+combine-as-imports = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["D"]  # Don't require docstrings in tests
+"k8s_autopilot/**/__init__.py" = ["D104"]  # Package init files
+
+[tool.isort]
+profile = "black"
+line_length = 120
+known_first_party = ["k8s_autopilot"]
+src_paths = ["k8s_autopilot"]
+force_sort_within_sections = true
+combine_as_imports = true
 
 [tool.mypy]
 python_version = "3.12"
@@ -157,3 +194,10 @@ a2ui-agent = { path = "a2ui_extenstion", editable = true }
 
 [tool.pyrefly]
 python_interpreter = ".venv/bin/python"
+replace-untyped-imports-with-any = true
+
+[tool.pyrefly.errors]
+missing-import = "ignore"
+
+[tool.pyright]
+reportMissingImports = false

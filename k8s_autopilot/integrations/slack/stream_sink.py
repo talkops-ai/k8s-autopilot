@@ -16,7 +16,7 @@ before posting via :func:`md_to_mrkdwn`.
 
 from __future__ import annotations
 
-import logging
+import contextlib
 from typing import Any
 
 from slack_sdk.web.async_client import AsyncWebClient  # type: ignore[import-not-found]
@@ -57,6 +57,14 @@ class SlackStreamSink:
         thread_ts: str,
         config: Any,
     ) -> None:
+        """Initialize SlackStreamSink with client, target channel/thread, and settings.
+
+        Args:
+            client: AsyncWebClient instance for Slack API calls.
+            channel_id: Target Slack channel identifier.
+            thread_ts: Target Slack thread timestamp.
+            config: Application configuration object.
+        """
         self.client = client
         self.channel_id = channel_id
         self.thread_ts = thread_ts
@@ -96,10 +104,8 @@ class SlackStreamSink:
         # ── Stop any lingering previous stream ──────────────────────
         if self._streamer is not None:
             logger.info("Stopping lingering previous stream before starting new one")
-            try:
+            with contextlib.suppress(Exception):
                 await self._streamer.stop()
-            except Exception:
-                pass
             self._streamer = None
 
         # Reset buffers for the new stream
@@ -121,15 +127,11 @@ class SlackStreamSink:
                     channel=self.channel_id,
                     thread_ts=self.thread_ts,
                 )
-                logger.info(
-                    f"Deferred start of Slack chat stream | channel={self.channel_id} thread={self.thread_ts}"
-                )
+                logger.info(f"Deferred start of Slack chat stream | channel={self.channel_id} thread={self.thread_ts}")
             except Exception:
                 # Fallback: if chat_stream is not available (older SDK),
                 # we'll accumulate and post a single message at the end.
-                logger.warning(
-                    "chat_stream not available — falling back to buffered post"
-                )
+                logger.warning("chat_stream not available — falling back to buffered post")
                 self._streamer = None
 
         if self._streamer and len(self._buffer) >= self._buffer_size:
@@ -180,7 +182,7 @@ class SlackStreamSink:
         4. ``action_requests``            → standard approve/reject card
         5. Fallback: plain ``question``   → plain text question (awaiting reply)
 
-        Uses Slack’s ``streamer.stop(blocks=...)`` to finalize the
+        Uses Slack's ``streamer.stop(blocks=...)`` to finalize the
         active stream with Block Kit blocks — preserving streamed
         plan text alongside approval buttons in a single message.
         """
@@ -194,9 +196,7 @@ class SlackStreamSink:
         # ── 1. Pending feedback requests (from supervisor classify_request) ──
         if "pending_feedback_requests" in interrupt_value:
             pfr = interrupt_value["pending_feedback_requests"]
-            question = pfr.get("question") or interrupt_value.get(
-                "question", "I need more information to proceed."
-            )
+            question = pfr.get("question") or interrupt_value.get("question", "I need more information to proceed.")
             blocks = build_feedback_request_blocks(md_to_mrkdwn(question))
             await self._stop_stream_with_blocks(blocks, question)
             self.awaiting_text_reply = True
@@ -229,9 +229,7 @@ class SlackStreamSink:
                 blocks = build_planning_approval_blocks(interrupt_value)
             else:
                 blocks = build_user_input_blocks(interrupt_value)
-            await self._stop_stream_with_blocks(
-                blocks, interrupt_value.get("question", "Input needed")
-            )
+            await self._stop_stream_with_blocks(blocks, interrupt_value.get("question", "Input needed"))
             self._accumulated_text = ""
             return
 
@@ -263,10 +261,8 @@ class SlackStreamSink:
         the error card.
         """
         if self._streamer:
-            try:
+            with contextlib.suppress(Exception):
                 await self._streamer.stop()
-            except Exception:
-                pass
 
         blocks = build_error_blocks(error)
         await self.client.chat_postMessage(
@@ -376,7 +372,7 @@ class SlackStreamSink:
     ) -> None:
         """Stop the active stream and finalize with Block Kit blocks.
 
-        Uses Slack’s ``streamer.stop(blocks=...)`` to append blocks to
+        Uses Slack's ``streamer.stop(blocks=...)`` to append blocks to
         the same message that was streaming — preserving the streamed
         plan text alongside the approval buttons in a single message.
 
@@ -397,10 +393,8 @@ class SlackStreamSink:
             except Exception as exc:
                 logger.warning(f"streamer.stop(blocks=...) failed: {exc}")
                 # Fallback: try plain stop, then post separately
-                try:
+                with contextlib.suppress(Exception):
                     await self._streamer.stop()
-                except Exception:
-                    pass
                 self._streamer = None
         elif self._buffer:
             # No active streamer but we have buffered content — post it

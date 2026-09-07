@@ -12,6 +12,8 @@ from k8s_autopilot.hooks.models.domain import HookDecision, HookInvocation
 
 
 class _TransportModel(BaseModel):
+    """Base model for hook transport payloads with wire-format helpers."""
+
     model_config = ConfigDict(extra="forbid")
 
 

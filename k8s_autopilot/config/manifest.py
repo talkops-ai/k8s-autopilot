@@ -9,25 +9,23 @@ resolution (DB → env → default) via ``ConfigStore.resolve(option)``.
 
 from __future__ import annotations
 
-import logging
-import os
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+from k8s_autopilot.config.paths import ENV_PREFIX
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-from k8s_autopilot.config.paths import ENV_PREFIX
-
-
 # ── OptionKind ───────────────────────────────────────────
+
 
 class OptionKind(Enum):
     """How an option's raw string value is coerced to a typed value."""
@@ -61,6 +59,7 @@ if _KIND_TYPE_LABEL.keys() != set(OptionKind):
 
 
 # ── ConfigOption ─────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class ConfigOption:
@@ -98,14 +97,17 @@ class ConfigOption:
 
     @property
     def type_label(self) -> str:
+        """Return a human-readable display label for the configuration entry type."""
         return _KIND_TYPE_LABEL[self.kind]
 
     @property
     def effective_env_var(self) -> str:
+        """Return the effective environment variable name for this entry."""
         return self.env_var or self.db_key
 
 
 # ── Coercion Engine ──────────────────────────────────────
+
 
 def coerce_str_value(kind: OptionKind, raw: str) -> Any:
     """Coerce a raw string value to a typed Python object."""
@@ -134,6 +136,7 @@ def coerce_str_value(kind: OptionKind, raw: str) -> Any:
         return Path(raw.strip()).expanduser().resolve()
     if kind == OptionKind.JSON:
         import json
+
         try:
             return json.loads(raw)
         except Exception:
@@ -153,6 +156,7 @@ def serialize_typed_value(kind: OptionKind, value: Any) -> str:
         return str(value)
     if kind == OptionKind.JSON:
         import json
+
         if isinstance(value, str):
             return value
         return json.dumps(value)
@@ -261,7 +265,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=None,
         settings_field="model_context_limit",
     ),
-
     # ── Provider Base URLs & Vertex AI ────────────────────
     ConfigOption(
         key="models.google_genai_use_vertexai",
@@ -322,7 +325,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         settings_field="openrouter_base_url",
     ),
-
     # ── Security & Approval ───────────────────────────────
     ConfigOption(
         key="security.approval_mode",
@@ -343,7 +345,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=None,
         settings_field="shell_allow_list",
     ),
-
     # ── Kubernetes Environment ────────────────────────────
     ConfigOption(
         key="k8s.kubeconfig",
@@ -382,7 +383,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         choices=("local", "docker", "kubernetes"),
         settings_field="sandbox_provider",
     ),
-
     # ── MCP Configuration ─────────────────────────────────
     ConfigOption(
         key="mcp.timeout",
@@ -421,7 +421,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         choices=("sse", "stdio", "http"),
         settings_field="mcp_default_transport",
     ),
-
     # ── Observability & Integrations Endpoints ────────────
     ConfigOption(
         key="integrations.prometheus_url",
@@ -549,7 +548,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default="talkops",
         settings_field="loki_org_id",
     ),
-
     # ── Compaction ────────────────────────────────────────
     ConfigOption(
         key="compaction.token_budget",
@@ -578,7 +576,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=None,
         settings_field="compaction_summary_model",
     ),
-
     # ── Rubric ────────────────────────────────────────────
     ConfigOption(
         key="rubric.grader_model",
@@ -598,7 +595,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=3,
         settings_field="rubric_max_iterations",
     ),
-
     # ── Slack ─────────────────────────────────────────────
     ConfigOption(
         key="slack.enabled",
@@ -628,7 +624,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=256,
         settings_field="slack_stream_buffer_size",
     ),
-
     # ── A2A Server ────────────────────────────────────────
     ConfigOption(
         key="a2a.server_host",
@@ -657,7 +652,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default="a2a",
         settings_field="autopilot_mode",
     ),
-
     # ── System & Runtime ──────────────────────────────────
     ConfigOption(
         key="system.debug",
@@ -780,7 +774,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=None,
         settings_field="extra_skills_dirs",
     ),
-
     # ── Tracing ───────────────────────────────────────────
     ConfigOption(
         key="tracing.langchain_tracing",
@@ -809,7 +802,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default="https://api.smith.langchain.com",
         settings_field="langchain_endpoint",
     ),
-
     # ── Search ────────────────────────────────────────────
     ConfigOption(
         key="search.tavily_max_results",
@@ -833,6 +825,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
 
 
 # ── Public API ───────────────────────────────────────────
+
 
 @lru_cache(maxsize=1)
 def get_config_options() -> tuple[ConfigOption, ...]:

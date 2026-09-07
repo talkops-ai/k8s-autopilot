@@ -12,29 +12,28 @@ Features:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import inspect
 import json
-import logging
-import re
+import os
 from pathlib import Path
+import re
 from typing import Any
 
+from deepagents.middleware.async_subagents import AsyncSubAgent
 import yaml
 
-from deepagents.middleware.async_subagents import AsyncSubAgent
 from k8s_autopilot.config import paths
 from k8s_autopilot.subagents.subagents_parser import parse_built_in_subagents
 from k8s_autopilot.subagents.types import SubagentMetadata
-
-get_built_in_subagents = parse_built_in_subagents
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+get_built_in_subagents = parse_built_in_subagents
 
-def _parse_subagent_file(
-    file_path: Path, *, fallback_name: str | None = None
-) -> SubagentMetadata | None:
+
+def _parse_subagent_file(file_path: Path, *, fallback_name: str | None = None) -> SubagentMetadata | None:
     """Parse a subagent markdown file with YAML frontmatter."""
     try:
         content = file_path.read_text(encoding="utf-8")
@@ -63,7 +62,9 @@ def _parse_subagent_file(
     raw_permission_tier = frontmatter.get("permission_tier")
 
     name = name_value.strip() if isinstance(name_value, str) and name_value.strip() else None
-    description = description_value.strip() if isinstance(description_value, str) and description_value.strip() else None
+    description = (
+        description_value.strip() if isinstance(description_value, str) and description_value.strip() else None
+    )
 
     if name is None or description is None:
         return None
@@ -159,6 +160,7 @@ async def list_subagents_async(
     if active_store is None:
         try:
             from k8s_autopilot.api.settings_routes import _config_store
+
             active_store = _config_store
         except Exception:
             active_store = None
@@ -186,16 +188,18 @@ async def list_subagents_async(
         # Seed local definitions into DB
         for name, meta in discovered_local.items():
             if name not in db_subagents or meta.get("source") == "project":
-                await active_store.upsert_subagent({
-                    "name": name,
-                    "description": meta.get("description", ""),
-                    "model": meta.get("model"),
-                    "instructions_path": meta.get("path"),
-                    "system_prompt": meta.get("system_prompt", ""),
-                    "tools": meta.get("tools") or [],
-                    "source": meta.get("source", "built-in"),
-                    "enabled": True,
-                })
+                await active_store.upsert_subagent(
+                    {
+                        "name": name,
+                        "description": meta.get("description", ""),
+                        "model": meta.get("model"),
+                        "instructions_path": meta.get("path"),
+                        "system_prompt": meta.get("system_prompt", ""),
+                        "tools": meta.get("tools") or [],
+                        "source": meta.get("source", "built-in"),
+                        "enabled": True,
+                    }
+                )
 
         # Rehydrate missing files from DB (e.g. after container redeployment)
         all_db_subagents = await active_store.list_subagents()
@@ -261,7 +265,6 @@ def list_subagents(
             loop = None
 
         if loop is not None and loop.is_running():
-            import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 return pool.submit(
                     asyncio.run,
@@ -292,7 +295,6 @@ def list_subagents(
         return list(discovered.values())
 
 
-
 async def load_async_subagents_async(
     config_path: Path | None = None,
     *,
@@ -306,13 +308,13 @@ async def load_async_subagents_async(
        or subagents table records with is_async=True / graph_id).
     2. Optional fallback to config.toml if provided or found on disk.
     """
-    import inspect
-    import os
-
     active_store = store
     if active_store is None:
         try:
-            from k8s_autopilot.api.settings_routes import _config_store
+            from k8s_autopilot.api.settings_routes import (
+                _config_store,  # Lazy import: circular dependency avoidance
+            )
+
             active_store = _config_store
         except Exception:
             active_store = None
@@ -336,7 +338,9 @@ async def load_async_subagents_async(
 
             if raw_async_cfg:
                 parsed = json.loads(raw_async_cfg) if isinstance(raw_async_cfg, str) else raw_async_cfg
-                items = parsed if isinstance(parsed, list) else (list(parsed.values()) if isinstance(parsed, dict) else [])
+                items = (
+                    parsed if isinstance(parsed, list) else (list(parsed.values()) if isinstance(parsed, dict) else [])
+                )
                 for spec in items:
                     if isinstance(spec, dict) and "name" in spec and "description" in spec and "graph_id" in spec:
                         agent: AsyncSubAgent = {
@@ -347,9 +351,7 @@ async def load_async_subagents_async(
                         if "url" in spec and isinstance(spec["url"], str):
                             agent["url"] = os.path.expandvars(spec["url"])
                         if "headers" in spec and isinstance(spec["headers"], dict):
-                            agent["headers"] = {
-                                k: os.path.expandvars(str(v)) for k, v in spec["headers"].items()
-                            }
+                            agent["headers"] = {k: os.path.expandvars(str(v)) for k, v in spec["headers"].items()}
                         agents.append(agent)
                         seen_names.add(agent["name"])
 
@@ -372,9 +374,7 @@ async def load_async_subagents_async(
                         if rec.get("url"):
                             agent_spec["url"] = os.path.expandvars(str(rec["url"]))
                         if isinstance(rec.get("headers"), dict):
-                            agent_spec["headers"] = {
-                                k: os.path.expandvars(str(v)) for k, v in rec["headers"].items()
-                            }
+                            agent_spec["headers"] = {k: os.path.expandvars(str(v)) for k, v in rec["headers"].items()}
                         agents.append(agent_spec)
                         seen_names.add(rec_name)
         except Exception as exc:
@@ -385,6 +385,7 @@ async def load_async_subagents_async(
     if resolved_config_path is None:
         try:
             from k8s_autopilot.config.paths import CONFIG_PATH
+
             if CONFIG_PATH.exists():
                 resolved_config_path = CONFIG_PATH
         except Exception:
@@ -392,7 +393,8 @@ async def load_async_subagents_async(
 
     if resolved_config_path is not None and resolved_config_path.exists():
         try:
-            import tomllib
+            import tomllib  # Lazy import: optional config parsing
+
             with resolved_config_path.open("rb") as f:
                 data = tomllib.load(f)
             section = data.get("async_subagents")
@@ -411,9 +413,7 @@ async def load_async_subagents_async(
                     if "url" in spec and isinstance(spec["url"], str):
                         agent_entry["url"] = os.path.expandvars(spec["url"])
                     if "headers" in spec and isinstance(spec["headers"], dict):
-                        agent_entry["headers"] = {
-                            k: os.path.expandvars(str(v)) for k, v in spec["headers"].items()
-                        }
+                        agent_entry["headers"] = {k: os.path.expandvars(str(v)) for k, v in spec["headers"].items()}
                     agents.append(agent_entry)
                     seen_names.add(name)
         except Exception as exc:
@@ -435,12 +435,11 @@ def load_async_subagents(
 
     if loop is not None and loop.is_running():
         import concurrent.futures
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             return pool.submit(
                 asyncio.run,
                 load_async_subagents_async(config_path=config_path, store=store),
             ).result()
     else:
-        return asyncio.run(
-            load_async_subagents_async(config_path=config_path, store=store)
-        )
+        return asyncio.run(load_async_subagents_async(config_path=config_path, store=store))

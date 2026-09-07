@@ -6,9 +6,8 @@ model providers (Anthropic, OpenAI, Google, Bedrock, Azure, Mistral, xAI).
 
 from __future__ import annotations
 
-import logging
-import math
 from collections.abc import Mapping
+import math
 from typing import Any
 
 from k8s_autopilot.utils.logger import get_logger
@@ -46,7 +45,10 @@ class TokenCostEstimator:
     def _load_pricing_backend(cls) -> tuple[Any, Any] | None:
         """Lazily load genai-prices calculation backend."""
         try:
-            from genai_prices import Usage, calc_price  # type: ignore[import-not-found,import-untyped]
+            from genai_prices import (  # type: ignore[import-not-found,import-untyped]
+                Usage,
+                calc_price,
+            )
         except Exception:
             if not cls._pricing_unavailable:
                 logger.warning(
@@ -68,9 +70,7 @@ class TokenCostEstimator:
         one_hour = cls._token_count(details.get("ephemeral_1h_input_tokens"))
         if five_minute or one_hour:
             return 0, five_minute, one_hour
-        generic = cls._token_count(details.get("cache_creation")) or cls._token_count(
-            details.get("cache_write")
-        )
+        generic = cls._token_count(details.get("cache_creation")) or cls._token_count(details.get("cache_write"))
         return generic, 0, 0
 
     @classmethod
@@ -117,9 +117,7 @@ class TokenCostEstimator:
 
         cache_read = cls._token_count(in_details.get("cache_read"))
         raw_writes = cls._cache_write_counts(in_details)
-        cache_read, (cache_write, cache_5m, cache_1h) = cls._clamp_cache_counts(
-            input_tokens, cache_read, raw_writes
-        )
+        cache_read, (cache_write, cache_5m, cache_1h) = cls._clamp_cache_counts(input_tokens, cache_read, raw_writes)
 
         reasoning_tokens = cls._token_count(out_details.get("reasoning"))
 

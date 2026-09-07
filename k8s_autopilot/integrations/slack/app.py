@@ -22,16 +22,16 @@ and retries via its built-in ASGI adapter.
 from __future__ import annotations
 
 import contextlib
-import logging
 from typing import Any
 
+from slack_bolt.adapter.starlette.async_handler import (  # type: ignore[import-not-found]
+    AsyncSlackRequestHandler,
+)
+from slack_bolt.async_app import AsyncApp  # type: ignore[import-not-found]
 from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from starlette.routing import Route
-
-from slack_bolt.adapter.starlette.async_handler import AsyncSlackRequestHandler  # type: ignore[import-not-found]  # noqa: E501 — submodule exists but isn't re-exported from __init__
-from slack_bolt.async_app import AsyncApp  # type: ignore[import-not-found]
 
 from k8s_autopilot.config.settings import Settings, get_settings
 from k8s_autopilot.integrations.slack.bolt_handlers import (
@@ -71,7 +71,11 @@ def create_slack_integration_server(
     # ── Validate required config (degrade gracefully for setup UI) ────
     cfg = config or get_settings()
     bot_token = getattr(cfg, "slack_bot_token", None) or getattr(cfg, "SLACK_BOT_TOKEN", None) or "xoxb-dummy-token"
-    signing_secret = getattr(cfg, "slack_signing_secret", None) or getattr(cfg, "SLACK_SIGNING_SECRET", None) or "dummy-signing-secret"
+    signing_secret = (
+        getattr(cfg, "slack_signing_secret", None)
+        or getattr(cfg, "SLACK_SIGNING_SECRET", None)
+        or "dummy-signing-secret"
+    )
 
     # ── Initialize Slack Bolt AsyncApp ────────────────────────────────
     bolt_app = AsyncApp(
@@ -82,11 +86,7 @@ def create_slack_integration_server(
     # ── Resolve the LangGraph compiled graph ──────────────────────────
     # k8sAutopilotSupervisorAgent stores it as ._graph (private)
     # Other agents may use .graph (public). Fall back to the object itself.
-    graph = (
-        getattr(supervisor_agent, "_graph", None)
-        or getattr(supervisor_agent, "graph", None)
-        or supervisor_agent
-    )
+    graph = getattr(supervisor_agent, "_graph", None) or getattr(supervisor_agent, "graph", None) or supervisor_agent
 
     # ── Create the integration ────────────────────────────────────────
     integration = SlackMessagingIntegration(
@@ -132,7 +132,15 @@ def create_slack_integration_server(
 
     # ── Lifespan ──────────────────────────────────────────────────────
     @contextlib.asynccontextmanager
-    async def lifespan(app: Starlette):  # noqa: ARG001
+    async def lifespan(app: Starlette):
+        """Manage Slack integration server lifespan and checkpointer upgrades.
+
+        Args:
+            app: Starlette application instance.
+
+        Yields:
+            None: Context during server execution.
+        """
         logger.info(
             "Slack integration server starting...",
             extra={"bolt_enabled": True},
@@ -156,7 +164,8 @@ def create_slack_integration_server(
         # Server cleanup
         logger.info("Slack integration server shutting down")
 
-    def sync_slack_credentials():
+    def sync_slack_credentials() -> None:
+        """Synchronize runtime Slack tokens and secrets with active config."""
         if config.SLACK_BOT_TOKEN:
             bolt_app.client.token = config.SLACK_BOT_TOKEN
             bolt_app._token = config.SLACK_BOT_TOKEN

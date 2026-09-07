@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 import fnmatch
-import logging
-from typing import Any, Callable, Sequence
+from typing import Any
+
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
-from k8s_autopilot.middleware.registry import register_middleware
 
+from k8s_autopilot.middleware.registry import register_middleware
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -96,6 +97,12 @@ class ToolFilterMiddleware(AgentMiddleware[Any, Any]):
         allowed_patterns: Sequence[str | dict[str, Any]] | None = None,
         capabilities: Sequence[dict[str, Any] | str] | None = None,
     ) -> None:
+        """Initialize ToolFilterMiddleware with allowed patterns and capabilities.
+
+        Args:
+            allowed_patterns: Sequence of tool name patterns or server match dictionaries.
+            capabilities: Optional sequence of agent capabilities used to determine allowed tools.
+        """
         super().__init__()
         patterns: list[str] = []
 
@@ -124,9 +131,7 @@ class ToolFilterMiddleware(AgentMiddleware[Any, Any]):
                 elif isinstance(cap, str):
                     patterns.append(cap)
 
-        self._allowed_patterns: tuple[str, ...] = (
-            _expand_tool_patterns(patterns) if patterns else ()
-        )
+        self._allowed_patterns: tuple[str, ...] = _expand_tool_patterns(patterns) if patterns else ()
 
     def is_tool_allowed(self, tool_name: str) -> bool:
         """Check if a tool name matches any allowed patterns."""
@@ -184,6 +189,15 @@ class ToolFilterMiddleware(AgentMiddleware[Any, Any]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Any],
     ) -> Any:
+        """Wrap synchronous tool call and enforce tool pattern allow-lists.
+
+        Args:
+            request: Tool execution request.
+            handler: Synchronous tool handler.
+
+        Returns:
+            ToolMessage error if filtered, or handler result.
+        """
         err = self._validate_tool_call(request)
         if err is not None:
             return err
@@ -194,6 +208,15 @@ class ToolFilterMiddleware(AgentMiddleware[Any, Any]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Any],
     ) -> Any:
+        """Wrap asynchronous tool call and enforce tool pattern allow-lists.
+
+        Args:
+            request: Tool execution request.
+            handler: Asynchronous tool handler.
+
+        Returns:
+            ToolMessage error if filtered, or handler result.
+        """
         err = self._validate_tool_call(request)
         if err is not None:
             return err

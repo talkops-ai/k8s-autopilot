@@ -1,5 +1,4 @@
-import uuid
-from typing import Any
+"""Thread management API routes for conversation lifecycle operations."""
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -13,10 +12,11 @@ def create_thread_routes() -> list[Route]:
     """Factory that returns Starlette routes for the Thread API."""
 
     async def create_thread(request: Request) -> JSONResponse:
+        """Create a new conversation thread."""
         service = get_thread_service()
         if not service:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
-            
+
         data = await request.json()
         req = ThreadCreate(**data)
         # TODO: Get user_id from auth context, using "default" for now
@@ -24,10 +24,11 @@ def create_thread_routes() -> list[Route]:
         return JSONResponse(resp.model_dump(mode="json"))
 
     async def search_threads(request: Request) -> JSONResponse:
+        """Search for existing threads matching criteria."""
         service = get_thread_service()
         if not service:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
-            
+
         data = await request.json()
         req = ThreadSearch(**data)
         # TODO: Enforce user_id from auth context
@@ -35,10 +36,11 @@ def create_thread_routes() -> list[Route]:
         return JSONResponse({"items": [t.model_dump(mode="json") for t in threads]})
 
     async def get_thread(request: Request) -> JSONResponse:
+        """Retrieve metadata for a specific thread."""
         service = get_thread_service()
         if not service:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
-            
+
         thread_id_str = request.path_params["thread_id"]
         resp = await service.get_thread(thread_id_str)
         if not resp:
@@ -46,10 +48,11 @@ def create_thread_routes() -> list[Route]:
         return JSONResponse(resp.model_dump(mode="json"))
 
     async def update_thread(request: Request) -> JSONResponse:
+        """Update metadata or title for an existing thread."""
         service = get_thread_service()
         if not service:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
-            
+
         thread_id_str = request.path_params["thread_id"]
         data = await request.json()
         req = ThreadUpdate(**data)
@@ -59,10 +62,11 @@ def create_thread_routes() -> list[Route]:
         return JSONResponse(resp.model_dump(mode="json"))
 
     async def delete_thread(request: Request) -> JSONResponse:
+        """Delete a conversation thread and its history."""
         service = get_thread_service()
         if not service:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
-            
+
         thread_id_str = request.path_params["thread_id"]
         deleted = await service.delete_thread(thread_id_str)
         if not deleted:
@@ -70,10 +74,11 @@ def create_thread_routes() -> list[Route]:
         return JSONResponse({"detail": "Thread deleted"})
 
     async def get_thread_state(request: Request) -> JSONResponse:
+        """Retrieve the current execution state for a thread."""
         service = get_thread_service()
         if not service:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
-            
+
         thread_id_str = request.path_params["thread_id"]
         resp = await service.get_thread_state(thread_id_str)
         if not resp:
@@ -81,10 +86,11 @@ def create_thread_routes() -> list[Route]:
         return JSONResponse(resp.model_dump(mode="json"))
 
     async def get_thread_history(request: Request) -> JSONResponse:
+        """Retrieve message history and checkpoints for a thread."""
         service = get_thread_service()
         if not service:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)
-            
+
         thread_id_str = request.path_params["thread_id"]
         limit = int(request.query_params.get("limit", 10))
 
@@ -94,6 +100,7 @@ def create_thread_routes() -> list[Route]:
         return JSONResponse(resp.model_dump(mode="json"))
 
     async def get_thread_telemetry(request: Request) -> JSONResponse:
+        """Retrieve token usage and telemetry metrics for a thread."""
         service = get_thread_service()
         if not service:
             return JSONResponse({"detail": "Thread API not ready"}, status_code=503)

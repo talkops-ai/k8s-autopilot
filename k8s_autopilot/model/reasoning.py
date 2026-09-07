@@ -9,17 +9,14 @@ into provider-native request shapes:
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
 from typing import Any
 
 from k8s_autopilot.model.config import (
     MODEL_PROFILES,
-    ModelProfile,
     ModelSpec,
     get_model_profile as _config_get_model_profile,
 )
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -53,9 +50,7 @@ def get_model_profile(spec: str) -> dict[str, Any] | None:
     return None
 
 
-def _model_profile(
-    model_spec: str | None, *, cli_override: dict[str, Any] | None = None
-) -> Mapping[str, Any] | None:
+def _model_profile(model_spec: str | None, *, cli_override: dict[str, Any] | None = None) -> Mapping[str, Any] | None:
     if not model_spec:
         return None
     profile = cli_override or get_model_profile(model_spec)
@@ -79,9 +74,7 @@ def supported_efforts_for_model(
     return tuple(str(lvl) for lvl in levels)
 
 
-def default_effort_for_model(
-    model_spec: str | None, *, cli_override: dict[str, Any] | None = None
-) -> str | None:
+def default_effort_for_model(model_spec: str | None, *, cli_override: dict[str, Any] | None = None) -> str | None:
     """Return the profile's reasoning effort default independently of its levels."""
     profile = _model_profile(model_spec, cli_override=cli_override)
     if profile is None:
@@ -92,12 +85,18 @@ def default_effort_for_model(
     return "medium"
 
 
-def is_effort_supported_for_model(
-    model_spec: str, effort: str, *, cli_override: dict[str, Any] | None = None
-) -> bool:
-    return effort.lower() in [
-        e.lower() for e in supported_efforts_for_model(model_spec, cli_override=cli_override)
-    ]
+def is_effort_supported_for_model(model_spec: str, effort: str, *, cli_override: dict[str, Any] | None = None) -> bool:
+    """Check whether a given reasoning effort level is supported by the specified model.
+
+    Args:
+        model_spec: Model specification string (e.g., 'openai:gpt-4o').
+        effort: Reasoning effort name to check.
+        cli_override: Optional override dictionary from CLI arguments.
+
+    Returns:
+        True if the effort level is supported; False otherwise.
+    """
+    return effort.lower() in [e.lower() for e in supported_efforts_for_model(model_spec, cli_override=cli_override)]
 
 
 def _str_or_none(value: object) -> str | None:
@@ -125,9 +124,7 @@ def _path_is_present(model_params: Mapping[str, Any], path: tuple[str, ...]) -> 
     return isinstance(nested, Mapping) and path[1] in nested
 
 
-def has_explicit_effort_model_params(
-    model_spec: str | None, model_params: dict[str, Any] | None
-) -> bool:
+def has_explicit_effort_model_params(model_spec: str | None, model_params: dict[str, Any] | None) -> bool:
     """Return whether canonical or native effort parameters are present."""
     if not model_spec or not model_params:
         return False
@@ -136,9 +133,7 @@ def has_explicit_effort_model_params(
     return any(_path_is_present(model_params, path) for path in _effort_paths(provider))
 
 
-def current_effort_from_model_params(
-    model_spec: str | None, model_params: dict[str, Any] | None
-) -> str | None:
+def current_effort_from_model_params(model_spec: str | None, model_params: dict[str, Any] | None) -> str | None:
     """Read canonical or native effort settings using integration precedence."""
     if not model_spec or not model_params:
         return None
@@ -161,9 +156,7 @@ def current_effort_from_model_params(
     return _str_or_none(model_params.get("reasoning_effort"))
 
 
-def without_effort_model_params(
-    model_spec: str | None, existing: dict[str, Any] | None
-) -> dict[str, Any] | None:
+def without_effort_model_params(model_spec: str | None, existing: dict[str, Any] | None) -> dict[str, Any] | None:
     """Remove canonical and native effort settings without changing siblings."""
     if not existing:
         return None
@@ -184,9 +177,7 @@ def without_effort_model_params(
     return cleaned or None
 
 
-def with_effort_model_params(
-    model_spec: str | None, existing: dict[str, Any] | None, effort: str
-) -> dict[str, Any]:
+def with_effort_model_params(model_spec: str | None, existing: dict[str, Any] | None, effort: str) -> dict[str, Any]:
     """Inject provider-native thinking/reasoning parameters."""
     updated = without_effort_model_params(model_spec, existing) or {}
     updated["reasoning_effort"] = effort

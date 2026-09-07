@@ -1,9 +1,10 @@
 """A2UI telemetry buffering middleware — prevents LLM context exhaustion."""
 
 import json
-from typing import Any
-from langchain_core.messages import ToolMessage
+from typing import Any, ClassVar
+
 from langchain.tools.tool_node import ToolCallRequest
+from langchain_core.messages import ToolMessage
 
 from k8s_autopilot.middleware.registry import BaseAgentMiddleware, register_middleware
 from k8s_autopilot.utils.logger import AgentLogger
@@ -14,24 +15,42 @@ logger = AgentLogger("A2UIBuffer")
 @register_middleware(name="a2ui_buffer")
 class A2UIBufferMiddleware(BaseAgentMiddleware):
     """Intercepts large A2UI JSON responses from MCP tools and buffers them in artifacts.
-    
+
     Prevents LLM context exhaustion by removing the huge JSON payload from the
     text content that the model sees, replacing it with a pointer for build_obs_a2ui.
     """
-    
-    A2UI_TOOLS = {
+
+    A2UI_TOOLS: ClassVar[dict[str, str]] = {
         "prom_query_a2ui_chart": "metrics",
         "loki_query_a2ui": "logs",
         "tempo_query_a2ui": "traces",
         "otel_query_a2ui": "otel",
-        "am_query_a2ui": "alerts"
+        "am_query_a2ui": "alerts",
     }
 
     def wrap_tool_call(self, request: ToolCallRequest, handler: Any) -> Any:
+        """Intercept synchronous tool execution to strip large chart/log JSON payloads from LLM context.
+
+        Args:
+            request: Tool execution request.
+            handler: Tool call execution handler.
+
+        Returns:
+            Processed tool execution result with stripped or buffered payload.
+        """
         result = handler(request)
         return self._process_result(request, result)
 
     async def awrap_tool_call(self, request: ToolCallRequest, handler: Any) -> Any:
+        """Intercept asynchronous tool execution to strip large chart/log JSON payloads from LLM context.
+
+        Args:
+            request: Tool execution request.
+            handler: Async tool call execution handler.
+
+        Returns:
+            Processed tool execution result with stripped or buffered payload.
+        """
         result = await handler(request)
         return self._process_result(request, result)
 
@@ -61,18 +80,18 @@ class A2UIBufferMiddleware(BaseAgentMiddleware):
                     elif isinstance(block, dict) and "text" in block:
                         parts.append(str(block["text"]))
                     elif hasattr(block, "text"):
-                        parts.append(str(getattr(block, "text")))
+                        parts.append(str(block.text))
                     else:
                         parts.append(str(block))
                 content_str = "".join(parts)
 
             # 2. Skip buffering if output is plain text (like an error message)
             data = json.loads(content_str)
-            
+
             # 3. Skip buffering if the MCP server returned a valid JSON error object
-            if isinstance(data, dict) and data.get("isError") or "error" in data:
+            if (isinstance(data, dict) and data.get("isError")) or "error" in data:
                 return result
-            
+
             # Save the raw data into the artifact
             artifact = result.artifact or {}
             if isinstance(artifact, dict):
@@ -80,9 +99,9 @@ class A2UIBufferMiddleware(BaseAgentMiddleware):
             else:
                 artifact = {"original_artifact": artifact, "a2ui_buffered_data": data}
             result.artifact = artifact
-            
+
             kind = self.A2UI_TOOLS[tool_name]
-            
+
             # Replace the massive text content with a safe pointer string
             result.content = (
                 f"Data successfully fetched and buffered in tool artifact. "
@@ -90,5 +109,5 @@ class A2UIBufferMiddleware(BaseAgentMiddleware):
             )
         except Exception as e:
             logger.debug(f"A2UIBufferMiddleware failed to parse JSON from {tool_name}: {e}")
-            
+
         return result

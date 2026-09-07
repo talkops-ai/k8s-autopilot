@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import json
-import logging
-import re
 from pathlib import Path
-from typing import Any
+import re
 
 from k8s_autopilot.subagents.types import SubagentMetadata
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -41,9 +37,7 @@ def _discover_local_skill_names(skills_dir: Path) -> list[str]:
     return sorted(names)
 
 
-def parse_subagent_bundle(
-    bundle_dir: Path, source: str = "built-in"
-) -> list[SubagentMetadata]:
+def parse_subagent_bundle(bundle_dir: Path, source: str = "built-in") -> list[SubagentMetadata]:
     """Parse a single subagent bundle directory (containing agents/, skills/, and optional .mcp.json)."""
     from k8s_autopilot.subagents.loader import _parse_subagent_file
 
@@ -109,9 +103,7 @@ def parse_built_in_subagents(
     return subagents
 
 
-def parse_subagent_file(
-    file_path: Path, *, fallback_name: str | None = None
-) -> SubagentMetadata | None:
+def parse_subagent_file(file_path: Path, *, fallback_name: str | None = None) -> SubagentMetadata | None:
     """Parse a subagent markdown file with YAML frontmatter."""
     from k8s_autopilot.subagents.loader import _parse_subagent_file
 

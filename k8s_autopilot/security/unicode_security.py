@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import ipaddress
-import unicodedata
 from dataclasses import dataclass
+import ipaddress
 from typing import Any
+import unicodedata
 from urllib.parse import urlparse
 
 _DANGEROUS_CODEPOINTS: frozenset[int] = frozenset(
@@ -30,9 +30,7 @@ _DANGEROUS_CODEPOINTS: frozenset[int] = frozenset(
     }
 )
 
-_DANGEROUS_CHARACTERS: frozenset[str] = frozenset(
-    chr(codepoint) for codepoint in _DANGEROUS_CODEPOINTS
-)
+_DANGEROUS_CHARACTERS: frozenset[str] = frozenset(chr(codepoint) for codepoint in _DANGEROUS_CODEPOINTS)
 
 CONFUSABLES: dict[str, str] = {
     # Cyrillic
@@ -67,15 +65,15 @@ CONFUSABLES: dict[str, str] = {
     "\uff4f": "o",
 }
 
-URL_ARG_KEYS: frozenset[str] = frozenset(
-    {"url", "uri", "href", "link", "base_url", "endpoint"}
-)
+URL_ARG_KEYS: frozenset[str] = frozenset({"url", "uri", "href", "link", "base_url", "endpoint"})
 
 _URL_SAFE_LOCAL_HOSTS: frozenset[str] = frozenset({"localhost"})
 
 
 @dataclass(frozen=True, slots=True)
 class UnicodeIssue:
+    """Detected Unicode safety issue with category, position, and severity."""
+
     position: int
     character: str
     codepoint: str
@@ -93,6 +91,8 @@ class UnicodeIssue:
 
 @dataclass(frozen=True, slots=True)
 class UrlSafetyResult:
+    """Result of URL safety analysis including detected Unicode attacks."""
+
     safe: bool
     decoded_domain: str | None
     warnings: tuple[str, ...]
@@ -100,6 +100,14 @@ class UrlSafetyResult:
 
 
 def detect_dangerous_unicode(text: str) -> list[UnicodeIssue]:
+    """Identify invisible, bidi-override, or homoglyph characters in text.
+
+    Args:
+        text: Input string to inspect.
+
+    Returns:
+        list[UnicodeIssue]: Detected suspicious Unicode issues with positions.
+    """
     issues: list[UnicodeIssue] = []
     for position, character in enumerate(text):
         if character not in _DANGEROUS_CHARACTERS:
@@ -116,6 +124,14 @@ def detect_dangerous_unicode(text: str) -> list[UnicodeIssue]:
 
 
 def strip_dangerous_unicode(text: str) -> str:
+    """Remove known dangerous Unicode characters from text.
+
+    Args:
+        text: Input string to sanitize.
+
+    Returns:
+        str: Sanitized string without dangerous characters.
+    """
     return "".join(ch for ch in text if ch not in _DANGEROUS_CHARACTERS)
 
 
@@ -126,6 +142,17 @@ def sanitize_control_chars(
     collapse_whitespace: bool = True,
     max_length: int | None = None,
 ) -> str:
+    """Sanitize control characters, normalize whitespace, and optionally truncate.
+
+    Args:
+        text: Input string to clean.
+        keep_newlines: Whether newlines should be preserved.
+        collapse_whitespace: Whether consecutive whitespace should be collapsed.
+        max_length: Maximum allowed character length before truncation.
+
+    Returns:
+        str: Sanitized and normalized string.
+    """
     allowed = {" ", "\n"} if keep_newlines else {" "}
     cleaned = "".join(
         ch if ch in allowed or not unicodedata.category(ch).startswith("C") else " "
@@ -142,18 +169,33 @@ def sanitize_control_chars(
 
 
 def render_with_unicode_markers(text: str) -> str:
+    """Render string replacing dangerous Unicode characters with descriptive markers.
+
+    Args:
+        text: Input string containing potential hidden characters.
+
+    Returns:
+        str: String with visible <U+XXXX NAME> markers.
+    """
     rendered_parts: list[str] = []
     for character in text:
         if character not in _DANGEROUS_CHARACTERS:
             rendered_parts.append(character)
             continue
-        rendered_parts.append(
-            f"<{_format_codepoint(character)} {_unicode_name(character)}>"
-        )
+        rendered_parts.append(f"<{_format_codepoint(character)} {_unicode_name(character)}>")
     return "".join(rendered_parts)
 
 
 def summarize_issues(issues: list[UnicodeIssue], *, max_items: int = 3) -> str:
+    """Create a concise human-readable summary of Unicode issues.
+
+    Args:
+        issues: List of detected Unicode issues.
+        max_items: Maximum distinct issues to list before summarizing remaining.
+
+    Returns:
+        str: Summary string suitable for user warnings.
+    """
     unique_entries: list[str] = []
     seen: set[str] = set()
     for issue in issues:
@@ -173,6 +215,15 @@ def summarize_issues(issues: list[UnicodeIssue], *, max_items: int = 3) -> str:
 
 
 def format_warning_detail(warnings: tuple[str, ...], *, max_shown: int = 2) -> str:
+    """Format multiple warning strings into a truncated single-line summary.
+
+    Args:
+        warnings: Tuple of warning messages.
+        max_shown: Maximum individual warnings to show before truncation.
+
+    Returns:
+        str: Formatted warning summary.
+    """
     shown = warnings[:max_shown]
     detail = "; ".join(shown)
     remaining = len(warnings) - max_shown
@@ -182,15 +233,21 @@ def format_warning_detail(warnings: tuple[str, ...], *, max_shown: int = 2) -> s
 
 
 def check_url_safety(url: str) -> UrlSafetyResult:
+    """Inspect a URL for homoglyphs, invisible characters, and punycode obfuscation.
+
+    Args:
+        url: URL string to inspect.
+
+    Returns:
+        UrlSafetyResult: Evaluation result containing safety boolean, decoded domain, and warnings.
+    """
     warnings: list[str] = []
     suspicious = False
 
     issues = detect_dangerous_unicode(url)
     if issues:
         suspicious = True
-        warnings.append(
-            f"URL contains hidden Unicode characters ({summarize_issues(issues)})"
-        )
+        warnings.append(f"URL contains hidden Unicode characters ({summarize_issues(issues)})")
 
     parsed = urlparse(url)
     hostname = parsed.hostname
@@ -228,9 +285,7 @@ def check_url_safety(url: str) -> UrlSafetyResult:
 
         if _label_has_suspicious_confusable_mix(label):
             suspicious = True
-            warnings.append(
-                f"Domain label '{label}' contains confusable Unicode characters"
-            )
+            warnings.append(f"Domain label '{label}' contains confusable Unicode characters")
 
     return UrlSafetyResult(
         safe=not suspicious,
@@ -340,6 +395,15 @@ def iter_string_values(
     *,
     prefix: str = "",
 ) -> list[tuple[str, str]]:
+    """Recursively collect nested string values along with their dot/bracket path keys.
+
+    Args:
+        data: Nested dictionary containing string values or sub-structures.
+        prefix: Current path prefix for recursion.
+
+    Returns:
+        list[tuple[str, str]]: List of (path, value) tuples.
+    """
     values: list[tuple[str, str]] = []
     for key, value in data.items():
         key_path = f"{prefix}.{key}" if prefix else key
@@ -374,6 +438,14 @@ def _iter_string_values_from_list(
 
 
 def looks_like_url_key(arg_path: str) -> bool:
+    """Determine whether an argument path represents a URL or URI parameter.
+
+    Args:
+        arg_path: Path string (e.g. 'params.source_url').
+
+    Returns:
+        bool: True if key name matches known URL patterns.
+    """
     key = arg_path.rsplit(".", maxsplit=1)[-1]
     key = key.split("[", maxsplit=1)[0].lower()
     return key in URL_ARG_KEYS or key.endswith(("_url", "_uri"))

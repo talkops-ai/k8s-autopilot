@@ -20,12 +20,14 @@ import json
 from typing import Any
 
 # Keys that are internal/metadata and should not be displayed
-_SKIP_KEYS: frozenset[str] = frozenset({
-    "__tool_call_id",
-    "id",
-    "type",
-    "tool_call_id",
-})
+_SKIP_KEYS: frozenset[str] = frozenset(
+    {
+        "__tool_call_id",
+        "id",
+        "type",
+        "tool_call_id",
+    }
+)
 
 
 def _key_to_label(key: str) -> str:
@@ -132,17 +134,21 @@ def extract_parameters(
     for key, value in args.items():
         if key in _SKIP_KEYS:
             continue
-        parameters.append({
-            "key": _key_to_label(key),
-            "value": _value_to_str(value),
-        })
+        parameters.append(
+            {
+                "key": _key_to_label(key),
+                "value": _value_to_str(value),
+            }
+        )
 
     # If there are multiple action requests, add a summary count
     if len(action_requests) > 1:
         additional = len(action_requests) - 1
-        parameters.append({
-            "key": "Additional Operations",
-            "value": f"+{additional} more",
-        })
+        parameters.append(
+            {
+                "key": "Additional Operations",
+                "value": f"+{additional} more",
+            }
+        )
 
     return tool_name, description, parameters

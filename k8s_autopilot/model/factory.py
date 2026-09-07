@@ -6,10 +6,9 @@ active model spec (``provider:model``) and reasoning effort configuration.
 
 from __future__ import annotations
 
-import importlib
-import logging
-import os
 from dataclasses import dataclass
+import importlib
+import os
 from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
@@ -32,7 +31,6 @@ from k8s_autopilot.model.config import (
     has_provider_credentials,
     normalize_model_spec,
 )
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)

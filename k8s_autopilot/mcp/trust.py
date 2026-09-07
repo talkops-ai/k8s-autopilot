@@ -1,5 +1,4 @@
-"""
-SHA-256 trust store for project-level MCP configs.
+"""SHA-256 trust store for project-level MCP configs.
 
 Before loading a project-level ``.mcp.json``, the trust store checks
 whether the file's SHA-256 fingerprint has been previously approved.
@@ -21,11 +20,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from k8s_autopilot.utils.logger import AgentLogger
 from pathlib import Path
-from typing import Dict
 
 from k8s_autopilot.config import paths
+from k8s_autopilot.utils.logger import AgentLogger
 
 logger = AgentLogger("MCPTrust")
 
@@ -40,16 +38,19 @@ class MCPTrustStore:
     TRUST_FILE = paths.MCP_TRUST_PATH
 
     def __init__(self, trust_file: Path | None = None) -> None:
-        self._trust_file = trust_file or self.TRUST_FILE
-        self._trusted: Dict[str, str] = self._load()
+        """Initialize MCPTrustStore with trust persistence file.
 
-    def _load(self) -> Dict[str, str]:
+        Args:
+            trust_file: Optional explicit path to the JSON trust store file.
+        """
+        self._trust_file = trust_file or self.TRUST_FILE
+        self._trusted: dict[str, str] = self._load()
+
+    def _load(self) -> dict[str, str]:
         """Load trusted fingerprints from disk."""
         if self._trust_file.exists():
             try:
-                data = json.loads(
-                    self._trust_file.read_text(encoding="utf-8")
-                )
+                data = json.loads(self._trust_file.read_text(encoding="utf-8"))
                 return data.get("trusted", {})
             except Exception as e:
                 logger.warning(f"Failed to load MCP trust store at {self._trust_file}: {e}")
@@ -65,9 +66,7 @@ class MCPTrustStore:
 
     def _fingerprint(self, config_path: Path) -> str:
         """Compute SHA-256 of a config file."""
-        return hashlib.sha256(
-            config_path.read_bytes()
-        ).hexdigest()
+        return hashlib.sha256(config_path.read_bytes()).hexdigest()
 
     def is_trusted(self, config_path: Path) -> bool:
         """Check if a config file's current content is trusted.

@@ -1,4 +1,4 @@
-"""Markdown → Slack mrkdwn converter.
+r"""Markdown → Slack mrkdwn converter.
 
 Slack uses ``mrkdwn`` — a proprietary formatting dialect that differs
 from standard Markdown in several critical ways:

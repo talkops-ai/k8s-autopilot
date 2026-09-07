@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
@@ -13,7 +12,6 @@ from langchain_core.tools import BaseTool
 from langgraph.types import Command
 
 from k8s_autopilot.middleware.registry import register_middleware
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,23 +29,15 @@ def mcp_tool_is_coherently_read_only(tool: object) -> bool:
         "openWorldHint",
     )
     if any(
-        name in metadata
-        and metadata[name] is not None
-        and not isinstance(metadata[name], bool)
-        for name in hint_names
+        name in metadata and metadata[name] is not None and not isinstance(metadata[name], bool) for name in hint_names
     ):
         return False
-    return (
-        metadata.get("readOnlyHint") is True
-        and metadata.get("destructiveHint") is not True
-    )
+    return metadata.get("readOnlyHint") is True and metadata.get("destructiveHint") is not True
 
 
 def gated_mcp_tool_names(mcp_tools: Sequence[BaseTool]) -> set[str]:
     """Return MCP tool names that require manual approval (not coherently read-only)."""
-    return {
-        tool.name for tool in mcp_tools if not mcp_tool_is_coherently_read_only(tool)
-    }
+    return {tool.name for tool in mcp_tools if not mcp_tool_is_coherently_read_only(tool)}
 
 
 @register_middleware(name="headless_mcp_guard")
@@ -55,6 +45,11 @@ class HeadlessMCPGuardMiddleware(HumanInTheLoopMiddleware[AgentState[Any], Any, 
     """Reject dynamically gated MCP calls when running headlessly without an approval UI."""
 
     def __init__(self, tool_names: Sequence[str] | set[str] | None = None) -> None:
+        """Initialize HeadlessMCPGuardMiddleware.
+
+        Args:
+            tool_names: Collection of mutating tool names that require human approval.
+        """
         super().__init__({})
         self._tool_names = frozenset(tool_names or ())
 
@@ -80,6 +75,15 @@ class HeadlessMCPGuardMiddleware(HumanInTheLoopMiddleware[AgentState[Any], Any, 
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap synchronous tool call and block guarded tools if running headlessly.
+
+        Args:
+            request: Tool execution request.
+            handler: Synchronous tool handler.
+
+        Returns:
+            Rejection ToolMessage or result from handler.
+        """
         return self._rejection(request) or handler(request)
 
     async def awrap_tool_call(
@@ -87,5 +91,14 @@ class HeadlessMCPGuardMiddleware(HumanInTheLoopMiddleware[AgentState[Any], Any, 
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap asynchronous tool call and block guarded tools if running headlessly.
+
+        Args:
+            request: Tool execution request.
+            handler: Asynchronous tool handler.
+
+        Returns:
+            Rejection ToolMessage or result from handler.
+        """
         rejection = self._rejection(request)
         return rejection if rejection is not None else await handler(request)

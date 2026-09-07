@@ -44,7 +44,7 @@ def build_skill_invocation_envelope(
 
 def parse_skill_command(command: str) -> tuple[str, str]:
     """Extract skill name and args from a ``/skill:<name>`` command."""
-    after_prefix = command[len("/skill:"):].strip()
+    after_prefix = command[len("/skill:") :].strip()
     parts = after_prefix.split(maxsplit=1)
     if not parts or not parts[0]:
         return "", ""

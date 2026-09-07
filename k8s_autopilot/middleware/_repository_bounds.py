@@ -17,7 +17,6 @@ import ast
 import asyncio
 import base64
 import json
-import logging
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +25,7 @@ from deepagents.backends.protocol import SandboxBackendProtocol
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
     from deepagents.backends.protocol import BackendProtocol, FileInfo
 
 from k8s_autopilot.utils.logger import get_logger
@@ -68,9 +68,7 @@ REPOSITORY_PATH_RESULT_PREFIX = "__K8S_AUTOPILOT_REPOSITORY_PATH__"
 # ---------------------------------------------------------------------------
 
 REPOSITORY_PATH_ERROR = "Repository path is unavailable."
-REPOSITORY_UNAVAILABLE_ERROR = (
-    "Repository is temporarily unavailable; the path could not be verified."
-)
+REPOSITORY_UNAVAILABLE_ERROR = "Repository is temporarily unavailable; the path could not be verified."
 REPOSITORY_SIZE_ERROR = "Repository file exceeds the size limit."
 REPOSITORY_LISTING_ERROR = "Repository directory exceeds the listing limit."
 REPOSITORY_READ_ONLY_ERROR = "Repository inspection is limited to read-only tools."
@@ -94,6 +92,13 @@ class RepositoryBounds:
         root: str = "/",
         allowed_tools: Sequence[str] | None = None,
     ) -> None:
+        """Initialize RepositoryBounds with backend and access boundaries.
+
+        Args:
+            backend: Storage or execution backend to guard.
+            root: Root path constraint for repository inspection.
+            allowed_tools: Sequence of tool names permitted for execution.
+        """
         normalized = root.replace("\\", "/")
         path = PurePosixPath(normalized)
         if not normalized.startswith("/") or ".." in path.parts or "~" in root:
@@ -101,25 +106,16 @@ class RepositoryBounds:
             raise ValueError(msg)
         self._backend = backend
         self._root = str(path)
-        self._allowed_tools = (
-            frozenset(allowed_tools)
-            if allowed_tools is not None
-            else REPOSITORY_TOOL_NAMES
-        )
+        self._allowed_tools = frozenset(allowed_tools) if allowed_tools is not None else REPOSITORY_TOOL_NAMES
         self._sandbox = backend if isinstance(backend, SandboxBackendProtocol) else None
-        self._filesystem = (
-            backend
-            if self._sandbox is None and isinstance(backend, FilesystemBackend)
-            else None
-        )
+        self._filesystem = backend if self._sandbox is None and isinstance(backend, FilesystemBackend) else None
         self._filesystem_root: Path | None = None
         if self._filesystem is not None:
             try:
                 self._filesystem_root = self._resolve_filesystem_path(self._root)
             except _BACKEND_ERRORS:
                 logger.warning(
-                    "Could not resolve the local repository root; local repository "
-                    "paths will be unavailable",
+                    "Could not resolve the local repository root; local repository paths will be unavailable",
                     exc_info=True,
                 )
 
@@ -162,15 +158,11 @@ class RepositoryBounds:
             resolved = self._resolve_filesystem_path(raw_path)
         except _BACKEND_ERRORS:
             logger.warning(
-                "Local repository containment check failed; treating the path as "
-                "unavailable",
+                "Local repository containment check failed; treating the path as unavailable",
                 exc_info=True,
             )
             return False
-        return (
-            resolved == self._filesystem_root
-            or self._filesystem_root in resolved.parents
-        )
+        return resolved == self._filesystem_root or self._filesystem_root in resolved.parents
 
     def _containment_command(self, raw_path: str) -> str:
         payload = base64.b64encode(json.dumps([self._root, raw_path]).encode()).decode()
@@ -183,6 +175,14 @@ class RepositoryBounds:
         )
 
     def sandbox_contains(self, raw_path: str) -> bool:
+        """Check synchronously whether a target path is contained within the root boundary.
+
+        Args:
+            raw_path: Filesystem path to test.
+
+        Returns:
+            True if contained within the root, False otherwise.
+        """
         if self._sandbox is None:
             return self._filesystem_contains(raw_path)
         try:
@@ -194,11 +194,18 @@ class RepositoryBounds:
             )
             return False
         return result.exit_code in {None, 0} and any(
-            line == f"{REPOSITORY_PATH_RESULT_PREFIX}1"
-            for line in result.output.splitlines()
+            line == f"{REPOSITORY_PATH_RESULT_PREFIX}1" for line in result.output.splitlines()
         )
 
     async def asandbox_contains(self, raw_path: str) -> bool:
+        """Check asynchronously whether a target path is contained within the root boundary.
+
+        Args:
+            raw_path: Filesystem path to test.
+
+        Returns:
+            True if contained within the root, False otherwise.
+        """
         if self._sandbox is None:
             if self._filesystem is None:
                 return True
@@ -212,8 +219,7 @@ class RepositoryBounds:
             )
             return False
         return result.exit_code in {None, 0} and any(
-            line == f"{REPOSITORY_PATH_RESULT_PREFIX}1"
-            for line in result.output.splitlines()
+            line == f"{REPOSITORY_PATH_RESULT_PREFIX}1" for line in result.output.splitlines()
         )
 
     @staticmethod
@@ -221,6 +227,15 @@ class RepositoryBounds:
         entries: Sequence[FileInfo] | None,
         normalized_path: str,
     ) -> int | None:
+        """Look up file size for a normalized path in directory listing entries.
+
+        Args:
+            entries: Sequence of FileInfo entries.
+            normalized_path: Normalized POSIX path string.
+
+        Returns:
+            File size in bytes if found, or None.
+        """
         for item in entries or []:
             raw = item.get("path") if isinstance(item, dict) else None
             if not isinstance(raw, str):
@@ -241,14 +256,22 @@ class RepositoryBounds:
 
         patterns = [args.get("pattern")] if name == "glob" else [args.get("glob")]
         if any(
-            pattern is not None
-            and (not isinstance(pattern, str) or not self.safe_pattern(pattern))
+            pattern is not None and (not isinstance(pattern, str) or not self.safe_pattern(pattern))
             for pattern in patterns
         ):
             return REPOSITORY_PATH_ERROR
         return None
 
     def preflight(self, name: str, args: dict[str, Any]) -> str | None:
+        """Perform synchronous safety, path traversal, and size preflight checks.
+
+        Args:
+            name: Tool name being invoked.
+            args: Tool execution argument dictionary.
+
+        Returns:
+            Error message string if validation failed, or None if passed.
+        """
         if name not in self._allowed_tools:
             return REPOSITORY_READ_ONLY_ERROR
         if name == "execute":
@@ -279,8 +302,7 @@ class RepositoryBounds:
             result = self._backend.ls(raw_path if name == "ls" else str(path.parent))
         except _BACKEND_ERRORS:
             logger.warning(
-                "Repository preflight failed for tool %r; treating the "
-                "repository as temporarily unavailable",
+                "Repository preflight failed for tool %r; treating the repository as temporarily unavailable",
                 name,
                 exc_info=True,
             )
@@ -297,6 +319,15 @@ class RepositoryBounds:
         return None
 
     async def apreflight(self, name: str, args: dict[str, Any]) -> str | None:
+        """Perform asynchronous safety, path traversal, and size preflight checks.
+
+        Args:
+            name: Tool name being invoked.
+            args: Tool execution argument dictionary.
+
+        Returns:
+            Error message string if validation failed, or None if passed.
+        """
         if name not in self._allowed_tools:
             return REPOSITORY_READ_ONLY_ERROR
         if name == "execute":
@@ -308,9 +339,7 @@ class RepositoryBounds:
             raw_path = args.get("path")
             if raw_path is None:
                 raw_path = self._root
-            if not isinstance(raw_path, str) or not await self.asandbox_contains(
-                raw_path
-            ):
+            if not isinstance(raw_path, str) or not await self.asandbox_contains(raw_path):
                 return REPOSITORY_PATH_ERROR
             return None
 
@@ -326,13 +355,10 @@ class RepositoryBounds:
             return REPOSITORY_PATH_ERROR
 
         try:
-            result = await self._backend.als(
-                raw_path if name == "ls" else str(path.parent)
-            )
+            result = await self._backend.als(raw_path if name == "ls" else str(path.parent))
         except _BACKEND_ERRORS:
             logger.warning(
-                "Repository preflight failed for tool %r; treating the "
-                "repository as temporarily unavailable",
+                "Repository preflight failed for tool %r; treating the repository as temporarily unavailable",
                 name,
                 exc_info=True,
             )
@@ -349,6 +375,15 @@ class RepositoryBounds:
         return None
 
     def clamp_args(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Clamp tool arguments to safe limits (line limits, match count, root path).
+
+        Args:
+            name: Tool name being invoked.
+            args: Raw tool arguments.
+
+        Returns:
+            New argument dictionary with clamped values.
+        """
         clamped = dict(args)
         if name == "read_file":
             limit = clamped.get("limit", REPOSITORY_READ_LINE_LIMIT)
@@ -366,26 +401,38 @@ class RepositoryBounds:
 
     @staticmethod
     def bounded_glob_content(content: str) -> str:
+        """Truncate glob output list to the maximum match limit.
+
+        Args:
+            content: Raw tool output string containing python list literal.
+
+        Returns:
+            Truncated string representation if over the limit, or original content.
+        """
         body, separator, notes = content.partition("\n\n")
         try:
             paths = ast.literal_eval(body)
         except (SyntaxError, ValueError):
             return content
-        if not isinstance(paths, list) or not all(
-            isinstance(path, str) for path in paths
-        ):
+        if not isinstance(paths, list) or not all(isinstance(path, str) for path in paths):
             return content
         if len(paths) <= REPOSITORY_GLOB_MATCH_LIMIT:
             return content
-        marker = (
-            "[Glob results limited to the first "
-            f"{REPOSITORY_GLOB_MATCH_LIMIT} matches.]"
-        )
+        marker = f"[Glob results limited to the first {REPOSITORY_GLOB_MATCH_LIMIT} matches.]"
         bounded = str(paths[:REPOSITORY_GLOB_MATCH_LIMIT])
         suffix = f"\n\n{notes}" if separator and notes else ""
         return f"{bounded}\n\n{marker}{suffix}"
 
     def bound_text(self, name: str, content: str) -> str:
+        """Enforce maximum byte length limits on tool result output.
+
+        Args:
+            name: Tool name invoked.
+            content: Raw tool output text.
+
+        Returns:
+            Bounded text with truncation indicator if necessary.
+        """
         if name == "glob":
             content = self.bounded_glob_content(content)
         if len(content) > REPOSITORY_TOOL_RESULT_LIMIT:

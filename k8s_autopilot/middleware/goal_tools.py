@@ -16,7 +16,6 @@ The notice mechanism has two complementary halves:
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from langchain.agents.middleware.types import (
@@ -37,7 +36,6 @@ from k8s_autopilot.middleware.goal_state_notice import (
 )
 from k8s_autopilot.middleware.registry import register_middleware
 from k8s_autopilot.tools.goal_tools import (
-    GOAL_TOOL_NAMES,
     GoalToolState,
     get_goal,
     get_rubric,
@@ -84,11 +82,7 @@ def _goal_state_notice_for(
     latest = latest_goal_state_notice(messages)
     latest_candidate = latest_goal_state_message_index(messages)
     fingerprint = goal_state_fingerprint(state)
-    if (
-        latest is not None
-        and latest[0] == latest_candidate
-        and latest[1]["state_fingerprint"] == fingerprint
-    ):
+    if latest is not None and latest[0] == latest_candidate and latest[1]["state_fingerprint"] == fingerprint:
         return None
     if latest_candidate is None and not has_goal_or_rubric_state(state):
         return None
@@ -210,9 +204,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     async def awrap_model_call(
         self,
         request: ModelRequest[ContextT],
-        handler: Callable[
-            [ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]
-        ],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
     ) -> ModelResponse[ResponseT]:
         """Re-pin the goal-state notice into each async model request when needed.
 

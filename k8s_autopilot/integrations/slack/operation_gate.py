@@ -31,9 +31,8 @@ References:
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -56,10 +55,7 @@ class SlackOperationClassification(BaseModel):
     """
 
     operation_type: Literal["read", "write"] = Field(
-        description=(
-            "Whether this request reads/observes cluster state ('read') "
-            "or mutates/changes it ('write')."
-        ),
+        description=("Whether this request reads/observes cluster state ('read') or mutates/changes it ('write')."),
     )
     agent: Literal[
         "helm_operator",
@@ -186,11 +182,8 @@ class GateResult:
     """
 
     allowed: bool
-    classification: Optional[SlackOperationClassification] = None
-    block_message: Optional[str] = None
-
-
-
+    classification: SlackOperationClassification | None = None
+    block_message: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -222,13 +215,22 @@ class SlackOperationGate:
     """
 
     def __init__(self, config: Any) -> None:
+        """Initialize SlackOperationGate with operation mode and write whitelist.
+
+        Args:
+            config: Application configuration object containing Slack operation settings.
+        """
         self._config = config
         self._classifier: Any = None  # Lazy-init
         self._operation_mode: str = getattr(
-            config, "SLACK_OPERATION_MODE", "read",
+            config,
+            "SLACK_OPERATION_MODE",
+            "read",
         )
         self._write_whitelist: list[str] = getattr(
-            config, "SLACK_WRITE_WHITELIST", [],
+            config,
+            "SLACK_WRITE_WHITELIST",
+            [],
         )
 
         logger.info(
@@ -355,7 +357,4 @@ class SlackOperationGate:
         """
         if "*" in self._write_whitelist:
             return True
-        return any(
-            agent == entry or agent.startswith(f"{entry}.")
-            for entry in self._write_whitelist
-        )
+        return any(agent == entry or agent.startswith(f"{entry}.") for entry in self._write_whitelist)

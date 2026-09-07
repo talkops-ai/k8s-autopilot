@@ -6,9 +6,8 @@ import asyncio
 import concurrent.futures
 import dataclasses
 import json
-import logging
-import shutil
 from pathlib import Path
+import shutil
 from typing import TYPE_CHECKING, Any
 
 from k8s_autopilot.plugins.manifest import (
@@ -19,7 +18,6 @@ from k8s_autopilot.plugins.manifest import (
 )
 from k8s_autopilot.plugins.marketplace import (
     MarketplaceError,
-    load_marketplace,
     load_marketplace_location,
     materialize_marketplace_source,
     materialize_plugin_source,
@@ -27,7 +25,6 @@ from k8s_autopilot.plugins.marketplace import (
     redact_urls_in_text,
 )
 from k8s_autopilot.plugins.models import (
-    ComponentInventory,
     InstallScope,
     MarketplacePluginEntry,
     MarketplaceRecord,
@@ -55,6 +52,8 @@ from k8s_autopilot.plugins.store import (
 if TYPE_CHECKING:
     from k8s_autopilot.config.store import ConfigStore
 
+import contextlib
+
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -65,6 +64,7 @@ def _get_active_store(store: ConfigStore | None = None) -> ConfigStore | None:
         return store
     try:
         from k8s_autopilot.api.settings_routes import _config_store
+
         if _config_store is not None:
             return _config_store
     except Exception:
@@ -78,9 +78,7 @@ def _get_active_store(store: ConfigStore | None = None) -> ConfigStore | None:
     return None
 
 
-async def add_marketplace_source_async(
-    raw: str, store: ConfigStore | None = None
-) -> PluginMarketplace:
+async def add_marketplace_source_async(raw: str, store: ConfigStore | None = None) -> PluginMarketplace:
     """Add a marketplace from a URL, git repo (owner/repo), or local path and save to DB."""
     active_store = _get_active_store(store)
     source = parse_marketplace_source(raw)
@@ -200,9 +198,7 @@ def _plugin_from_install_path(
 ) -> tuple[PluginInstance | None, tuple[str, ...]]:
     warnings: list[str] = []
     try:
-        manifest, _manifest_path, manifest_warnings = load_manifest(
-            root, fallback_name=fallback_name
-        )
+        manifest, _manifest_path, manifest_warnings = load_manifest(root, fallback_name=fallback_name)
     except PluginManifestError as exc:
         return None, (f"Skipping plugin {plugin_id}: {exc}",)
     warnings.extend(manifest_warnings)
@@ -247,9 +243,7 @@ async def install_plugin_async(
         raise MarketplaceError(msg)
 
     try:
-        manifest, _manifest_path, manifest_warnings = load_manifest(
-            source_root, fallback_name=entry.name
-        )
+        manifest, _manifest_path, _manifest_warnings = load_manifest(source_root, fallback_name=entry.name)
     except PluginManifestError as exc:
         msg = f"Cannot install {plugin_id}: {exc}"
         raise MarketplaceError(msg) from exc
@@ -277,7 +271,11 @@ async def install_plugin_async(
     comp = inspect_plugin_components(cache_path, instance.manifest)
     display_name = comp["display_name"] or entry.display_name or entry.name
     description = comp["description"] or entry.description or ""
-    author = comp["author"] or (entry.author if isinstance(entry.author, str) else (entry.author.get("name") if isinstance(entry.author, dict) else None))
+    author = comp["author"] or (
+        entry.author
+        if isinstance(entry.author, str)
+        else (entry.author.get("name") if isinstance(entry.author, dict) else None)
+    )
 
     await add_installed_plugin_entry_async(
         plugin_id,
@@ -291,7 +289,9 @@ async def install_plugin_async(
         skill_names=comp["skill_names"],
         mcp_server_names=comp["mcp_server_names"],
         source_type=getattr(entry.source, "source_type", "local"),
-        source_value=getattr(entry.source, "path", None) or getattr(entry.source, "url", None) or getattr(entry.source, "repo", None),
+        source_value=getattr(entry.source, "path", None)
+        or getattr(entry.source, "url", None)
+        or getattr(entry.source, "repo", None),
         store=active_store,
     )
 
@@ -299,7 +299,7 @@ async def install_plugin_async(
     mcp_file = cache_path / ".mcp.json"
     if mcp_file.is_file():
         try:
-            with open(mcp_file, "r", encoding="utf-8") as f:
+            with open(mcp_file, encoding="utf-8") as f:
                 mcp_data = json.load(f)
             servers = mcp_data.get("mcpServers") if isinstance(mcp_data, dict) else None
             if isinstance(servers, dict):
@@ -309,24 +309,23 @@ async def install_plugin_async(
                         command = s_conf.get("command")
                         transport = s_conf.get("transport") or s_conf.get("type")
                         if not transport:
-                            if url:
-                                transport = "sse" if "sse" in str(url).lower() else "http"
-                            else:
-                                transport = "stdio"
-                        await active_store.upsert_mcp_server({
-                            "name": s_name,
-                            "transport": transport,
-                            "command": command,
-                            "args": s_conf.get("args", []),
-                            "url": url,
-                            "env": s_conf.get("env", {}),
-                            "headers": s_conf.get("headers", {}),
-                            "source": f"plugin:{entry.name}",
-                            "disabled_tools": s_conf.get("disabled_tools") or s_conf.get("disabledTools") or [],
-                            "allowed_tools": s_conf.get("allowed_tools") or s_conf.get("allowedTools") or [],
-                            "enabled": not s_conf.get("disabled", False),
-                            "trusted": False,
-                        })
+                            transport = ("sse" if "sse" in str(url).lower() else "http") if url else "stdio"
+                        await active_store.upsert_mcp_server(
+                            {
+                                "name": s_name,
+                                "transport": transport,
+                                "command": command,
+                                "args": s_conf.get("args", []),
+                                "url": url,
+                                "env": s_conf.get("env", {}),
+                                "headers": s_conf.get("headers", {}),
+                                "source": f"plugin:{entry.name}",
+                                "disabled_tools": s_conf.get("disabled_tools") or s_conf.get("disabledTools") or [],
+                                "allowed_tools": s_conf.get("allowed_tools") or s_conf.get("allowedTools") or [],
+                                "enabled": not s_conf.get("disabled", False),
+                                "trusted": False,
+                            }
+                        )
         except Exception as exc:
             logger.debug("Failed to auto-seed plugin MCP servers: %s", exc)
 
@@ -396,6 +395,7 @@ async def uninstall_plugin_async(
     # Invalidate SkillRegistry in-memory caches
     try:
         from k8s_autopilot.skills.registry import SkillRegistry
+
         SkillRegistry.reset()
     except Exception:
         pass
@@ -433,6 +433,7 @@ async def set_plugin_enabled_async(
 
         try:
             from k8s_autopilot.skills.registry import SkillRegistry
+
             SkillRegistry.reset()
         except Exception:
             pass
@@ -478,13 +479,15 @@ async def discover_plugins_async(
                 try:
                     logger.info("Auto-rehydrating missing plugin cache for %s", plugin_id)
                     instance = await install_plugin_async(plugin_id, store=active_store)
-                    if is_enabled and instance is not None and not any(p.plugin_id == instance.plugin_id for p in plugins):
+                    if (
+                        is_enabled
+                        and instance is not None
+                        and not any(p.plugin_id == instance.plugin_id for p in plugins)
+                    ):
                         plugins.append(instance)
                     continue
                 except Exception as exc:
-                    warnings.append(
-                        f"Plugin {plugin_id} is recorded in DB but auto-rehydration failed: {exc}"
-                    )
+                    warnings.append(f"Plugin {plugin_id} is recorded in DB but auto-rehydration failed: {exc}")
                     continue
 
             try:
@@ -536,17 +539,19 @@ async def list_available_plugins_async(
                 continue
 
             source_root = None
-            try:
+            with contextlib.suppress(Exception):
                 source_root = materialize_plugin_source(marketplace, plugin)
-            except Exception:
-                pass
 
             if source_root and source_root.exists():
                 comp = inspect_plugin_components(source_root)
                 display_name = comp["display_name"] or plugin.display_name or plugin.name
                 description = comp["description"] or plugin.description or ""
                 version = comp["version"]
-                author = comp["author"] or (plugin.author if isinstance(plugin.author, str) else (plugin.author.get("name") if isinstance(plugin.author, dict) else None))
+                author = comp["author"] or (
+                    plugin.author
+                    if isinstance(plugin.author, str)
+                    else (plugin.author.get("name") if isinstance(plugin.author, dict) else None)
+                )
                 skill_names = comp["skill_names"]
                 skill_count = comp["skill_count"]
                 mcp_server_names = comp["mcp_server_names"]
@@ -554,26 +559,32 @@ async def list_available_plugins_async(
                 display_name = plugin.display_name or plugin.name
                 description = plugin.description or ""
                 version = "1.0.0"
-                author = plugin.author if isinstance(plugin.author, str) else (plugin.author.get("name") if isinstance(plugin.author, dict) else None)
+                author = (
+                    plugin.author
+                    if isinstance(plugin.author, str)
+                    else (plugin.author.get("name") if isinstance(plugin.author, dict) else None)
+                )
                 skill_names = []
                 skill_count = 0
                 mcp_server_names = []
 
-            results.append({
-                "plugin_id": plugin_id,
-                "name": plugin.name,
-                "display_name": display_name,
-                "description": description,
-                "version": version,
-                "author": author,
-                "marketplace": marketplace.name,
-                "installed": is_installed,
-                "enabled": is_enabled,
-                "skill_count": skill_count,
-                "skill_names": skill_names,
-                "mcp_server_names": mcp_server_names,
-                "source_type": getattr(plugin.source, "source_type", "local"),
-            })
+            results.append(
+                {
+                    "plugin_id": plugin_id,
+                    "name": plugin.name,
+                    "display_name": display_name,
+                    "description": description,
+                    "version": version,
+                    "author": author,
+                    "marketplace": marketplace.name,
+                    "installed": is_installed,
+                    "enabled": is_enabled,
+                    "skill_count": skill_count,
+                    "skill_names": skill_names,
+                    "mcp_server_names": mcp_server_names,
+                    "source_type": getattr(plugin.source, "source_type", "local"),
+                }
+            )
 
     return results
 
@@ -611,17 +622,26 @@ class PluginDiscovery:
     """Legacy class wrapper for plugin discovery."""
 
     def __init__(self, project_root: Path | None = None, store: ConfigStore | None = None) -> None:
+        """Initialize PluginDiscovery instance.
+
+        Args:
+            project_root: Optional project root path.
+            store: Optional configuration store.
+        """
         self.project_root = project_root
         self._store = store
 
     def discover_all(self) -> dict[str, PluginInstance]:
+        """Discover all available plugins.
+
+        Returns:
+            dict[str, PluginInstance]: Mapping of plugin names to their instances.
+        """
         result = discover_plugins(self.project_root, store=self._store)
         return {p.name: p for p in result.plugins}
 
 
-def discover_plugins(
-    project_root: Path | None = None, store: ConfigStore | None = None
-) -> PluginDiscoveryResult:
+def discover_plugins(project_root: Path | None = None, store: ConfigStore | None = None) -> PluginDiscoveryResult:
     """Synchronous discovery entrypoint."""
     try:
         try:
@@ -631,9 +651,7 @@ def discover_plugins(
 
         if loop is not None and loop.is_running():
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(
-                    asyncio.run, discover_plugins_async(store, project_root)
-                ).result()
+                return pool.submit(asyncio.run, discover_plugins_async(store, project_root)).result()
         return asyncio.run(discover_plugins_async(store, project_root))
     except Exception as exc:
         logger.debug("discover_plugins async failed, falling back to local: %s", exc)

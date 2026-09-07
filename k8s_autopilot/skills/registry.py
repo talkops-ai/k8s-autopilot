@@ -11,27 +11,28 @@ Supports:
 from __future__ import annotations
 
 import asyncio
-import logging
-import re
-import threading
 from collections.abc import Sequence
+import concurrent.futures
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypedDict, cast
+import re
+import threading
+from typing import Any, TypedDict
 
 import yaml
 
 from k8s_autopilot.config import paths
 from k8s_autopilot.config.settings import get_settings
-from k8s_autopilot.skills.loader import ExtendedSkillMetadata, list_skills
+from k8s_autopilot.skills.loader import list_skills
 from k8s_autopilot.subagents.types import SubagentMetadata
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class SkillMetadata(TypedDict):
+    """Metadata for a discovered skill including name, source, and path."""
+
     name: str
     description: str
     domain: str
@@ -90,12 +91,25 @@ class SkillRegistry:
     _lock = threading.Lock()
 
     def __init__(self, store: Any = None) -> None:
+        """Initialize SkillRegistry.
+
+        Args:
+            store: Optional configuration store instance.
+        """
         self._skills: dict[str, SkillMetadata] = {}
         self._sources: dict[str, SkillSource] = {}
         self._store = store
 
     @classmethod
     def get_instance(cls, store: Any = None) -> SkillRegistry:
+        """Retrieve the singleton instance of SkillRegistry.
+
+        Args:
+            store: Optional configuration store instance.
+
+        Returns:
+            SkillRegistry: The singleton registry instance.
+        """
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -120,20 +134,50 @@ class SkillRegistry:
     def _get_store(self) -> Any:
         if self._store is None:
             from k8s_autopilot.api.settings_routes import _config_store
+
             self._store = _config_store
         return self._store
 
     def register(self, skill: SkillSource) -> None:
+        """Register a skill source in the registry.
+
+        Args:
+            skill: The SkillSource instance to register.
+        """
         self._sources[skill.name] = skill
 
     def get(self, name: str) -> SkillSource | None:
+        """Retrieve a registered skill source by name.
+
+        Args:
+            name: Name of the skill to look up.
+
+        Returns:
+            SkillSource | None: The matching skill source, or None if not found.
+        """
         return self._sources.get(name)
 
     def get_skill(self, name: str) -> SkillMetadata | None:
+        """Retrieve discovered skill metadata by name.
+
+        Args:
+            name: Name of the skill to look up.
+
+        Returns:
+            SkillMetadata | None: The matching skill metadata, or None if not found.
+        """
         self.discover_skills()
         return self._skills.get(name)
 
     def list_skills(self, tier: str | None = None) -> list[SkillSource]:
+        """List active skill sources, optionally filtered by tier.
+
+        Args:
+            tier: Optional skill tier filter (e.g. 'builtin', 'user', 'project').
+
+        Returns:
+            list[SkillSource]: Sorted list of enabled skill sources.
+        """
         skills = list(self._sources.values())
         if tier:
             skills = [s for s in skills if s.tier == tier or (tier == "builtin" and s.tier == "built-in")]
@@ -199,6 +243,7 @@ class SkillRegistry:
         try:
             from k8s_autopilot.plugins.adapters.skills import plugin_skill_sources
             from k8s_autopilot.plugins.discovery import discover_plugins
+
             active_store = self._store or self._get_store()
             plugin_result = discover_plugins(project_root=effective_project_root, store=active_store)
             for plugin in plugin_result.plugins:
@@ -256,7 +301,11 @@ class SkillRegistry:
             target_subagents: list[SubagentMetadata] = list(subagents) if subagents is not None else []
             if not target_subagents:
                 try:
-                    from k8s_autopilot.subagents.loader import get_built_in_subagents, list_subagents
+                    from k8s_autopilot.subagents.loader import (
+                        get_built_in_subagents,
+                        list_subagents,
+                    )
+
                     target_subagents.extend(get_built_in_subagents())
                     target_subagents.extend(list_subagents(store=self._store or self._get_store()))
                 except Exception as exc:
@@ -349,16 +398,18 @@ class SkillRegistry:
                 source_tier = self._sources[name].tier if name in self._sources else "built-in"
                 # Only persist plugin, user, or project skills into DB
                 if source_tier not in _SKIP_DB_TIERS and name not in db_skills:
-                    await active_store.upsert_skill({
-                        "name": name,
-                        "description": meta["description"],
-                        "domain": meta["domain"],
-                        "path": meta["path"],
-                        "virtual_path": meta["virtual_path"],
-                        "source": source_tier,
-                        "content": meta["system_prompt"],
-                        "enabled": True,
-                    })
+                    await active_store.upsert_skill(
+                        {
+                            "name": name,
+                            "description": meta["description"],
+                            "domain": meta["domain"],
+                            "path": meta["path"],
+                            "virtual_path": meta["virtual_path"],
+                            "source": source_tier,
+                            "content": meta["system_prompt"],
+                            "enabled": True,
+                        }
+                    )
 
             # Rehydrate missing files from DB records and prune stale records
             all_db_skills = await active_store.list_skills()
@@ -378,10 +429,9 @@ class SkillRegistry:
                     "cache" in s_path_str
                     or "marketplaces" in s_path_str
                     or (s_source == "plugin" and s_name not in self._skills)
-                ):
-                    if not Path(s_path_str).exists() or s_name not in self._skills:
-                        await active_store.delete_skill(s_name)
-                        continue
+                ) and (not Path(s_path_str).exists() or s_name not in self._skills):
+                    await active_store.delete_skill(s_name)
+                    continue
 
                 skill_path = Path(s.get("path") or (user_dir / s["name"]))
                 skill_md = skill_path / "SKILL.md"
@@ -417,11 +467,8 @@ class SkillRegistry:
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    return pool.submit(
-                        asyncio.run, self.sync_with_db_async(project_root)
-                    ).result()
+                    return pool.submit(asyncio.run, self.sync_with_db_async(project_root)).result()
             return loop.run_until_complete(self.sync_with_db_async(project_root))
         except Exception:
             return list(self._sources.values())

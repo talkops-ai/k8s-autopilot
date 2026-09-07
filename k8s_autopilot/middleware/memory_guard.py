@@ -141,6 +141,11 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
     """Protects managed onboarding blocks and memory files from deletion while allowing user edits."""
 
     def __init__(self, guarded_paths: Iterable[str | Path] = ()) -> None:
+        """Initialize the ManagedMemoryGuardMiddleware with guarded paths.
+
+        Args:
+            guarded_paths: Iterable of file or directory paths to protect from deletion.
+        """
         super().__init__()
         requested = list(guarded_paths)
         resolved: set[Path] = set()
@@ -148,9 +153,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
             try:
                 resolved.add(Path(raw).expanduser().resolve())
             except (OSError, RuntimeError, ValueError):
-                logger.warning(
-                    "Could not resolve guarded memory path %r", raw, exc_info=True
-                )
+                logger.warning("Could not resolve guarded memory path %r", raw, exc_info=True)
         self._guarded: frozenset[Path] = frozenset(resolved)
         if requested and not self._guarded:
             logger.warning(
@@ -237,13 +240,9 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
         return start_line, end_line
 
     @staticmethod
-    def _without_managed_block_edits(
-        before: str, after: str, before_block: str
-    ) -> str | None:
+    def _without_managed_block_edits(before: str, after: str, before_block: str) -> str | None:
         """Remove post-edit lines that originated from the managed block."""
-        block_range = ManagedMemoryGuardMiddleware._line_range_for_block(
-            before, before_block
-        )
+        block_range = ManagedMemoryGuardMiddleware._line_range_for_block(before, before_block)
         if block_range is None:
             return None
         block_start, block_end = block_range
@@ -297,8 +296,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
         after = self._read(path)
         if after is None:
             logger.warning(
-                "Guarded memory file %s is unreadable after edit; "
-                "cannot restore managed block",
+                "Guarded memory file %s is unreadable after edit; cannot restore managed block",
                 path,
             )
             return _RestoreOutcome.FAILED
@@ -311,8 +309,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
             maybe_source = self._without_managed_block_edits(before, after, before_block)
             if maybe_source is None:
                 logger.error(
-                    "Could not locate previous managed block in %s; leaving the "
-                    "edited file untouched",
+                    "Could not locate previous managed block in %s; leaving the edited file untouched",
                     path,
                 )
                 return _RestoreOutcome.FAILED
@@ -320,24 +317,19 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
         restored = _upsert_onboarding_name_memory(source, before_block)
         if extract_onboarding_name_block(restored) != before_block:
             logger.error(
-                "Restored content for %s did not reproduce the managed block; "
-                "leaving the edited file untouched",
+                "Restored content for %s did not reproduce the managed block; leaving the edited file untouched",
                 path,
             )
             return _RestoreOutcome.FAILED
         try:
             self._write(path, restored)
         except (OSError, UnicodeEncodeError):
-            logger.warning(
-                "Could not restore managed memory block at %s", path, exc_info=True
-            )
+            logger.warning("Could not restore managed memory block at %s", path, exc_info=True)
             return _RestoreOutcome.FAILED
         return _RestoreOutcome.RESTORED
 
     @staticmethod
-    def _error(
-        request: ToolCallRequest, path: Path, *, restore_failed: bool
-    ) -> ToolMessage:
+    def _error(request: ToolCallRequest, path: Path, *, restore_failed: bool) -> ToolMessage:
         """Build the error result returned after a managed-block edit."""
         template = _RESTORE_FAILED_MESSAGE if restore_failed else _REJECTION_MESSAGE
         tool_call = getattr(request, "tool_call", {})
@@ -378,9 +370,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
         outcome = self._restore(path, before, before_block)
         if outcome is _RestoreOutcome.UNCHANGED:
             return result
-        return self._error(
-            request, path, restore_failed=outcome is _RestoreOutcome.FAILED
-        )
+        return self._error(request, path, restore_failed=outcome is _RestoreOutcome.FAILED)
 
     def wrap_tool_call(
         self,
@@ -397,9 +387,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
             if self._reject_delete(path, before):
                 return self._delete_error(request, path)
             return handler(request)
-        before_block = (
-            extract_onboarding_name_block(before) if before is not None else None
-        )
+        before_block = extract_onboarding_name_block(before) if before is not None else None
         if before is None or before_block is None:
             # No managed onboarding block in this file; agent edits are permitted!
             return handler(request)
@@ -421,13 +409,9 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
             if await asyncio.to_thread(self._reject_delete, path, before):
                 return self._delete_error(request, path)
             return await handler(request)
-        before_block = (
-            extract_onboarding_name_block(before) if before is not None else None
-        )
+        before_block = extract_onboarding_name_block(before) if before is not None else None
         if before is None or before_block is None:
             # No managed onboarding block in this file; agent edits are permitted!
             return await handler(request)
         result = await handler(request)
-        return await asyncio.to_thread(
-            self._result_after_restore, request, path, before, before_block, result
-        )
+        return await asyncio.to_thread(self._result_after_restore, request, path, before, before_block, result)

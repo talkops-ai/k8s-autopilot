@@ -22,12 +22,14 @@ Reference:
 
 from __future__ import annotations
 
-from k8s_autopilot.utils.logger import AgentLogger
+from collections import Counter, defaultdict
+from collections.abc import Sequence
+from dataclasses import dataclass
 import math
 import re
-from collections import Counter, defaultdict
-from dataclasses import dataclass, field
-from typing import Any, Sequence
+from typing import Any
+
+from k8s_autopilot.utils.logger import AgentLogger
 
 logger = AgentLogger("A2UIDataReduction")
 
@@ -53,22 +55,20 @@ def lttb_downsample(
     target_points : int
         Maximum number of points in the output. Defaults to 500.
 
-    Returns
+    Returns:
     -------
     list[dict[str, float]]
         List of ``{"x": timestamp, "y": value}`` dicts, ready for
         A2UI MetricChart binding.
 
-    Raises
+    Raises:
     ------
     ValueError
         If timestamps and values have different lengths.
     """
     n = len(timestamps)
     if n != len(values):
-        raise ValueError(
-            f"timestamps ({n}) and values ({len(values)}) must have equal length"
-        )
+        raise ValueError(f"timestamps ({n}) and values ({len(values)}) must have equal length")
 
     # No downsampling needed
     if n <= target_points or target_points < 3:
@@ -87,13 +87,13 @@ def lttb_downsample(
 
     for bucket_idx in range(target_points - 2):
         # Calculate bucket boundaries
-        bucket_start = int(math.floor((bucket_idx + 0) * bucket_size)) + 1
-        bucket_end = int(math.floor((bucket_idx + 1) * bucket_size)) + 1
+        bucket_start = math.floor((bucket_idx + 0) * bucket_size) + 1
+        bucket_end = math.floor((bucket_idx + 1) * bucket_size) + 1
         bucket_end = min(bucket_end, n - 1)
 
         # Calculate the average point of the NEXT bucket (look-ahead)
-        next_bucket_start = int(math.floor((bucket_idx + 1) * bucket_size)) + 1
-        next_bucket_end = int(math.floor((bucket_idx + 2) * bucket_size)) + 1
+        next_bucket_start = math.floor((bucket_idx + 1) * bucket_size) + 1
+        next_bucket_end = math.floor((bucket_idx + 2) * bucket_size) + 1
         next_bucket_end = min(next_bucket_end, n)
 
         avg_x = 0.0
@@ -118,8 +118,7 @@ def lttb_downsample(
         for j in range(bucket_start, bucket_end):
             # Triangle area = 0.5 * |x1(y2-y3) + x2(y3-y1) + x3(y1-y2)|
             area = abs(
-                (prev_x - avg_x) * (float(values[j]) - prev_y)
-                - (prev_x - float(timestamps[j])) * (avg_y - prev_y)
+                (prev_x - avg_x) * (float(values[j]) - prev_y) - (prev_x - float(timestamps[j])) * (avg_y - prev_y)
             )
             if area > max_area:
                 max_area = area
@@ -149,7 +148,7 @@ def downsample_series(
     target_points : int
         Max points per series.
 
-    Returns
+    Returns:
     -------
     list[dict]
         Series with downsampled data arrays.
@@ -223,7 +222,7 @@ def cluster_log_lines(
     max_templates : int
         Maximum number of template clusters to return. Defaults to 50.
 
-    Returns
+    Returns:
     -------
     list[dict]
         Clustered templates as dicts with ``template``, ``count``,
@@ -243,17 +242,17 @@ def cluster_log_lines(
     templates: list[dict[str, Any]] = []
     for template_str, entries in clusters.items():
         # Find most common severity
-        severities = Counter(
-            e.get("severity", e.get("level", "info")) for e in entries
-        )
+        severities = Counter(e.get("severity", e.get("level", "info")) for e in entries)
         most_common_severity = severities.most_common(1)[0][0] if severities else "info"
 
-        templates.append({
-            "template": template_str,
-            "count": len(entries),
-            "sample": entries[0].get("message", str(entries[0])),
-            "severity": str(most_common_severity).lower(),
-        })
+        templates.append(
+            {
+                "template": template_str,
+                "count": len(entries),
+                "sample": entries[0].get("message", str(entries[0])),
+                "severity": str(most_common_severity).lower(),
+            }
+        )
 
     # Sort by count descending and truncate
     templates.sort(key=lambda t: t["count"], reverse=True)
@@ -287,7 +286,7 @@ def prune_trace_spans(
     max_spans : int
         Maximum number of spans to keep. Defaults to 100.
 
-    Returns
+    Returns:
     -------
     list[dict]
         Pruned span list, sorted by startTime ascending.
@@ -305,10 +304,7 @@ def prune_trace_spans(
         is_error = status in ("error", "unset") or span.get("statusCode") == 2
 
         # Priority 1: Root spans
-        if not parent_id or parent_id == "":
-            kept[span_id] = span
-        # Priority 2: Error spans
-        elif is_error:
+        if not parent_id or parent_id == "" or is_error:
             kept[span_id] = span
         else:
             remaining.append(span)
@@ -328,13 +324,9 @@ def prune_trace_spans(
             kept[span["spanId"]] = span
 
         # Priority 4: Direct children of root
-        root_ids = {
-            sid for sid, s in kept.items()
-            if not s.get("parentSpanId")
-        }
+        root_ids = {sid for sid, s in kept.items() if not s.get("parentSpanId")}
         root_children = [
-            s for s in remaining[slow_budget:]
-            if s.get("parentSpanId") in root_ids and s["spanId"] not in kept
+            s for s in remaining[slow_budget:] if s.get("parentSpanId") in root_ids and s["spanId"] not in kept
         ]
         for span in root_children[:child_budget]:
             kept[span["spanId"]] = span
@@ -358,7 +350,7 @@ def aggregate_alert_summary(
     alerts : list[dict]
         Alert entries, each with a ``severity`` key.
 
-    Returns
+    Returns:
     -------
     dict[str, int]
         Counts keyed by severity: ``{"critical": N, "warning": N, "info": N}``.

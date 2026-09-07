@@ -31,13 +31,13 @@ def test_system_prompt_and_context_architecture_parity(tmp_path: Path) -> None:
     assert "Built-in" in source_labels
     assert not any("Subagent:" in label for label in source_labels)
 
-    # 2. Live Skills Check: Root skills contain only built-in skills (kubernetes, remember) and project/user skills
+    # 2. Live Skills Check: Root skills contain only project/user/plugin skills (no redundant built-ins or subagent leaks)
     skills_mw = PluginSkillsMiddleware()
     live_skills, _ = skills_mw._get_live_skills()
     live_names = {s["name"] for s in live_skills}
 
-    assert "kubernetes" in live_names
-    assert "remember" in live_names
+    assert "remember" not in live_names
+    assert "kubernetes" not in live_names
     assert not any(name.startswith("app-operator:") for name in live_names)
     assert not any(name.startswith("helm-operator:") for name in live_names)
     assert not any(name.startswith("k8s-operator:") for name in live_names)

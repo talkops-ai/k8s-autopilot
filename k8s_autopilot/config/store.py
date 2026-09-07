@@ -9,9 +9,8 @@ The ``ConfigStore`` facade provides:
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
@@ -208,12 +207,14 @@ class ConfigStore:
     """Facade for configuration with manifest-aware typed resolution & entity management."""
 
     def __init__(self, adapter: ConfigStorageAdapter) -> None:
+        """Initialize the ConfigStore with a storage adapter."""
         self._adapter = adapter
         self._cache: dict[str, ConfigEntry] = {}
         self._initialized = False
 
     @property
     def adapter(self) -> ConfigStorageAdapter:
+        """Return the underlying configuration storage adapter."""
         return self._adapter
 
     async def initialize(self) -> None:
@@ -347,61 +348,81 @@ class ConfigStore:
     # ── Entity Convenience Passthroughs ──────────────────
 
     async def get_model_preferences(self) -> dict[str, Any]:
+        """Retrieve saved model preferences."""
         return await self._adapter.get_model_preferences()
 
     async def save_model_preferences(self, prefs: dict[str, Any]) -> None:
+        """Save or update model preferences."""
         await self._adapter.save_model_preferences(prefs)
 
     async def list_mcp_servers(self) -> list[dict[str, Any]]:
+        """List all configured MCP servers."""
         return await self._adapter.list_mcp_servers()
 
     async def get_mcp_server(self, name: str) -> dict[str, Any] | None:
+        """Retrieve an MCP server configuration by name."""
         return await self._adapter.get_mcp_server(name)
 
     async def upsert_mcp_server(self, server: dict[str, Any]) -> None:
+        """Create or update an MCP server configuration."""
         await self._adapter.upsert_mcp_server(server)
 
     async def delete_mcp_server(self, name: str) -> bool:
+        """Delete an MCP server configuration by name."""
         return await self._adapter.delete_mcp_server(name)
 
     async def list_marketplaces(self) -> list[dict[str, Any]]:
+        """List all configured plugin marketplaces."""
         return await self._adapter.list_marketplaces()
 
     async def get_marketplace(self, name: str) -> dict[str, Any] | None:
+        """Retrieve a plugin marketplace by name."""
         return await self._adapter.get_marketplace(name)
 
     async def upsert_marketplace(self, marketplace: dict[str, Any]) -> None:
+        """Create or update a plugin marketplace record."""
         await self._adapter.upsert_marketplace(marketplace)
 
     async def delete_marketplace(self, name: str) -> bool:
+        """Delete a plugin marketplace by name."""
         return await self._adapter.delete_marketplace(name)
 
     async def list_plugins(self) -> list[dict[str, Any]]:
+        """List all installed plugin records."""
         return await self._adapter.list_plugins()
 
     async def get_plugin(self, plugin_id: str) -> dict[str, Any] | None:
+        """Retrieve an installed plugin record by ID."""
         return await self._adapter.get_plugin(plugin_id)
 
     async def upsert_plugin(self, plugin: dict[str, Any]) -> None:
+        """Create or update an installed plugin record."""
         await self._adapter.upsert_plugin(plugin)
 
     async def delete_plugin(self, plugin_id: str) -> bool:
+        """Delete an installed plugin record by ID."""
         return await self._adapter.delete_plugin(plugin_id)
 
     async def list_skills(self) -> list[dict[str, Any]]:
+        """List all stored custom skill records."""
         return await self._adapter.list_skills()
 
     async def upsert_skill(self, skill: dict[str, Any]) -> None:
+        """Create or update a custom skill record."""
         await self._adapter.upsert_skill(skill)
 
     async def delete_skill(self, name: str) -> bool:
+        """Delete a custom skill record by name."""
         return await self._adapter.delete_skill(name)
 
     async def list_subagents(self) -> list[dict[str, Any]]:
+        """List all stored custom subagent records."""
         return await self._adapter.list_subagents()
 
     async def upsert_subagent(self, subagent: dict[str, Any]) -> None:
+        """Create or update a custom subagent record."""
         await self._adapter.upsert_subagent(subagent)
 
     async def delete_subagent(self, name: str) -> bool:
+        """Delete a custom subagent record by name."""
         return await self._adapter.delete_subagent(name)

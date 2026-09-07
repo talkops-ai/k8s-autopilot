@@ -11,8 +11,10 @@ Middleware are applied in ORDER. The order defined in agent/factory.py
 is the execution order.
 """
 
+from typing import Any
 
-def __getattr__(name: str):  # type: ignore[no-untyped-def]
+
+def __getattr__(name: str) -> Any:
     """Lazy-load middleware classes to avoid circular imports."""
     _lazy_map = {
         "MiddlewareRegistry": "k8s_autopilot.middleware.registry",

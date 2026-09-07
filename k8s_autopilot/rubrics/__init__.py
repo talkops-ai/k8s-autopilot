@@ -14,12 +14,12 @@ from k8s_autopilot.rubrics.middleware import (
 )
 
 __all__ = [
-    "_create_rubric_grader_tools",
     "DEVOPS_RUBRIC_SYSTEM_PROMPT",
     "GOAL_AMENDMENT_SYSTEM_PROMPT",
     "GOAL_RUBRIC_SYSTEM_PROMPT",
     "K8S_RUBRIC_SYSTEM_PROMPT",
     "ReliableRubricMiddleware",
     "RubricMiddleware",
+    "_create_rubric_grader_tools",
     "generate_rubric",
 ]

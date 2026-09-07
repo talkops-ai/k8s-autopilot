@@ -1,14 +1,13 @@
-# A2UI Support Module for K8s Autopilot
-# Provides programmatic A2UI building for agent responses
+"""Agent-to-UI (A2UI) rendering components and surface builders."""
 
-from .schema import A2UI_SCHEMA
-from .registry import get_registry, register_component, BaseComponent
 from .catalog_manager import get_catalog_manager
+from .registry import BaseComponent, get_registry, register_component
+from .schema import A2UI_SCHEMA
 
 __all__ = [
     "A2UI_SCHEMA",
-    "get_registry",
-    "register_component",
     "BaseComponent",
     "get_catalog_manager",
+    "get_registry",
+    "register_component",
 ]

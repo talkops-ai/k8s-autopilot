@@ -1,19 +1,16 @@
-"""Preload MCP server metadata and eagerly probe tools with diagnostics.
-"""
+"""Preload MCP server metadata and eagerly probe tools with diagnostics."""
 
 from __future__ import annotations
 
 import asyncio
-import fnmatch
-import logging
-import os
 from collections.abc import Mapping
 from contextlib import AsyncExitStack
+import fnmatch
+import os
 from typing import Any
 
 from k8s_autopilot.mcp.config import resolve_mcp_server_env
 from k8s_autopilot.mcp.mcp_info import MCPServerInfo, MCPServerStatus, MCPToolInfo
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -50,11 +47,7 @@ def _filter_tool_names(
 
     # If allowed list specified, tool must match at least one pattern
     if allowed_tools:
-        return any(
-            pat == tool_name or fnmatch.fnmatch(tool_name, pat)
-            for pat in allowed_tools
-            if pat
-        )
+        return any(pat == tool_name or fnmatch.fnmatch(tool_name, pat) for pat in allowed_tools if pat)
 
     return True
 
@@ -93,14 +86,25 @@ def _clean_stderr_diagnostic(stderr_text: str | None) -> str | None:
         return None
     # Prefer lines with explicit error descriptions, CRD missing, or exception details
     for line in reversed(lines):
-        if line.startswith("Traceback") or line.startswith("File ") or set(line) <= {"─", "│", "╭", "╮", "╰", "╯", " ", "█", "▀", "▄"}:
+        if (
+            line.startswith("Traceback")
+            or line.startswith("File ")
+            or set(line) <= {"─", "│", "╭", "╮", "╰", "╯", " ", "█", "▀", "▄"}
+        ):
             continue
-        if any(keyword in line for keyword in ("CRD not found", "not found", "Error:", "Exception:", "failed", "Error", "Exception")):
+        if any(
+            keyword in line
+            for keyword in ("CRD not found", "not found", "Error:", "Exception:", "failed", "Error", "Exception")
+        ):
             if ": " in line and ("Error" in line.split(": ")[0] or "Exception" in line.split(": ")[0]):
                 return line.split(": ", 1)[1].strip() or line
             return line
     for line in reversed(lines):
-        if not (line.startswith("Traceback") or line.startswith("File ") or set(line) <= {"─", "│", "╭", "╮", "╰", "╯", " ", "█", "▀", "▄"}):
+        if not (
+            line.startswith("Traceback")
+            or line.startswith("File ")
+            or set(line) <= {"─", "│", "╭", "╮", "╰", "╯", " ", "█", "▀", "▄"}
+        ):
             return line
     return lines[-1]
 
@@ -219,11 +223,14 @@ async def probe_one_mcp_server(
     captured_stderr: str | None = None
     try:
         from langchain_mcp_adapters.sessions import create_session
+
         from k8s_autopilot.mcp.session_manager import create_mcp_connection
 
         if transport == "stdio":
             import tempfile
-            from mcp.client.stdio import stdio_client, StdioServerParameters
+
+            from mcp.client.stdio import StdioServerParameters, stdio_client
+
             from mcp import ClientSession
 
             stdio_env = dict(os.environ)
@@ -241,18 +248,12 @@ async def probe_one_mcp_server(
             with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_file:
                 try:
                     read_stream, write_stream = await asyncio.wait_for(
-                        exit_stack.enter_async_context(
-                            stdio_client(server_params, errlog=stderr_file)
-                        ),
+                        exit_stack.enter_async_context(stdio_client(server_params, errlog=stderr_file)),
                         timeout=_PROBE_TIMEOUT,
                     )
-                    session = await exit_stack.enter_async_context(
-                        ClientSession(read_stream, write_stream)
-                    )
+                    session = await exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
                     await asyncio.wait_for(session.initialize(), timeout=_PROBE_TIMEOUT)
-                    tools_result = await asyncio.wait_for(
-                        session.list_tools(), timeout=_PROBE_TIMEOUT
-                    )
+                    tools_result = await asyncio.wait_for(session.list_tools(), timeout=_PROBE_TIMEOUT)
                 except BaseException as exc:
                     primary_exc = exc
                     try:
@@ -268,9 +269,7 @@ async def probe_one_mcp_server(
                 timeout=_PROBE_TIMEOUT,
             )
             await asyncio.wait_for(session.initialize(), timeout=_PROBE_TIMEOUT)
-            tools_result = await asyncio.wait_for(
-                session.list_tools(), timeout=_PROBE_TIMEOUT
-            )
+            tools_result = await asyncio.wait_for(session.list_tools(), timeout=_PROBE_TIMEOUT)
 
         tools: list[MCPToolInfo] = []
         raw_tools = getattr(tools_result, "tools", []) or []

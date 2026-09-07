@@ -1,5 +1,4 @@
-"""
-A2A Executor for the K8s Autopilot Agent.
+"""A2A Executor for the K8s Autopilot Agent.
 
 Orchestrates the A2A protocol lifecycle:
   1. Extract query from incoming context (text or A2UI userAction)
@@ -18,22 +17,20 @@ Events handled during streaming:
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
-import math
-import time
-import uuid
 from collections.abc import Sequence
+import contextlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+import json
+import math
+import time
+from typing import Any, ClassVar
+import uuid
 
 from a2a.helpers import (
-    new_data_part,
     new_message,
     new_task_from_user_message,
     new_text_message,
-    new_text_part,
 )
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -47,25 +44,6 @@ from a2a.types import (
     TaskState,
 )
 from a2a.utils.errors import A2AError
-
-# A2UI imports
-A2UI_EXTENSION_BASE_URI = "https://a2ui.org/a2a-extension/a2ui"
-try:
-    from a2ui.a2a import (
-        A2UI_EXTENSION_BASE_URI,
-        create_a2ui_part,
-    )
-except ImportError:
-    from google.protobuf import json_format, struct_pb2  # type: ignore[import-untyped]
-
-    def create_a2ui_part(a2ui_data: dict) -> Part:
-        val_cls = getattr(struct_pb2, "Value", None)
-        val = val_cls() if val_cls else None
-        parsed = json_format.ParseDict(a2ui_data, val) if val is not None else a2ui_data
-        return Part(
-            data=parsed,
-            metadata={"mimeType": "application/json+a2ui"},
-        )
 from langchain_core.messages import (
     AIMessage,
     AIMessageChunk,
@@ -81,21 +59,44 @@ from k8s_autopilot.a2ui.surface_builder import (
     build_plan_todo_surface,
     build_thought_block_surface,
     build_tool_execution_surface,
-    build_walkthrough_surface,
-    update_ask_user_data,
-    update_goal_confirmation_data,
     update_plan_todo_data,
     update_thought_block_data,
     update_tool_execution_data,
-    update_walkthrough_data,
 )
-
 from k8s_autopilot.integrations.stream_bridge import (
     _extract_text_and_thinking,
     _humanize_tool_name,
 )
 from k8s_autopilot.middleware.goal_state_notice import is_conversation_control_message
 from k8s_autopilot.utils.logger import get_logger
+
+# A2UI imports
+A2UI_EXTENSION_BASE_URI = "https://a2ui.org/a2a-extension/a2ui"
+try:
+    from a2ui.a2a import (
+        A2UI_EXTENSION_BASE_URI,
+        create_a2ui_part,
+    )
+except ImportError:
+    from google.protobuf import json_format, struct_pb2  # type: ignore[import-untyped]
+
+    def create_a2ui_part(a2ui_data: dict) -> Part:
+        """Create an A2A Part carrying an A2UI JSON payload.
+
+        Args:
+            a2ui_data: Dictionary payload representing the A2UI surface.
+
+        Returns:
+            Part: A2A Part with protobuf-wrapped data and A2UI mime type.
+        """
+        val_cls = getattr(struct_pb2, "Value", None)
+        val = val_cls() if val_cls else None
+        parsed = json_format.ParseDict(a2ui_data, val) if val is not None else a2ui_data
+        return Part(
+            data=parsed,
+            metadata={"mimeType": "application/json+a2ui"},
+        )
+
 
 A2UI_EXTENSION_URI = f"{A2UI_EXTENSION_BASE_URI}/v0.9"
 
@@ -106,6 +107,7 @@ logger = get_logger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _new_agent_message(parts: Sequence[Part]) -> Message:
     """Create an agent message with a unique ``messageId``."""
     return Message(role=Role.ROLE_AGENT, parts=parts, message_id=str(uuid.uuid4()))
@@ -114,6 +116,7 @@ def _new_agent_message(parts: Sequence[Part]) -> Message:
 # ---------------------------------------------------------------------------
 # Stream Renderer — manages token-stream formatting state
 # ---------------------------------------------------------------------------
+
 
 class _StreamRenderer:
     """Stateful helper for the token stream inside ``_stream_agent``.
@@ -131,7 +134,7 @@ class _StreamRenderer:
     _CLOSE_TAG = "\n</details>\n\n"
 
     # Map internal node/source names to friendly display labels.
-    _LABEL_MAP: dict[str, str] = {
+    _LABEL_MAP: ClassVar[dict[str, str]] = {
         "model": "",
         "tools": "",
         "": "",
@@ -140,6 +143,13 @@ class _StreamRenderer:
     }
 
     def __init__(self, updater: TaskUpdater, context_id: str, task_id: str) -> None:
+        """Initialize _StreamTaskUpdater.
+
+        Args:
+            updater: A2A TaskUpdater instance for pushing event updates.
+            context_id: Execution context identifier.
+            task_id: Active task identifier.
+        """
         self._updater = updater
         self._ctx = context_id
         self._task = task_id
@@ -193,10 +203,8 @@ class _StreamRenderer:
             task_id=self._task,
         )
         if callable(self._attach_trace):
-            try:
+            with contextlib.suppress(Exception):
                 self._attach_trace(msg, "text")
-            except Exception:
-                pass
         await self._updater.update_status(TaskState.TASK_STATE_WORKING, msg)
         await asyncio.sleep(0)  # yield to EventConsumer
 
@@ -234,13 +242,15 @@ class _StreamRenderer:
         return ""
 
 
-
 # ---------------------------------------------------------------------------
 # Stream State Dataclasses
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _StreamTelemetryState:
+    """Mutable telemetry counters accumulated during a streaming response."""
+
     run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     step_index: int = 0
     cumulative_input_tokens: int = 0
@@ -256,6 +266,11 @@ class _StreamTelemetryState:
     active_effort: str = ""
 
     def derive_rubric_label(self) -> str | None:
+        """Derive a friendly display label for the current rubric/goal state.
+
+        Returns:
+            str | None: Display label or None if no relevant state is set.
+        """
         if self.current_goal_status == "complete":
             return "✓ Goal complete"
         if self.current_goal_status == "blocked":
@@ -273,6 +288,8 @@ class _StreamTelemetryState:
 
 @dataclass
 class _StreamContext:
+    """Runtime context for a single A2A streaming execution cycle."""
+
     task: Task
     updater: TaskUpdater
     event_queue: EventQueue
@@ -293,6 +310,7 @@ class _StreamContext:
 # Executor
 # ---------------------------------------------------------------------------
 
+
 class A2AAutoPilotExecutor(AgentExecutor):
     """A2A protocol executor for K8s Autopilot Agent.
 
@@ -303,9 +321,15 @@ class A2AAutoPilotExecutor(AgentExecutor):
     * **A2UI surface dispatch** — creates and updates interactive cards
     """
 
-    _instances: list["A2AAutoPilotExecutor"] = []
+    _instances: ClassVar[list[A2AAutoPilotExecutor]] = []
 
     def __init__(self, agent: Any = None, checkpointer: Any = None) -> None:
+        """Initialize A2AAutoPilotExecutor with agent graph and checkpointer.
+
+        Args:
+            agent: Optional pre-compiled LangGraph agent runner.
+            checkpointer: Optional persistence checkpointer.
+        """
         self.agent = agent
         self.checkpointer = checkpointer
         self._custom_agent = agent is not None
@@ -315,10 +339,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
         self._active_mcp_fingerprint: str | None = None
         A2AAutoPilotExecutor._instances.append(self)
         if self.agent is not None and not hasattr(self.agent, "name"):
-            try:
+            with contextlib.suppress(AttributeError, TypeError):
                 self.agent.name = "k8sAutopilotAgent"
-            except (AttributeError, TypeError):
-                pass
 
     @classmethod
     def invalidate_all_agents(cls) -> None:
@@ -343,7 +365,9 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 e = obj.get("reasoning_effort") or obj.get("effort")
                 return (str(m) if m is not None else None, str(e) if e is not None else None)
             if hasattr(obj, "fields"):
-                from google.protobuf.json_format import MessageToDict  # type: ignore[import-untyped]
+                from google.protobuf.json_format import (
+                    MessageToDict,  # type: ignore[import-untyped]
+                )
 
                 try:
                     d = MessageToDict(obj)
@@ -391,6 +415,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
     def _extract_approval_mode(self, context: RequestContext) -> str | None:
         """Extract user-selected approval mode from RequestContext if present."""
+
         def _extract_mode_from_obj(obj: Any) -> str | None:
             if obj is None:
                 return None
@@ -400,7 +425,9 @@ class A2AAutoPilotExecutor(AgentExecutor):
                     return str(m).strip().lower()
                 return None
             if hasattr(obj, "fields"):
-                from google.protobuf.json_format import MessageToDict  # type: ignore[import-untyped]
+                from google.protobuf.json_format import (
+                    MessageToDict,  # type: ignore[import-untyped]
+                )
 
                 try:
                     d = MessageToDict(obj)
@@ -456,16 +483,18 @@ class A2AAutoPilotExecutor(AgentExecutor):
             items = []
             for name in sorted(configs.keys()):
                 c = configs[name]
-                items.append((
-                    name,
-                    c.get("command"),
-                    tuple(c.get("args") or ()),
-                    c.get("url"),
-                    c.get("transport"),
-                    c.get("enabled", True),
-                    tuple(sorted(c.get("disabled_tools") or ())),
-                    tuple(sorted(c.get("allowed_tools") or ())),
-                ))
+                items.append(
+                    (
+                        name,
+                        c.get("command"),
+                        tuple(c.get("args") or ()),
+                        c.get("url"),
+                        c.get("transport"),
+                        c.get("enabled", True),
+                        tuple(sorted(c.get("disabled_tools") or ())),
+                        tuple(sorted(c.get("allowed_tools") or ())),
+                    )
+                )
             return str(items)
         except Exception as exc:
             logger.debug("Could not compute MCP fingerprint: %s", exc)
@@ -511,9 +540,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             current_checkpointer = self.checkpointer
 
             if active_mcp_fingerprint != current_mcp_fingerprint and self.agent is not None:
-                logger.info(
-                    "Active MCP configuration changed; recompiling agent graph with latest toolset"
-                )
+                logger.info("Active MCP configuration changed; recompiling agent graph with latest toolset")
 
             self.agent, _ = create_k8s_autopilot_agent(
                 model=active_model,
@@ -527,10 +554,8 @@ class A2AAutoPilotExecutor(AgentExecutor):
             self._active_checkpointer = current_checkpointer
             self._active_mcp_fingerprint = active_mcp_fingerprint
             if not hasattr(self.agent, "name"):
-                try:
+                with contextlib.suppress(AttributeError, TypeError):
                     self.agent.name = "k8sAutopilotAgent"
-                except (AttributeError, TypeError):
-                    pass
         return self.agent
 
     _get_or_create_agent = _ensure_agent
@@ -571,7 +596,9 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 )
                 target_mode = clean_cmd
                 try:
-                    from k8s_autopilot.security.approval_mode import awrite_approval_mode
+                    from k8s_autopilot.security.approval_mode import (
+                        awrite_approval_mode,
+                    )
 
                     await awrite_approval_mode(self.agent, ctx_id, mode=target_mode)
                 except Exception as exc:
@@ -601,18 +628,14 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
             service = get_thread_service()
             if service:
-                user_text = ""
-                if isinstance(query, str):
-                    user_text = query
-                elif hasattr(query, "resume") and isinstance(getattr(query, "resume"), str):
-                    user_text = getattr(query, "resume")
+                user_text = query if isinstance(query, str) else ""
                 await service.auto_touch(
                     ctx_id,
                     user_id="default",
                     agent_id=getattr(self.agent, "name", "k8sAutopilotAgent"),
                     user_query=user_text,
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("Auto-touch failed for %s: %s", ctx_id, exc, context_id=ctx_id)
 
         # 3. A2UI activation check
@@ -696,10 +719,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             except Exception:
                 pass
 
-
-    async def cancel(
-        self, context: RequestContext, event_queue: EventQueue
-    ) -> None:
+    async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         """Cancel current agent execution if possible."""
         return
 
@@ -707,9 +727,9 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
     def _try_activate_a2ui(self, context: RequestContext) -> bool:
         """Check whether A2UI should be activated for this request."""
-        if hasattr(context, "extensions") and context.extensions:  # type: ignore[attr-defined]
-            if A2UI_EXTENSION_URI in context.extensions:  # type: ignore[attr-defined]
-                return True
+        extensions = getattr(context, "extensions", None)
+        if extensions and A2UI_EXTENSION_URI in extensions:
+            return True
         return True
 
     def _extract_query(self, context: RequestContext) -> str | None:
@@ -756,7 +776,9 @@ class A2AAutoPilotExecutor(AgentExecutor):
     def _get_user_action_from_part(part: Part) -> dict | None:
         """Extract ``userAction`` dict from a Part, or None."""
         if part.HasField("data"):
-            from google.protobuf.json_format import MessageToDict  # type: ignore[import-untyped]
+            from google.protobuf.json_format import (
+                MessageToDict,  # type: ignore[import-untyped]
+            )
 
             data = MessageToDict(part.data)
             logger.debug("Decoded protobuf DataPart payload", extra={"raw_data": str(data)[:300]})
@@ -780,10 +802,12 @@ class A2AAutoPilotExecutor(AgentExecutor):
             if isinstance(val, dict) and "answers" in val:
                 return json.dumps(val)
             if "answers" in user_action:
-                return json.dumps({
-                    "status": user_action.get("status", "answered"),
-                    "answers": user_action.get("answers", []),
-                })
+                return json.dumps(
+                    {
+                        "status": user_action.get("status", "answered"),
+                        "answers": user_action.get("answers", []),
+                    }
+                )
             answers_list: list[str] = []
             for item in user_action.get("context", []):
                 if isinstance(item, dict) and item.get("key") == "answers":
@@ -804,10 +828,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             return json.dumps(user_action)
 
         raw_ctx = user_action.get("context")
-        has_decision = (
-            "decision" in user_action
-            or (isinstance(raw_ctx, dict) and "decision" in raw_ctx)
-        )
+        has_decision = "decision" in user_action or (isinstance(raw_ctx, dict) and "decision" in raw_ctx)
         if action_name != "hitl_response" and not has_decision:
             val = user_action.get("value")
             if isinstance(val, dict):
@@ -874,15 +895,19 @@ class A2AAutoPilotExecutor(AgentExecutor):
         task = context.current_task
         if task:
             # If current task is already terminal, start a new task for the new turn
-            if task.status and task.status.state in (
-                TaskState.TASK_STATE_COMPLETED,
-                TaskState.TASK_STATE_FAILED,
-                TaskState.TASK_STATE_CANCELED,
+            if (
+                task.status
+                and task.status.state
+                in (
+                    TaskState.TASK_STATE_COMPLETED,
+                    TaskState.TASK_STATE_FAILED,
+                    TaskState.TASK_STATE_CANCELED,
+                )
+                and context.message
             ):
-                if context.message:
-                    task = new_task_from_user_message(context.message)
-                    await event_queue.enqueue_event(task)
-                    return task
+                task = new_task_from_user_message(context.message)
+                await event_queue.enqueue_event(task)
+                return task
             return task
 
         if context.message is None:
@@ -912,9 +937,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             if graph_state:
                 # Top-level interrupts
                 for int_obj in getattr(graph_state, "interrupts", ()) or ():
-                    int_id = getattr(int_obj, "id", None) or (
-                        int_obj.get("id") if isinstance(int_obj, dict) else None
-                    )
+                    int_id = getattr(int_obj, "id", None) or (int_obj.get("id") if isinstance(int_obj, dict) else None)
                     int_val = getattr(int_obj, "value", None) or (
                         int_obj.get("value") if isinstance(int_obj, dict) else None
                     )
@@ -973,6 +996,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             logger.debug(f"Failed to persist auto mode to ConfigStore: {exc}")
 
         from k8s_autopilot.config.settings import get_settings
+
         get_settings().approval_mode = "auto"
 
     @staticmethod
@@ -1061,9 +1085,13 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
         # Fallback when no pending_interrupts found from checkpointer
         is_interrupted = False
-        if task and hasattr(task, "status") and hasattr(task.status, "state"):
-            if task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED:
-                is_interrupted = True
+        if (
+            task
+            and hasattr(task, "status")
+            and hasattr(task.status, "state")
+            and task.status.state == TaskState.TASK_STATE_INPUT_REQUIRED
+        ):
+            is_interrupted = True
 
         if isinstance(parsed_query, dict) and (
             "status" in parsed_query
@@ -1097,11 +1125,9 @@ class A2AAutoPilotExecutor(AgentExecutor):
             )
             return Command(resume=parsed_query)
 
-        if isinstance(query, (str, type(None))) or isinstance(query, Command):
+        if isinstance(query, (str, type(None), Command)):
             return query
         return str(query)
-
-
 
     # ── Step 4: Agent streaming (Pregel LangGraph Stream) ──────────────
 
@@ -1144,7 +1170,6 @@ class A2AAutoPilotExecutor(AgentExecutor):
     ) -> tuple[Any, dict[str, Any], str, str]:
         """Resolve model, effort, agent graph, and graph execution config."""
         from k8s_autopilot.config.settings import get_settings
-        from k8s_autopilot.model.reasoning import with_effort_model_params
 
         settings = get_settings()
         if agent_graph is None:
@@ -1168,11 +1193,13 @@ class A2AAutoPilotExecutor(AgentExecutor):
         config["configurable"]["thread_id"] = context_id
         config["run_name"] = f"k8s-autopilot:{task_id[:8]}"
         config["tags"] = ["k8s-autopilot", f"thread:{context_id}"]
-        config["metadata"].update({
-            "thread_id": context_id,
-            "task_id": task_id,
-            "session_id": context_id,
-        })
+        config["metadata"].update(
+            {
+                "thread_id": context_id,
+                "task_id": task_id,
+                "session_id": context_id,
+            }
+        )
         return agent_graph, config, active_model, active_effort
 
     async def _init_stream_telemetry(
@@ -1207,9 +1234,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         try:
             store = getattr(agent_graph, "store", None)
             if store:
-                stored_mode = await aread_approval_mode_from_store(
-                    store, approval_mode_key(context_id)
-                )
+                stored_mode = await aread_approval_mode_from_store(store, approval_mode_key(context_id))
                 if stored_mode:
                     approval_mode = stored_mode.value
         except Exception:
@@ -1263,15 +1288,17 @@ class A2AAutoPilotExecutor(AgentExecutor):
                                 init_cost = val
                         except Exception:
                             pass
-                    if "_goal_status" in vals and vals["_goal_status"]:
+                    if vals.get("_goal_status"):
                         init_goal_status = str(vals["_goal_status"])
-                    if "_rubric_status" in vals and vals["_rubric_status"]:
+                    if vals.get("_rubric_status"):
                         r_stat = str(vals["_rubric_status"]).lower()
                         if r_stat in ("satisfied", "passed", "complete"):
                             init_goal_status = "complete"
-                        elif r_stat in ("max_iterations_reached", "failed", "blocked") and init_goal_status != "complete":
+                        elif (
+                            r_stat in ("max_iterations_reached", "failed", "blocked") and init_goal_status != "complete"
+                        ):
                             init_goal_status = "blocked"
-                    if "_goal_objective" in vals and vals["_goal_objective"]:
+                    if vals.get("_goal_objective"):
                         init_goal_obj = str(vals["_goal_objective"])
                     raw_rubric = (
                         vals.get("rubric")
@@ -1339,9 +1366,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             reasoning_effort=t.active_effort,
         )
 
-    async def _flush_active_tool_surfaces(
-        self, ctx: _StreamContext, status: str = "error"
-    ) -> None:
+    async def _flush_active_tool_surfaces(self, ctx: _StreamContext, status: str = "error") -> None:
         """Close any outstanding running tool surfaces with given status."""
         for _t_key, tracked in list(ctx.active_tool_surfaces.items()):
             duration = int((time.monotonic() - tracked["start_time"]) * 1000)
@@ -1362,9 +1387,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 durationMs=duration,
             )
             parts = [create_a2ui_part(update_op)]
-            msg = self._make_stream_message_parts(
-                parts, ctx.renderer.message_id, ctx.context_id, ctx.task.id
-            )
+            msg = self._make_stream_message_parts(parts, ctx.renderer.message_id, ctx.context_id, ctx.task.id)
             self._attach_stream_trace(msg, "tool_result", ctx)
             await ctx.updater.update_status(TaskState.TASK_STATE_WORKING, msg)
             ctx.telemetry.step_index += 1
@@ -1477,10 +1500,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             await ctx.renderer.close_thinking()
             await ctx.renderer.emit_with_label(text, meta)
 
-        tool_calls = (
-            getattr(msg, "tool_calls", None)
-            or getattr(msg, "tool_call_chunks", None)
-        )
+        tool_calls = getattr(msg, "tool_calls", None) or getattr(msg, "tool_call_chunks", None)
         if tool_calls:
             await self._handle_tool_call_chunks(tool_calls, meta, ctx)
 
@@ -1612,7 +1632,9 @@ class A2AAutoPilotExecutor(AgentExecutor):
                         tracked = ctx.active_tool_surfaces.pop(k)
                         break
 
-            surface_id = tracked["surface_id"] if tracked else (f"tool-{tool_call_id}" if tool_call_id else f"tool-{tool_name}")
+            surface_id = (
+                tracked["surface_id"] if tracked else (f"tool-{tool_call_id}" if tool_call_id else f"tool-{tool_name}")
+            )
             disp_name = tracked["tool_name"] if tracked else _humanize_tool_name(tool_name)
             params = tracked["parameters"] if tracked else {}
             env = tracked["environment"] if tracked else ""
@@ -1628,15 +1650,16 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 durationMs=duration,
             )
             parts = [create_a2ui_part(update_op)]
-            msg_out = self._make_stream_message_parts(
-                parts, ctx.renderer.message_id, ctx.context_id, ctx.task.id
-            )
+            msg_out = self._make_stream_message_parts(parts, ctx.renderer.message_id, ctx.context_id, ctx.task.id)
             self._attach_stream_trace(msg_out, "tool_result", ctx)
             await ctx.updater.update_status(TaskState.TASK_STATE_WORKING, msg_out)
             ctx.telemetry.step_index += 1
             await asyncio.sleep(0)
 
-            if tool_name in ("build_obs_a2ui", "build_obs_dashboard", "generate_a2ui", "generate_obs_a2ui") or "a2ui_operations" in content_out:
+            if (
+                tool_name in ("build_obs_a2ui", "build_obs_dashboard", "generate_a2ui", "generate_obs_a2ui")
+                or "a2ui_operations" in content_out
+            ):
                 try:
                     parsed_res = json.loads(content_out)
                     if isinstance(parsed_res, dict) and "a2ui_operations" in parsed_res:
@@ -1652,9 +1675,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 except Exception:
                     pass
 
-    def _resolve_subagent_name(
-        self, namespace: tuple[str, ...], meta: dict[str, Any], ctx: _StreamContext
-    ) -> str:
+    def _resolve_subagent_name(self, namespace: tuple[str, ...], meta: dict[str, Any], ctx: _StreamContext) -> str:
         """Resolve a human-friendly subagent name from namespace, meta, or active tasks."""
         if meta:
             for key in ("subagent_type", "subagent", "agent_name", "ls_agent_type"):
@@ -1697,7 +1718,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         self._process_message_telemetry(msg, ctx)
 
         if isinstance(msg, (AIMessage, AIMessageChunk)):
-            text, thinking = _extract_text_and_thinking(
+            _text, thinking = _extract_text_and_thinking(
                 msg.content,
                 additional_kwargs=getattr(msg, "additional_kwargs", None),
                 response_metadata=getattr(msg, "response_metadata", None),
@@ -1706,9 +1727,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
             if thinking and ctx.use_ui:
                 ns_key = ":".join(x for x in namespace)
-                ctx.subagent_reasoning_buffers[ns_key] = (
-                    ctx.subagent_reasoning_buffers.get(ns_key, "") + thinking
-                )
+                ctx.subagent_reasoning_buffers[ns_key] = ctx.subagent_reasoning_buffers.get(ns_key, "") + thinking
                 surface_id = ctx.subagent_reasoning_surfaces.get(ns_key)
                 if not surface_id:
                     surface_id = f"thought-subagent-{uuid.uuid4().hex[:8]}"
@@ -1742,10 +1761,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                     ctx.telemetry.step_index += 1
                     await asyncio.sleep(0)
 
-            tool_calls = (
-                getattr(msg, "tool_calls", None)
-                or getattr(msg, "tool_call_chunks", None)
-            )
+            tool_calls = getattr(msg, "tool_calls", None) or getattr(msg, "tool_call_chunks", None)
             if tool_calls:
                 sub_meta = dict(meta)
                 sub_meta["environment"] = subagent_name
@@ -1760,7 +1776,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             return False
 
         t = ctx.telemetry
-        for node_name, node_val in payload.items():
+        for _node_name, node_val in payload.items():
             if isinstance(node_val, dict):
                 if "_goal_status" in node_val:
                     t.current_goal_status = str(node_val["_goal_status"])
@@ -1772,13 +1788,13 @@ class A2AAutoPilotExecutor(AgentExecutor):
                         t.current_goal_status = "blocked"
                 if "_goal_objective" in node_val:
                     t.current_goal_objective = str(node_val["_goal_objective"])
-                if "rubric" in node_val and node_val["rubric"]:
+                if node_val.get("rubric"):
                     t.current_rubric = node_val["rubric"]
-                elif "_goal_rubric" in node_val and node_val["_goal_rubric"]:
+                elif node_val.get("_goal_rubric"):
                     t.current_rubric = node_val["_goal_rubric"]
-                elif "_sticky_rubric" in node_val and node_val["_sticky_rubric"]:
+                elif node_val.get("_sticky_rubric"):
                     t.current_rubric = node_val["_sticky_rubric"]
-                elif "criteria" in node_val and node_val["criteria"]:
+                elif node_val.get("criteria"):
                     t.current_rubric = node_val["criteria"]
 
                 if isinstance(t.current_rubric, list):
@@ -1888,7 +1904,9 @@ class A2AAutoPilotExecutor(AgentExecutor):
                                 surface_id=surface_id,
                                 tool_name=f"Subagent: {subagent_type}",
                                 status="running",
-                                parameters={"task": desc, "subagent": subagent_type} if desc else {"subagent": subagent_type},
+                                parameters={"task": desc, "subagent": subagent_type}
+                                if desc
+                                else {"subagent": subagent_type},
                             )
                             parts.extend(create_a2ui_part(op) for op in ops)
                             ctx.active_tool_surfaces[call_id] = {
@@ -1916,9 +1934,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                         parts.append(create_a2ui_part(update_op))
                         ctx.active_tool_surfaces.pop(call_id, None)
 
-                msg_out = self._make_stream_message_parts(
-                    parts, ctx.renderer.message_id, ctx.context_id, ctx.task.id
-                )
+                msg_out = self._make_stream_message_parts(parts, ctx.renderer.message_id, ctx.context_id, ctx.task.id)
                 msg_out.metadata["subagent"] = json.dumps(payload)
                 msg_out.metadata["subagent_lifecycle"] = json.dumps(lifecycle_data)
                 self._attach_stream_trace(msg_out, "subagent_event", ctx)
@@ -1926,9 +1942,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 ctx.telemetry.step_index += 1
                 await asyncio.sleep(0)
 
-    async def _finalize_stream_completion(
-        self, ctx: _StreamContext, agent_graph: Any, config: dict[str, Any]
-    ) -> None:
+    async def _finalize_stream_completion(self, ctx: _StreamContext, agent_graph: Any, config: dict[str, Any]) -> None:
         """Finalize the turn upon successful completion."""
         await ctx.renderer.close_thinking()
         ctx.reasoning_surface_id = None
@@ -1948,15 +1962,18 @@ class A2AAutoPilotExecutor(AgentExecutor):
                                 t.cumulative_cost_usd = val
                         except Exception:
                             pass
-                    if "_goal_status" in vals and vals["_goal_status"]:
+                    if vals.get("_goal_status"):
                         t.current_goal_status = str(vals["_goal_status"])
-                    if "_rubric_status" in vals and vals["_rubric_status"]:
+                    if vals.get("_rubric_status"):
                         r_stat = str(vals["_rubric_status"]).lower()
                         if r_stat in ("satisfied", "passed", "complete"):
                             t.current_goal_status = "complete"
-                        elif r_stat in ("max_iterations_reached", "failed", "blocked") and t.current_goal_status != "complete":
+                        elif (
+                            r_stat in ("max_iterations_reached", "failed", "blocked")
+                            and t.current_goal_status != "complete"
+                        ):
                             t.current_goal_status = "blocked"
-                    if "_goal_objective" in vals and vals["_goal_objective"]:
+                    if vals.get("_goal_objective"):
                         t.current_goal_objective = str(vals["_goal_objective"])
                     raw_rubric = (
                         vals.get("rubric")
@@ -2025,17 +2042,18 @@ class A2AAutoPilotExecutor(AgentExecutor):
         )
         # Populate unified runtime config and context from single source of truth
         from k8s_autopilot.model.reasoning import with_effort_model_params
-        from k8s_autopilot.security.approval_mode import approval_mode_key
 
         appr_mode = telemetry.current_approval_mode
         live_key = telemetry.approval_mode_key
         model_params = with_effort_model_params(active_model, {}, active_effort)
 
-        config["configurable"].update({
-            "model": active_model,
-            "reasoning_effort": active_effort,
-            "approval_mode": appr_mode,
-        })
+        config["configurable"].update(
+            {
+                "model": active_model,
+                "reasoning_effort": active_effort,
+                "approval_mode": appr_mode,
+            }
+        )
         if live_key is not None:
             config["configurable"]["approval_mode_key"] = live_key
         else:
@@ -2064,9 +2082,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
         if hasattr(schema_cls, "__dataclass_fields__"):
             valid_fields = set(schema_cls.__dataclass_fields__.keys())
-            enriched_context: dict[str, Any] = {
-                k: v for k, v in raw_context.items() if k in valid_fields
-            }
+            enriched_context: dict[str, Any] = {k: v for k, v in raw_context.items() if k in valid_fields}
         else:
             enriched_context = raw_context
 
@@ -2299,26 +2315,28 @@ class A2AAutoPilotExecutor(AgentExecutor):
             "reasoning_effort": reasoning_effort,
         }
 
-        msg.metadata.update({
-            "traceRunId": run_id,
-            "traceStepIndex": step_index,
-            "agentName": agent_name,
-            "eventType": event_type,
-            "timestamp": datetime.now(UTC).isoformat(),
-            "approval_mode": approval_mode or "manual",
-            "goal_status": goal_status or "",
-            "goal_objective": goal_objective or "",
-            "goal_rubric": goal_rubric or "",
-            "rubric_active": rubric_active or False,
-            "rubric_label": rubric_label or "",
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-            "cost_usd": cost_usd,
-            "model": model,
-            "reasoning_effort": reasoning_effort,
-            "trace": json.dumps(trace_dict),
-        })
+        msg.metadata.update(
+            {
+                "traceRunId": run_id,
+                "traceStepIndex": step_index,
+                "agentName": agent_name,
+                "eventType": event_type,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "approval_mode": approval_mode or "manual",
+                "goal_status": goal_status or "",
+                "goal_objective": goal_objective or "",
+                "goal_rubric": goal_rubric or "",
+                "rubric_active": rubric_active or False,
+                "rubric_label": rubric_label or "",
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "cost_usd": cost_usd,
+                "model": model,
+                "reasoning_effort": reasoning_effort,
+                "trace": json.dumps(trace_dict),
+            }
+        )
 
     @staticmethod
     def _map_status(custom_status: str) -> TaskState:
@@ -2355,11 +2373,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         reasoning_effort: str = "",
     ) -> None:
         """Handle LangGraph interrupt events and emit appropriate A2UI or text prompts."""
-        raw_item = (
-            interrupt_val[0]
-            if isinstance(interrupt_val, (list, tuple)) and interrupt_val
-            else interrupt_val
-        )
+        raw_item = interrupt_val[0] if isinstance(interrupt_val, (list, tuple)) and interrupt_val else interrupt_val
         raw_val = getattr(raw_item, "value", raw_item)
         if not isinstance(raw_val, dict):
             raw_val = {"value": raw_val}
@@ -2376,9 +2390,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                     action_id="ask_user_response",
                 )
                 parts = [create_a2ui_part(op) for op in ops]
-                msg_out = self._make_stream_message_parts(
-                    parts, renderer.message_id, context_id, task_id
-                )
+                msg_out = self._make_stream_message_parts(parts, renderer.message_id, context_id, task_id)
             else:
                 question_text = ""
                 for idx, q in enumerate(questions, 1):
@@ -2386,21 +2398,13 @@ class A2AAutoPilotExecutor(AgentExecutor):
                         q_str = str(q.get("question", ""))
                         choices = q.get("choices")
                         if isinstance(choices, list) and choices:
-                            opts = ", ".join(
-                                str(c.get("value", ""))
-                                for c in choices
-                                if isinstance(c, dict)
-                            )
+                            opts = ", ".join(str(c.get("value", "")) for c in choices if isinstance(c, dict))
                             question_text += f"\n{idx}. {q_str} (Options: {opts})"
                         else:
                             question_text += f"\n{idx}. {q_str}"
                     elif isinstance(q, str):
                         question_text += f"\n{idx}. {q}"
-                prompt_msg = (
-                    f"User input requested:{question_text}"
-                    if question_text
-                    else "Please provide your input."
-                )
+                prompt_msg = f"User input requested:{question_text}" if question_text else "Please provide your input."
                 msg_out = self._make_stream_message_text(
                     prompt_msg.strip(),
                     renderer.message_id,
@@ -2430,10 +2434,10 @@ class A2AAutoPilotExecutor(AgentExecutor):
         # 2. HITL Tool Approval Interrupt
         action_requests = raw_val.get("action_requests") if isinstance(raw_val, dict) else None
         first_req = (
-            action_requests[0]
-            if isinstance(action_requests, list) and action_requests
-            else raw_val
-        ) if action_requests else None
+            (action_requests[0] if isinstance(action_requests, list) and action_requests else raw_val)
+            if action_requests
+            else None
+        )
         req_name = str(
             (first_req or {}).get("name")
             or (first_req or {}).get("action_type")
@@ -2444,15 +2448,9 @@ class A2AAutoPilotExecutor(AgentExecutor):
         if action_requests and req_name != "propose_goal":
             req_dict: dict[str, Any] = first_req if isinstance(first_req, dict) else {}
             action_type: str = str(
-                req_dict.get("action_type")
-                or req_dict.get("tool_name")
-                or req_dict.get("name")
-                or "Action Approval"
+                req_dict.get("action_type") or req_dict.get("tool_name") or req_dict.get("name") or "Action Approval"
             )
-            description: str = str(
-                req_dict.get("description")
-                or f"Execution of {action_type} requires approval."
-            )
+            description: str = str(req_dict.get("description") or f"Execution of {action_type} requires approval.")
             justification: str = str(req_dict.get("justification") or "")
             risk_level: str = str(req_dict.get("risk_level") or "medium")
             params_list: list[dict[str, str]] = []
@@ -2479,17 +2477,14 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 ops = build_hitl_approval_surface(
                     surface_id=surface_id,
                     proposed_action=description,
-                    justification=justification
-                    or f"Tool '{action_type}' requires confirmation before proceeding.",
+                    justification=justification or f"Tool '{action_type}' requires confirmation before proceeding.",
                     risk_level=risk_level,
                     action_id="hitl_response",
                     phase=phase_val,
                     parameters=params_list,
                 )
                 parts = [create_a2ui_part(op) for op in ops]
-                msg_out = self._make_stream_message_parts(
-                    parts, renderer.message_id, context_id, task_id
-                )
+                msg_out = self._make_stream_message_parts(parts, renderer.message_id, context_id, task_id)
             else:
                 msg_out = self._make_stream_message_text(
                     f"Approval required for: {description}\n{justification}".strip(),
@@ -2530,10 +2525,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 tool_args_raw = first_req_dict.get("args") or first_req_dict.get("parameters") or {}
                 tool_args = tool_args_raw if isinstance(tool_args_raw, dict) else {}
                 goal_text = str(
-                    tool_args.get("objective")
-                    or tool_args.get("goal")
-                    or tool_args.get("goalText")
-                    or "Goal Review"
+                    tool_args.get("objective") or tool_args.get("goal") or tool_args.get("goalText") or "Goal Review"
                 )
                 criteria_raw = tool_args.get("criteria", [])
             else:
@@ -2572,9 +2564,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                     action_id="goal_response",
                 )
                 parts = [create_a2ui_part(op) for op in ops]
-                msg_out = self._make_stream_message_parts(
-                    parts, renderer.message_id, context_id, task_id
-                )
+                msg_out = self._make_stream_message_parts(parts, renderer.message_id, context_id, task_id)
             else:
                 criteria_text = "\n".join(f"- {c}" for c in criteria_list)
                 prompt_msg = (
@@ -2620,9 +2610,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 session_id=context_id,
                 task_id=task_id,
             )
-            msg_out = self._make_stream_message_parts(
-                parts, renderer.message_id, context_id, task_id
-            )
+            msg_out = self._make_stream_message_parts(parts, renderer.message_id, context_id, task_id)
         else:
             msg_out = self._make_stream_message_text(
                 self._content_to_str(raw_val),
@@ -2647,15 +2635,10 @@ class A2AAutoPilotExecutor(AgentExecutor):
         )
         await updater.update_status(TaskState.TASK_STATE_INPUT_REQUIRED, msg_out)
 
-
-    def _make_stream_message_text(
-        self, text: str, message_id: str | None, context_id: str, task_id: str
-    ) -> Message:
+    def _make_stream_message_text(self, text: str, message_id: str | None, context_id: str, task_id: str) -> Message:
         """Create a plain text streaming message with a stable ID."""
         if not message_id:
-            return new_text_message(
-                text, context_id=context_id, task_id=task_id, role=Role.ROLE_AGENT
-            )
+            return new_text_message(text, context_id=context_id, task_id=task_id, role=Role.ROLE_AGENT)
         return Message(
             role=Role.ROLE_AGENT,
             parts=[Part(text=text)],
@@ -2669,9 +2652,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
     ) -> Message:
         """Create a parts-based message with a stable ID."""
         if not message_id:
-            return new_message(
-                list(parts), context_id=context_id, task_id=task_id, role=Role.ROLE_AGENT
-            )
+            return new_message(list(parts), context_id=context_id, task_id=task_id, role=Role.ROLE_AGENT)
         return Message(
             role=Role.ROLE_AGENT,
             parts=list(parts),

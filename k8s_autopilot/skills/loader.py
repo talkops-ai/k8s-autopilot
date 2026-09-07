@@ -11,22 +11,19 @@ Supports:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 import json
-import logging
-import os
-import re
 from pathlib import Path
-from typing import Any, Literal, Required, Sequence, TypedDict, cast
+import re
+from typing import Any, Literal, Required, TypedDict
 
-import yaml
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.skills import (
-    SkillMetadata,
     _list_skills as list_skills_from_backend,
 )
+import yaml
 
 from k8s_autopilot.config.paths import DATA_DIR
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -80,18 +77,12 @@ def _parse_skill_file(skill_md: Path) -> dict[str, Any]:
                 meta["license"] = fm.get("license")
                 meta["compatibility"] = fm.get("compatibility")
                 raw_tags = fm.get("tags") or []
-                meta["tags"] = (
-                    [str(t) for t in raw_tags]
-                    if isinstance(raw_tags, (list, tuple))
-                    else []
-                )
+                meta["tags"] = [str(t) for t in raw_tags] if isinstance(raw_tags, (list, tuple)) else []
                 meta["domain"] = str(fm.get("domain") or "")
 
             body_clean = body_text.strip()
             body_lines = [
-                line.strip()
-                for line in body_clean.splitlines()
-                if line.strip() and not line.strip().startswith("#")
+                line.strip() for line in body_clean.splitlines() if line.strip() and not line.strip().startswith("#")
             ]
             if body_lines:
                 meta["preview"] = "\n".join(body_lines[:4])
@@ -99,9 +90,9 @@ def _parse_skill_file(skill_md: Path) -> dict[str, Any]:
                 meta["preview"] = meta["description"]
         else:
             lines = [
-                l.strip()
-                for l in content.splitlines()
-                if l.strip() and not l.strip().startswith("#")
+                line_item.strip()
+                for line_item in content.splitlines()
+                if line_item.strip() and not line_item.strip().startswith("#")
             ]
             meta["preview"] = "\n".join(lines[:4]) if lines else ""
     except Exception as exc:
@@ -130,7 +121,7 @@ def _discover_plugin_skills(plugins_dir: Path) -> list[tuple[Path, str, str, str
         if claude_manifest.is_file():
             plugin_type = "claude"
             try:
-                with open(claude_manifest, "r", encoding="utf-8") as f:
+                with open(claude_manifest, encoding="utf-8") as f:
                     data = json.load(f)
                     p_id = data.get("name", p.name)
             except Exception:
@@ -138,7 +129,7 @@ def _discover_plugin_skills(plugins_dir: Path) -> list[tuple[Path, str, str, str
         elif codex_manifest.is_file():
             plugin_type = "codex"
             try:
-                with open(codex_manifest, "r", encoding="utf-8") as f:
+                with open(codex_manifest, encoding="utf-8") as f:
                     data = json.load(f)
                     p_id = data.get("name_for_model") or data.get("name_for_human", p.name)
             except Exception:
@@ -217,7 +208,7 @@ def list_skills(
         # Local project plugins (project_root/plugins)
         proj_plugins = effective_root / "plugins"
         if proj_plugins.is_dir():
-            for s_dir, s_label, p_id, p_type in _discover_plugin_skills(proj_plugins):
+            for s_dir, _s_label, p_id, p_type in _discover_plugin_skills(proj_plugins):
                 # Exclude agent plugins from root skills
                 agent_md = s_dir.parent / "agents"
                 if not agent_md.is_dir():
@@ -306,9 +297,7 @@ def load_skill_content(
         resolved_roots = [r.resolve() for r in allowed_roots]
         if not any(path.is_relative_to(root) for root in resolved_roots):
             logger.warning("Skill path %s is outside all allowed roots", skill_path)
-            raise PermissionError(
-                f"Skill path {skill_path} resolves outside allowed skill roots (SSRF prevention)."
-            )
+            raise PermissionError(f"Skill path {skill_path} resolves outside allowed skill roots (SSRF prevention).")
 
     try:
         return path.read_text(encoding="utf-8")

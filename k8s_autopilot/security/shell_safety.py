@@ -8,18 +8,18 @@ import shlex
 # Characters and patterns that are disallowed in non-interactive allow-list mode
 DANGEROUS_SHELL_PATTERNS: tuple[str, ...] = (
     "$(",  # Command substitution
-    "`",   # Backtick command substitution
+    "`",  # Backtick command substitution
     "$'",  # ANSI-C quoting
     "\n",  # Newline
     "\r",  # Carriage return
     "\t",  # Tab
     "<(",  # Process substitution (input)
     ">(",  # Process substitution (output)
-    "<<<", # Here-string
+    "<<<",  # Here-string
     "<<",  # Here-doc
     ">>",  # Append redirect
-    ">",   # Output redirect
-    "<",   # Input redirect
+    ">",  # Output redirect
+    "<",  # Input redirect
     "${",  # Variable expansion with braces
 )
 
@@ -145,10 +145,9 @@ def classify_command(command: str) -> str:
             return "dangerous"
 
     # 2. Check production namespace targeting
-    if _PROD_NS_PATTERNS.search(cmd):
-        # Even if safe read command, if dangerous check failed, mutating commands in prod are dangerous
-        if not any(cmd_lower.startswith(safe) for safe in K8S_SAFE_COMMANDS):
-            return "dangerous"
+    # Even if safe read command, if dangerous check failed, mutating commands in prod are dangerous
+    if _PROD_NS_PATTERNS.search(cmd) and not any(cmd_lower.startswith(safe) for safe in K8S_SAFE_COMMANDS):
+        return "dangerous"
 
     # 3. Check safe command prefixes
     for safe in K8S_SAFE_COMMANDS:

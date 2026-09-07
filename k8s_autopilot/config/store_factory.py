@@ -7,11 +7,9 @@ Uses the same connection-detection pattern as the checkpointer
 
 from __future__ import annotations
 
-import logging
 import os
 
 from k8s_autopilot.config.store import ConfigStore
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -20,9 +18,7 @@ logger = get_logger(__name__)
 def _has_postgres_config() -> bool:
     """Check if PostgreSQL connection is configured."""
     return bool(
-        os.environ.get("POSTGRES_URI")
-        or os.environ.get("K8S_AUTOPILOT_POSTGRES_URI")
-        or os.environ.get("DATABASE_URL")
+        os.environ.get("POSTGRES_URI") or os.environ.get("K8S_AUTOPILOT_POSTGRES_URI") or os.environ.get("DATABASE_URL")
     )
 
 
@@ -99,4 +95,3 @@ def create_config_store_sync(backend: str = "auto") -> ConfigStore:
         raise ValueError(f"Unknown config store backend: {backend!r}")
 
     return ConfigStore(adapter)
-

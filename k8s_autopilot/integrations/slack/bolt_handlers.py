@@ -26,7 +26,12 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from slack_bolt.async_app import AsyncApp, AsyncAssistant, AsyncSetStatus, AsyncSay  # type: ignore[import-not-found]
+from slack_bolt.async_app import (  # type: ignore[import-not-found]
+    AsyncApp,
+    AsyncAssistant,
+    AsyncSay,
+    AsyncSetStatus,
+)
 
 from k8s_autopilot.integrations.base import (
     IncomingMessage,
@@ -145,9 +150,7 @@ def register_bolt_handlers(
         provides the updated context so the agent can be aware of
         the user's current Slack context.
         """
-        context = (
-            payload.get("assistant_thread", {}).get("context", {})
-        )
+        context = payload.get("assistant_thread", {}).get("context", {})
         channel_id = str(payload.get("channel", ""))
         thread_ts = str(payload.get("thread_ts", payload.get("ts", "")))
 
@@ -161,7 +164,7 @@ def register_bolt_handlers(
                 "Updated thread context",
                 extra={"channel": channel_id, "context": context},
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(f"Failed to update thread context: {exc}")
 
     # Register the assistant middleware with the Bolt app
@@ -275,9 +278,7 @@ def register_bolt_handlers(
         """
         try:
             channel_id = body["channel"]["id"]
-            message_ts = body.get("container", {}).get(
-                "message_ts", body.get("message", {}).get("ts", "")
-            )
+            message_ts = body.get("container", {}).get("message_ts", body.get("message", {}).get("ts", ""))
             user_id = body["user"]["id"]
             original_blocks = body.get("message", {}).get("blocks", [])
 
@@ -373,13 +374,16 @@ def register_bolt_handlers(
 
     @bolt_app.action("escalate_to_human")
     async def handle_escalate(
-        ack: Any, body: dict[str, Any], client: Any,
+        ack: Any,
+        body: dict[str, Any],
+        client: Any,
     ) -> None:
         """Handle escalate button clicks from error cards."""
         await ack()
         # TODO: implement escalation — notify ops channel
         logger.info(
-            "Escalation requested", extra={"user": body["user"]["id"]},
+            "Escalation requested",
+            extra={"user": body["user"]["id"]},
         )
 
     # ==================================================================
@@ -388,7 +392,9 @@ def register_bolt_handlers(
 
     @bolt_app.action("approve_plan")
     async def handle_approve_plan(
-        ack: Any, body: dict[str, Any], client: Any,
+        ack: Any,
+        body: dict[str, Any],
+        client: Any,
     ) -> None:
         """Handle plan approval from planning review card."""
         await ack()
@@ -415,7 +421,9 @@ def register_bolt_handlers(
 
     @bolt_app.action("edit_plan")
     async def handle_edit_plan(
-        ack: Any, body: dict[str, Any], client: Any,
+        ack: Any,
+        body: dict[str, Any],
+        client: Any,
     ) -> None:
         """Handle 'Edit' button — opens a Slack modal for text input."""
         await ack()
@@ -445,7 +453,9 @@ def register_bolt_handlers(
 
     @bolt_app.action("reject_plan")
     async def handle_reject_plan(
-        ack: Any, body: dict[str, Any], client: Any,
+        ack: Any,
+        body: dict[str, Any],
+        client: Any,
     ) -> None:
         """Handle plan rejection from planning review card."""
         await ack()
@@ -476,7 +486,9 @@ def register_bolt_handlers(
 
     @bolt_app.view("edit_plan_modal")
     async def handle_edit_modal_submission(
-        ack: Any, body: dict[str, Any], client: Any,
+        ack: Any,
+        body: dict[str, Any],
+        client: Any,
     ) -> None:
         """Handle modal submission with edited plan text.
 
@@ -487,12 +499,7 @@ def register_bolt_handlers(
 
         # Extract edited text from modal
         values = body.get("view", {}).get("state", {}).get("values", {})
-        edit_text = (
-            values
-            .get("edit_input_block", {})
-            .get("edit_text", {})
-            .get("value", "")
-        )
+        edit_text = values.get("edit_input_block", {}).get("edit_text", {}).get("value", "")
 
         # Extract thread context from private_metadata
         private_metadata = body.get("view", {}).get("private_metadata", "")
@@ -529,7 +536,9 @@ def register_bolt_handlers(
 
     @bolt_app.action(_USER_INPUT_OPTION_RE)
     async def handle_user_input_option(
-        ack: Any, body: dict[str, Any], client: Any,
+        ack: Any,
+        body: dict[str, Any],
+        client: Any,
     ) -> None:
         """Handle user input option button clicks.
 

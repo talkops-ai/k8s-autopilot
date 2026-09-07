@@ -21,7 +21,15 @@ class K8sCompositeBackend(CompositeBackend):
         routes: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
+        """Initialize K8sCompositeBackend with default and routed backends.
+
+        Args:
+            default: Default backend instance to fall back to.
+            routes: Mapping of virtual path prefixes to backend instances.
+            **kwargs: Additional keyword arguments for CompositeBackend.
+        """
         import atexit
+
         from k8s_autopilot.config.paths import ensure_conversation_history_dir
 
         self._large_results_dir = tempfile.mkdtemp(prefix="k8s_autopilot_large_results_")

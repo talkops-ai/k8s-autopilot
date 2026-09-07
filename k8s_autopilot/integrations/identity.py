@@ -31,11 +31,12 @@ Example mapping file::
 
 from __future__ import annotations
 
-import json
-from k8s_autopilot.utils.logger import AgentLogger
-import os
 from dataclasses import dataclass, field
+import json
+import os
 from typing import Any
+
+from k8s_autopilot.utils.logger import AgentLogger
 
 logger = AgentLogger("IdentityIntegration")
 
@@ -76,6 +77,7 @@ class IdentityMapper:
     """
 
     def __init__(self) -> None:
+        """Initialize IdentityMapper and load configured user mappings."""
         self._mapping: dict[str, dict[str, Any]] = {}
         self._load_mapping()
 

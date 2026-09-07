@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from k8s_autopilot.plugins.models import PluginInstance
@@ -13,10 +12,10 @@ from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-SkillPath: TypeAlias = str
-SkillLabel: TypeAlias = str
-SkillNamespace: TypeAlias = str
-PluginSkillSource: TypeAlias = tuple[SkillPath, SkillLabel, SkillNamespace]
+type SkillPath = str
+type SkillLabel = str
+type SkillNamespace = str
+type PluginSkillSource = tuple[SkillPath, SkillLabel, SkillNamespace]
 
 
 def namespaced_skill_name(
@@ -56,8 +55,5 @@ def plugin_skill_roots(plugins: tuple[PluginInstance, ...] | list[PluginInstance
     """Return plugin skill roots for skill-content containment checks."""
     roots: list[Path] = []
     for plugin in plugins:
-        roots.extend(
-            path.parent if path.name == "SKILL.md" else path
-            for path in plugin.inventory.skills
-        )
+        roots.extend(path.parent if path.name == "SKILL.md" else path for path in plugin.inventory.skills)
     return roots

@@ -1,5 +1,4 @@
-"""
-MCP Discovery Middleware — discovers project-level .mcp.json and binds to domain.
+"""MCP Discovery Middleware — discovers project-level .mcp.json and binds to domain.
 
 Registered as ``mcp_discovery`` in the middleware registry. When included
 in a coordinator's middleware list, it:
@@ -18,13 +17,13 @@ Usage in coordinator::
 
 from __future__ import annotations
 
-from k8s_autopilot.utils.logger import AgentLogger
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from k8s_autopilot.middleware.registry import (
     BaseAgentMiddleware,
     register_middleware,
 )
+from k8s_autopilot.utils.logger import AgentLogger
 
 logger = AgentLogger("MCPDiscoveryMW")
 
@@ -48,25 +47,34 @@ class MCPDiscoveryMiddleware(BaseAgentMiddleware):
     def __init__(
         self,
         *,
-        domain: Optional[str] = None,
-        project_root: Optional[str] = None,
+        domain: str | None = None,
+        project_root: str | None = None,
         config: Any = None,
         **kwargs: Any,
     ) -> None:
+        """Initialize MCPDiscoveryMiddleware.
+
+        Args:
+            domain: Optional coordinator domain filter.
+            project_root: Optional root directory path for discovery.
+            config: Optional configuration settings instance.
+            **kwargs: Additional keyword arguments.
+        """
         super().__init__()
         self._domain = domain
         self._project_root = project_root
         self._config = config
-        self._discovered_servers: List[Dict[str, Any]] = []
+        self._discovered_servers: list[dict[str, Any]] = []
 
     def _get_config(self) -> Any:
         """Lazy config resolution."""
         if self._config is None:
             from k8s_autopilot.config.settings import get_settings
+
             self._config = get_settings()
         return self._config
 
-    def discover_and_bind(self) -> List[Dict[str, Any]]:
+    def discover_and_bind(self) -> list[dict[str, Any]]:
         """Run discovery and domain binding, return filtered server list.
 
         This is the main entry point. It:
@@ -89,6 +97,6 @@ class MCPDiscoveryMiddleware(BaseAgentMiddleware):
         return merged
 
     @property
-    def discovered_servers(self) -> List[Dict[str, Any]]:
+    def discovered_servers(self) -> list[dict[str, Any]]:
         """Return the last discovered and bound server list."""
         return self._discovered_servers

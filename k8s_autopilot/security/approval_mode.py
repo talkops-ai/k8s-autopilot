@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
-import contextlib
-import inspect
-import json
-import logging
-import os
-import tempfile
-import threading
 from collections.abc import Generator, Mapping
+import contextlib
 from contextlib import contextmanager
 from enum import StrEnum
 from hashlib import sha256
+import inspect
+import json
+import os
 from pathlib import Path
+import tempfile
+import threading
 from typing import Any, TypedDict
 
 from filelock import FileLock, Timeout
 
 from k8s_autopilot.config.paths import STATE_DIR
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -41,8 +39,8 @@ class ApprovalMode(StrEnum):
     """Tool-approval policy selected for an interactive thread."""
 
     MANUAL = "manual"  # Always pause for human approval on modifying actions
-    AUTO = "auto"      # Classifier decides (safe auto-executes, dangerous prompts)
-    YOLO = "yolo"      # Auto-approve everything (dev / CI / testing only)
+    AUTO = "auto"  # Classifier decides (safe auto-executes, dangerous prompts)
+    YOLO = "yolo"  # Auto-approve everything (dev / CI / testing only)
 
 
 class ApprovalModePayload(TypedDict):
@@ -138,9 +136,7 @@ def _approval_mode_from_item(item: object) -> ApprovalMode | None:
     return None
 
 
-def read_approval_mode_from_store(
-    store: object, key: str | None
-) -> ApprovalMode | None:
+def read_approval_mode_from_store(store: object, key: str | None) -> ApprovalMode | None:
     """Read a live approval mode from the server-side LangGraph Store."""
     if store is None:
         logger.debug("Approval-mode store is unavailable")
@@ -164,19 +160,20 @@ def read_approval_mode_from_store(
     if get is None:
         aget = getattr(store, "aget", None)
         if callable(aget):
+
             async def _fetch() -> Any:
                 res = aget(APPROVAL_MODE_NAMESPACE, key)
                 return await res if inspect.isawaitable(res) else res
 
             try:
                 import asyncio
+
                 loop = None
-                try:
+                with contextlib.suppress(RuntimeError):
                     loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    pass
                 if loop and loop.is_running():
                     import concurrent.futures
+
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                         item = pool.submit(lambda: asyncio.run(_fetch())).result()
                 else:
@@ -195,9 +192,7 @@ def read_approval_mode_from_store(
     return _approval_mode_from_item(item)
 
 
-async def aread_approval_mode_from_store(
-    store: object, key: str | None
-) -> ApprovalMode | None:
+async def aread_approval_mode_from_store(store: object, key: str | None) -> ApprovalMode | None:
     """Asynchronously read a live approval mode from a LangGraph Store."""
     if store is None:
         logger.debug("Approval-mode store is unavailable")
@@ -433,9 +428,7 @@ def _merge_approval_state(
         logger.warning("Timed out waiting to persist %s", failure_label, exc_info=True)
         return False
     except OSError:
-        logger.warning(
-            "Could not lock approval state for %s", failure_label, exc_info=True
-        )
+        logger.warning("Could not lock approval state for %s", failure_label, exc_info=True)
         return False
 
 
@@ -467,10 +460,7 @@ def has_auto_mode_notice(path: Path | None = None) -> bool:
     """Return whether the current Auto first-enable notice was already shown."""
     target = path or yolo_acknowledgement_path()
     data = _load_approval_state(target)
-    return (
-        data.get("auto_notice_shown") is True
-        and data.get("auto_notice_version") == AUTO_NOTICE_VERSION
-    )
+    return data.get("auto_notice_shown") is True and data.get("auto_notice_version") == AUTO_NOTICE_VERSION
 
 
 def save_auto_mode_notice(path: Path | None = None) -> bool:

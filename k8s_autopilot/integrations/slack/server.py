@@ -30,12 +30,18 @@ class _TracerExceptionFilter(_logging.Filter):
     """Suppress 'No indexed run ID' messages from LangChain's callback manager."""
 
     def filter(self, record: _logging.LogRecord) -> bool:
+        """Suppress log records containing 'No indexed run ID'.
+
+        Args:
+            record: The logging record being evaluated.
+
+        Returns:
+            bool: False if the record should be suppressed, True otherwise.
+        """
         return "No indexed run ID" not in record.getMessage()
 
 
-_logging.getLogger("langchain_core.callbacks.manager").addFilter(
-    _TracerExceptionFilter()
-)
+_logging.getLogger("langchain_core.callbacks.manager").addFilter(_TracerExceptionFilter())
 
 logger = AgentLogger("SlackServer")
 
@@ -43,7 +49,7 @@ logger = AgentLogger("SlackServer")
 @click.command()
 @click.option(
     "--host",
-    default="0.0.0.0",  # noqa: S104
+    default="0.0.0.0",
     help="Server host (default: 0.0.0.0)",
 )
 @click.option(
@@ -80,7 +86,7 @@ def main(host: str, port: int, config_file: str | None) -> None:
 
         logger.info("Initializing K8s Autopilot agent for Slack…")
 
-        agent_graph, backend = create_k8s_autopilot_agent(
+        agent_graph, _backend = create_k8s_autopilot_agent(
             model=settings.model,
             auto_approve=(settings.approval_mode == "yolo"),
         )

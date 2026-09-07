@@ -115,27 +115,23 @@ class TestSkillFrontmatterParsing:
         assert tags == ()
 
 
-class TestBuiltInKubernetesSkill:
-    """Tests for the built-in Kubernetes skill."""
+class TestBuiltInSkillsDirectory:
+    """Tests for the built-in skills directory."""
 
-    def test_skill_file_exists(self) -> None:
-        skill_path = (
+    def test_directory_exists(self) -> None:
+        built_in_dir = (
             Path(__file__).parent.parent.parent
             / "k8s_autopilot"
             / "built_in_skills"
-            / "kubernetes"
-            / "SKILL.md"
         )
-        assert skill_path.exists(), f"K8s skill not found at {skill_path}"
+        assert built_in_dir.is_dir()
 
-    def test_skill_has_frontmatter(self) -> None:
-        skill_path = (
+    def test_no_redundant_built_in_skills(self) -> None:
+        built_in_dir = (
             Path(__file__).parent.parent.parent
             / "k8s_autopilot"
             / "built_in_skills"
-            / "kubernetes"
-            / "SKILL.md"
         )
-        content = skill_path.read_text()
-        assert content.startswith("---")
-        assert "description:" in content
+        assert not (built_in_dir / "kubernetes").exists()
+        assert not (built_in_dir / "remember").exists()
+

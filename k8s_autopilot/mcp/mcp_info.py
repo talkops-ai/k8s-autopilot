@@ -1,5 +1,4 @@
-"""Data structures for MCP server and tool metadata.
-"""
+"""Data structures for MCP server and tool metadata."""
 
 from __future__ import annotations
 
@@ -18,6 +17,11 @@ class MCPToolInfo:
     input_schema: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Convert MCPToolInfo to a JSON-serializable dictionary.
+
+        Returns:
+            dict[str, Any]: Dictionary containing tool name, description, and input schema.
+        """
         return {
             "name": self.name,
             "description": self.description,
@@ -46,14 +50,29 @@ class MCPServerInfo:
 
     @property
     def is_disabled(self) -> bool:
+        """Check whether the server is disabled.
+
+        Returns:
+            bool: True if server is disabled.
+        """
         return not self.enabled
 
     @property
     def tool_count(self) -> int:
+        """Count of tools exposed by this server.
+
+        Returns:
+            int: Number of exposed tools.
+        """
         return len(self.tools)
 
     @property
     def display_target(self) -> str:
+        """Human-readable target URL or command line.
+
+        Returns:
+            str: URL for network servers or joined command string for stdio.
+        """
         if self.transport in ("http", "sse", "streamable_http"):
             return self.url or ""
         if self.command:
@@ -62,6 +81,11 @@ class MCPServerInfo:
         return ""
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize server metadata to dictionary format.
+
+        Returns:
+            dict[str, Any]: JSON-compatible dictionary of server properties.
+        """
         res: dict[str, Any] = {
             "name": self.name,
             "transport": self.transport,

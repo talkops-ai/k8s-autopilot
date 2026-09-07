@@ -21,12 +21,12 @@ Key concepts:
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import hashlib
 import html
 import json
-import uuid
-from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Final, Literal, TypedDict, cast
+import uuid
 
 from k8s_autopilot._constants import SYSTEM_MESSAGE_PREFIX
 
@@ -44,9 +44,7 @@ GOAL_MESSAGE_SCHEMA_VERSION: Final = 1
 
 _GOAL_MESSAGE_SCHEMA_KEY: Final = "goal_message_schema_version"
 _GOAL_MESSAGE_KIND_KEY: Final = "goal_message_kind"
-_GOAL_INTERNAL_SOURCES = frozenset(
-    {GOAL_CONTROL_MESSAGE_SOURCE, GOAL_STATE_MESSAGE_SOURCE}
-)
+_GOAL_INTERNAL_SOURCES = frozenset({GOAL_CONTROL_MESSAGE_SOURCE, GOAL_STATE_MESSAGE_SOURCE})
 _CONVERSATION_CONTROL_SOURCES = frozenset({*_GOAL_INTERNAL_SOURCES, "rubric_grader"})
 _USER_HIDDEN_SOURCES = frozenset({*_CONVERSATION_CONTROL_SOURCES, "summarization"})
 _LEGACY_CONVERSATION_CONTROL_PREFIXES = (
@@ -149,18 +147,16 @@ def is_human_message(message: object) -> bool:
 
 def is_goal_internal_message(message: object) -> bool:
     """Return whether a message is a goal-state notice or continuation."""
-    return (
-        is_human_message(message) and message_source(message) in _GOAL_INTERNAL_SOURCES
-    )
+    return is_human_message(message) and message_source(message) in _GOAL_INTERNAL_SOURCES
 
 
 def is_goal_state_message(message: object) -> bool:
     """Return whether a message claims to be a goal-state notice."""
     if not is_human_message(message):
         return False
-    return message_source(message) == GOAL_STATE_MESSAGE_SOURCE or message_text(
-        message
-    ).startswith(f"{SYSTEM_MESSAGE_PREFIX} Goal/rubric state changed.")
+    return message_source(message) == GOAL_STATE_MESSAGE_SOURCE or message_text(message).startswith(
+        f"{SYSTEM_MESSAGE_PREFIX} Goal/rubric state changed."
+    )
 
 
 def latest_human_is_unsaved_goal_continuation(
@@ -171,10 +167,7 @@ def latest_human_is_unsaved_goal_continuation(
         if not is_human_message(message):
             continue
         metadata = message_additional_kwargs(message)
-        return (
-            message_source(message) == GOAL_CONTROL_MESSAGE_SOURCE
-            and metadata.get("goal_state_persisted") is False
-        )
+        return message_source(message) == GOAL_CONTROL_MESSAGE_SOURCE and metadata.get("goal_state_persisted") is False
     return False
 
 
@@ -317,9 +310,7 @@ def project_goal_state(state: Mapping[str, object]) -> GoalStateProjection:
     known_statuses = {"active", "paused", "blocked", "complete"}
     status = (
         raw_status
-        if objective is not None
-        and isinstance(raw_status, str)
-        and raw_status in known_statuses
+        if objective is not None and isinstance(raw_status, str) and raw_status in known_statuses
         else "active"
         if objective is not None
         else None
@@ -352,9 +343,7 @@ def project_goal_state(state: Mapping[str, object]) -> GoalStateProjection:
         "goal_status": status,
         "goal_actionable": actionable,
         "goal_rubric": goal_rubric,
-        "goal_status_note": (
-            _clean_text(state, "_goal_status_note") if objective else None
-        ),
+        "goal_status_note": (_clean_text(state, "_goal_status_note") if objective else None),
         "rubric_criteria": rubric_criteria,
         "rubric_source": rubric_source,
     }
@@ -379,10 +368,7 @@ def goal_state_fingerprint(state: Mapping[str, object]) -> str:
 def has_goal_or_rubric_state(state: Mapping[str, object]) -> bool:
     """Return whether state contains a goal or an active rubric."""
     projected = project_goal_state(state)
-    return (
-        projected["goal_objective"] is not None
-        or projected["rubric_criteria"] is not None
-    )
+    return projected["goal_objective"] is not None or projected["rubric_criteria"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -461,9 +447,7 @@ def build_goal_state_notice(
 
 def goal_state_notice_info(message: object) -> GoalStateNoticeInfo | None:
     """Return validated canonical notice metadata from a message."""
-    if not is_human_message(message) or message_source(message) != (
-        GOAL_STATE_MESSAGE_SOURCE
-    ):
+    if not is_human_message(message) or message_source(message) != (GOAL_STATE_MESSAGE_SOURCE):
         return None
     metadata = message_additional_kwargs(message)
     schema_version = metadata.get(_GOAL_MESSAGE_SCHEMA_KEY)

@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import logging
+import inspect
 import os
 import threading
 from typing import Any
 
 from k8s_autopilot.config.settings import resolve_env_var
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -146,14 +145,14 @@ def enable_full_middleware_tracing() -> None:
     which redacts/omits the state input dictionary ({}) in trace spans.
     Setting trace_policy = None restores complete input recording across all middlewares.
     """
-    import inspect
-
+    # Probe and configure trace_policy across all available middleware modules
+    # using feature-detection try/except imports.
     try:
-        import deepagents.middleware as dm
+        import deepagents.middleware as dm  # Lazy import: feature detection probe
 
         for _, obj in inspect.getmembers(dm):
             if inspect.isclass(obj) and hasattr(obj, "trace_policy"):
-                setattr(obj, "trace_policy", None)
+                obj.trace_policy = None
     except Exception:
         pass
 
@@ -234,7 +233,6 @@ def enable_full_middleware_tracing() -> None:
 
 # Ensure tracing is initialized at import time as well
 enable_full_middleware_tracing()
-
 
 
 def fetch_langsmith_project_url_or_raise(project_name: str) -> str:

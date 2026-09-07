@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 import contextlib
 import ipaddress
-import logging
 import socket
 import threading
-from typing import Any, Iterator
+from typing import Any
 from urllib.parse import urlparse
 
 from k8s_autopilot.utils.logger import get_logger
@@ -102,9 +102,20 @@ def _pinned_dns(hostname: str, allowed_ips: list[str]) -> Iterator[None]:
     with _dns_pin_lock:
         original = urllib3_connection.create_connection
 
-        def patched(
-            address: tuple[str, int], *args: Any, **kwargs: Any
-        ) -> socket.socket:
+        def patched(address: tuple[str, int], *args: Any, **kwargs: Any) -> socket.socket:
+            """Intercept connection creation to bind pre-validated IP addresses.
+
+            Args:
+                address: Destination (host, port) pair.
+                *args: Additional positional arguments for create_connection.
+                **kwargs: Additional keyword arguments for create_connection.
+
+            Returns:
+                socket.socket: Connected socket using pre-validated IP.
+
+            Raises:
+                OSError: If connection fails for all validated IPs.
+            """
             host, port = address[0], address[1]
             if host != hostname:
                 return original(address, *args, **kwargs)

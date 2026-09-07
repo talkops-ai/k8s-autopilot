@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
+
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
+
 from k8s_autopilot.middleware.registry import register_middleware
 from k8s_autopilot.security.shell_safety import is_shell_command_allowed
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -20,6 +21,11 @@ class ShellAllowListMiddleware(AgentMiddleware[Any, Any]):
     """Validate shell commands against an allow-list without HITL interrupts."""
 
     def __init__(self, allow_list: list[str] | None = None) -> None:
+        """Initialize ShellAllowListMiddleware.
+
+        Args:
+            allow_list: Optional list of allowed shell executable binary names or command prefixes.
+        """
         super().__init__()
         self._allow_list = allow_list or []
 
@@ -63,6 +69,15 @@ class ShellAllowListMiddleware(AgentMiddleware[Any, Any]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Any],
     ) -> Any:
+        """Wrap synchronous tool call and block disallowed shell commands.
+
+        Args:
+            request: Tool execution request.
+            handler: Synchronous tool handler.
+
+        Returns:
+            ToolMessage error if command is disallowed, or handler result.
+        """
         err = self._validate_tool_call(request)
         if err is not None:
             return err
@@ -73,6 +88,15 @@ class ShellAllowListMiddleware(AgentMiddleware[Any, Any]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Any],
     ) -> Any:
+        """Wrap asynchronous tool call and block disallowed shell commands.
+
+        Args:
+            request: Tool execution request.
+            handler: Asynchronous tool handler.
+
+        Returns:
+            ToolMessage error if command is disallowed, or handler result.
+        """
         err = self._validate_tool_call(request)
         if err is not None:
             return err

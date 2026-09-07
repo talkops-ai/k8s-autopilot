@@ -8,10 +8,9 @@ and security controls with Database as Source of Truth.
 from __future__ import annotations
 
 import asyncio
-import logging
-import os
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+import concurrent.futures
+import fnmatch
 from pathlib import Path
 from typing import Any, cast
 
@@ -19,24 +18,17 @@ from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.middleware import MemoryMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent
-from deepagents.middleware.skills import SkillsMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.pregel import Pregel
-
 
 from k8s_autopilot.agent.config import AgentContextSchema, CLIContextSchema
-
-
-
 from k8s_autopilot.backend.composite import K8sCompositeBackend
 from k8s_autopilot.backend.local import LocalShellBackend
 from k8s_autopilot.config import paths
 from k8s_autopilot.config.settings import get_settings
 from k8s_autopilot.mcp.discovery import discover_mcp_configs
-from k8s_autopilot.mcp.session_manager import MCPSessionManager
 from k8s_autopilot.memory.registry import MemoryRegistry
 from k8s_autopilot.middleware.ask_user import AskUserMiddleware
 from k8s_autopilot.middleware.auto_mode import (
@@ -44,7 +36,6 @@ from k8s_autopilot.middleware.auto_mode import (
     AutoModeHITLMiddleware,
 )
 from k8s_autopilot.middleware.compaction import (
-    CLICompactionMiddleware,
     _create_cli_compaction_middleware,
 )
 from k8s_autopilot.middleware.configurable_model import ConfigurableModelMiddleware
@@ -79,7 +70,10 @@ from k8s_autopilot.middleware.unified_system_message import (
     UnifiedSystemMessageMiddleware,
 )
 from k8s_autopilot.model.factory import create_model
-from k8s_autopilot.prompts import get_base_system_prompt
+from k8s_autopilot.prompts import (
+    SRE_MEMORY_SYSTEM_PROMPT,
+    get_base_system_prompt,
+)
 from k8s_autopilot.rubrics.evaluator import (
     _RUBRIC_GRADER_SYSTEM_PROMPT,
     _create_rubric_grader_tools,
@@ -136,7 +130,11 @@ def _format_description(tool_call: Any = None, *args: Any, **kwargs: Any) -> str
     if name == "js_eval":
         code_snippet = str(tool_args.get("code") or "").strip()
         first_line = code_snippet.split("\n")[0][:80]
-        return f"Evaluate script / dispatch subagents: {first_line}" if first_line else "Evaluate script / dispatch subagents"
+        return (
+            f"Evaluate script / dispatch subagents: {first_line}"
+            if first_line
+            else "Evaluate script / dispatch subagents"
+        )
     if ":" in name:
         srv, tname = name.split(":", 1)
         args_str = ", ".join(f"{k}={v}" for k, v in list(tool_args.items())[:3])
@@ -232,21 +230,12 @@ def _should_interrupt_tool_call(
         tool_args = getattr(tool_call, "args", {}) or {}
 
     # Never interrupt internal memory file writes (e.g. AGENTS.md)
-    path_str = str(
-        tool_args.get("path")
-        or tool_args.get("TargetFile")
-        or tool_args.get("file_path")
-        or ""
-    )
+    path_str = str(tool_args.get("path") or tool_args.get("TargetFile") or tool_args.get("file_path") or "")
 
     from k8s_autopilot._constants import READONLY_FS_TOOLS
 
     decision_interrupt = True
-    if tool_name in READONLY_FS_TOOLS:
-        decision_interrupt = False
-    elif "AGENTS.md" in path_str:
-        decision_interrupt = False
-    elif mode is ApprovalMode.YOLO or mode == "yolo":
+    if tool_name in READONLY_FS_TOOLS or "AGENTS.md" in path_str or mode is ApprovalMode.YOLO or mode == "yolo":
         decision_interrupt = False
     elif mode is ApprovalMode.AUTO or mode == "auto":
         decision_interrupt = not auto_mode_enabled if not auto_mode_enabled else False
@@ -257,7 +246,22 @@ def _should_interrupt_tool_call(
         cli_safety = evaluate_cli_safety(cmd_str)
         if cli_safety.get("is_readonly"):
             decision_interrupt = False
-    elif ":" in tool_name or tool_name.startswith("mcp__") or tool_name not in {"execute", "run_command", "read_file", "write_file", "edit_file", "write_todos", "task", "subagent", "js_eval"}:
+    elif (
+        ":" in tool_name
+        or tool_name.startswith("mcp__")
+        or tool_name
+        not in {
+            "execute",
+            "run_command",
+            "read_file",
+            "write_file",
+            "edit_file",
+            "write_todos",
+            "task",
+            "subagent",
+            "js_eval",
+        }
+    ):
         from k8s_autopilot.mcp.semantic_profiler import MCPSemanticProfiler
 
         if tool_name.startswith("mcp__"):
@@ -296,7 +300,8 @@ def _should_interrupt_tool_call(
 
 
 def _interrupt_predicate(
-    *, auto_mode_enabled: bool,
+    *,
+    auto_mode_enabled: bool,
 ) -> Callable[[Any], bool]:
     """Bind runtime eligibility into a stock-HITL predicate.
 
@@ -305,9 +310,15 @@ def _interrupt_predicate(
     """
 
     def should_interrupt(request: Any) -> bool:
-        return _should_interrupt_tool_call(
-            request, auto_mode_enabled=auto_mode_enabled
-        )
+        """Evaluate whether the given tool call request warrants an interrupt.
+
+        Args:
+            request: The tool execution request to check.
+
+        Returns:
+            bool: True if execution should pause for human approval.
+        """
+        return _should_interrupt_tool_call(request, auto_mode_enabled=auto_mode_enabled)
 
     return should_interrupt
 
@@ -376,10 +387,7 @@ def _resolve_ptc_option(
                     write_included,
                 )
             return included
-        msg = (
-            f"Invalid interpreter_ptc preset {ptc!r}. "
-            "Must be 'safe', 'all', or a list of tool names."
-        )
+        msg = f"Invalid interpreter_ptc preset {ptc!r}. Must be 'safe', 'all', or a list of tool names."
         raise ValueError(msg)
 
     if isinstance(ptc, list):
@@ -452,6 +460,7 @@ def _subagent_cli_middleware(
     # MCP Context Middleware — injects MCP server inventory into system prompt
     if mcp_server_info or mcp_config:
         from k8s_autopilot.middleware.mcp_context import MCPContextMiddleware
+
         middleware.append(MCPContextMiddleware(mcp_server_info=mcp_server_info, mcp_config=mcp_config))
 
     if allowed_tools or capabilities:
@@ -467,7 +476,6 @@ def _subagent_cli_middleware(
 
     global_sources = SkillRegistry.get_instance().get_sources_for_middleware()
     if allowed_skills is not None:
-        import fnmatch
         backend_fs = FilesystemBackend(virtual_mode=False)
         for src in global_sources:
             src_path = src[0]
@@ -476,8 +484,7 @@ def _subagent_cli_middleware(
                 for dir_path, _ in found_dirs:
                     skill_name = Path(dir_path).name
                     if any(
-                        fnmatch.fnmatch(skill_name, pat)
-                        or fnmatch.fnmatch(skill_name.lower(), pat.lower())
+                        fnmatch.fnmatch(skill_name, pat) or fnmatch.fnmatch(skill_name.lower(), pat.lower())
                         for pat in allowed_skills
                     ):
                         skill_sources.append(src)
@@ -501,6 +508,7 @@ def _subagent_cli_middleware(
             middleware.append(extra_mw)
 
     from k8s_autopilot.middleware.ask_user import AskUserMiddleware
+
     middleware.append(AskUserMiddleware())
 
     middleware.append(ManagedMemoryGuardMiddleware())
@@ -592,14 +600,19 @@ def create_k8s_autopilot_agent(
 
     # 5. MCP Discovery
     mcp_tools_list: list[BaseTool] = []
-    all_mcp_server_infos: list[Any] = []  # MCPServerInfo objects for subagent context
     if mcp_tools is not None:
         mcp_tools_list = list(mcp_tools)
         all_tools.extend(mcp_tools)
     else:
         mcp_configs = discover_mcp_configs(effective_cwd)
-        from k8s_autopilot.mcp.session_manager import MCPSessionManager, build_mcp_tools_from_server_infos
-        from k8s_autopilot.mcp.preload import get_cached_mcp_server_infos, preload_mcp_metadata
+        from k8s_autopilot.mcp.preload import (
+            get_cached_mcp_server_infos,
+            preload_mcp_metadata,
+        )
+        from k8s_autopilot.mcp.session_manager import (
+            MCPSessionManager,
+            build_mcp_tools_from_server_infos,
+        )
 
         mcp_manager = MCPSessionManager.get_instance(mcp_configs or {})
         if mcp_configs:
@@ -607,7 +620,8 @@ def create_k8s_autopilot_agent(
                 cached_infos = get_cached_mcp_server_infos()
                 cached_by_name = {info.name: info for info in cached_infos}
                 missing_configs = {
-                    k: v for k, v in mcp_configs.items()
+                    k: v
+                    for k, v in mcp_configs.items()
                     if k not in cached_by_name or not cached_by_name[k].enabled or cached_by_name[k].status != "ok"
                 }
 
@@ -618,7 +632,6 @@ def create_k8s_autopilot_agent(
                         loop = None
 
                     if loop is not None and loop.is_running():
-                        import concurrent.futures
                         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                             new_infos = pool.submit(asyncio.run, preload_mcp_metadata(missing_configs)).result()
                     else:
@@ -626,10 +639,9 @@ def create_k8s_autopilot_agent(
                     cached_infos = get_cached_mcp_server_infos()
 
                 coordinator_infos = [
-                    info for info in cached_infos
-                    if info.name in mcp_configs and info.enabled and info.status == "ok"
+                    info for info in cached_infos if info.name in mcp_configs and info.enabled and info.status == "ok"
                 ]
-                all_mcp_server_infos = list(coordinator_infos)
+                list(coordinator_infos)
 
                 discovered_tools = build_mcp_tools_from_server_infos(coordinator_infos, mcp_manager)
                 if discovered_tools:
@@ -646,7 +658,7 @@ def create_k8s_autopilot_agent(
     # 7. Discover skills
     skill_registry = SkillRegistry.get_instance(store=config_store)
     skill_registry.discover_skills(effective_cwd, force=True)
-    skill_sources = skill_registry.get_sources_for_middleware()
+    skill_registry.get_sources_for_middleware()
 
     # 8. Define approval policies and subagents
     interrupt_on: Any | None = None
@@ -654,6 +666,7 @@ def create_k8s_autopilot_agent(
         interrupt_on = {}
     else:
         from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
+
         from k8s_autopilot.middleware.auto_mode import DynamicInterruptMapping
 
         default_tool_hitl_config: InterruptOnConfig = {
@@ -675,6 +688,7 @@ def create_k8s_autopilot_agent(
         store=config_store,
     )
     from k8s_autopilot.subagents.loader import get_built_in_subagents
+
     built_in_subagent_metas = get_built_in_subagents()
 
     subagent_by_name: dict[str, SubagentMetadata] = {}
@@ -747,8 +761,14 @@ def create_k8s_autopilot_agent(
             servers.update(raw_mcp_cfg.get("mcpServers") or raw_mcp_cfg)
 
         if servers:
-            from k8s_autopilot.mcp.preload import get_cached_mcp_server_infos, preload_mcp_metadata
-            from k8s_autopilot.mcp.session_manager import MCPSessionManager, build_mcp_tools_from_server_infos
+            from k8s_autopilot.mcp.preload import (
+                get_cached_mcp_server_infos,
+                preload_mcp_metadata,
+            )
+            from k8s_autopilot.mcp.session_manager import (
+                MCPSessionManager,
+                build_mcp_tools_from_server_infos,
+            )
 
             sub_mcp_manager = MCPSessionManager.get_instance(servers, purge_missing=False)
             sub_mcp_manager.register_servers(servers)
@@ -764,8 +784,6 @@ def create_k8s_autopilot_agent(
                         loop = None
 
                     if loop is not None and loop.is_running():
-                        import concurrent.futures
-
                         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                             new_infos = pool.submit(asyncio.run, preload_mcp_metadata(missing_configs)).result()
                     else:
@@ -773,10 +791,7 @@ def create_k8s_autopilot_agent(
                     cached_infos.extend(new_infos)
                     cached_by_name.update({info.name: info for info in new_infos})
 
-                sub_mcp_server_infos = [
-                    cached_by_name[k] for k in servers.keys()
-                    if k in cached_by_name
-                ]
+                sub_mcp_server_infos = [cached_by_name[k] for k in servers if k in cached_by_name]
                 sub_tools = build_mcp_tools_from_server_infos(sub_mcp_server_infos, sub_mcp_manager)
                 if sub_tools:
                     subagent_mcp_tools.extend(sub_tools)
@@ -857,14 +872,11 @@ def create_k8s_autopilot_agent(
     # 10.2 Non-interactive guards
     if not interactive:
         agent_middleware.append(GlmTerminalStallRecoveryMiddleware())
-        if mcp_tools_list:
-            if gated_names := gated_mcp_tool_names(mcp_tools_list):
-                agent_middleware.append(HeadlessMCPGuardMiddleware(gated_names))
+        if mcp_tools_list and (gated_names := gated_mcp_tool_names(mcp_tools_list)):
+            agent_middleware.append(HeadlessMCPGuardMiddleware(gated_names))
 
     # 10.3 ResumeState, CostTracking, GoalTools
-    agent_middleware.extend(
-        [ResumeStateMiddleware(), CostTrackingMiddleware(), GoalToolsMiddleware()]
-    )
+    agent_middleware.extend([ResumeStateMiddleware(), CostTrackingMiddleware(), GoalToolsMiddleware()])
 
     # 10.4 AskUserMiddleware
     if enable_ask_user and interactive:
@@ -876,11 +888,10 @@ def create_k8s_autopilot_agent(
             MemoryMiddleware(
                 backend=FilesystemBackend(virtual_mode=False),
                 sources=memory_sources_str,
+                system_prompt=SRE_MEMORY_SYSTEM_PROMPT,
             )
         )
-        agent_middleware.append(
-            ManagedMemoryGuardMiddleware(guarded_paths=memory_sources_str)
-        )
+        agent_middleware.append(ManagedMemoryGuardMiddleware(guarded_paths=memory_sources_str))
 
     # 10.6 PluginSkillsMiddleware (dynamic live discovery across plugin install/uninstall lifecycle)
     agent_middleware.append(
@@ -901,9 +912,7 @@ def create_k8s_autopilot_agent(
                 acknowledge_unsafe=getattr(settings, "interpreter_ptc_acknowledge_unsafe", False),
                 auto_approve=auto_approve,
             )
-            ptc_option: PTCOption | None = (
-                cast(PTCOption, list(ptc_names)) if ptc_names is not None else None
-            )
+            ptc_option: PTCOption | None = cast(PTCOption, list(ptc_names)) if ptc_names is not None else None
 
             with suppress_langchain_beta_warning():
                 agent_middleware.append(
@@ -955,9 +964,7 @@ def create_k8s_autopilot_agent(
 
     # 10.11 ServerHooksMiddleware
     hooks_cwd = Path(effective_cwd) if effective_cwd else Path.cwd()
-    agent_middleware.append(
-        ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools_list)
-    )
+    agent_middleware.append(ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools_list))
 
     # 10.12 GoalCriteriaMiddleware
     criteria_agent = None
@@ -1013,9 +1020,7 @@ def create_k8s_autopilot_agent(
     )
 
     # 10.13 CLICompactionMiddleware
-    agent_middleware.append(
-        _create_cli_compaction_middleware(active_model, composite_backend)
-    )
+    agent_middleware.append(_create_cli_compaction_middleware(active_model, composite_backend))
 
     # 10.14 ReliableRubricMiddleware
     rubric_grader_tools = _create_rubric_grader_tools(composite_backend)
@@ -1042,7 +1047,6 @@ def create_k8s_autopilot_agent(
     from k8s_autopilot.config.langsmith import enable_full_middleware_tracing
 
     enable_full_middleware_tracing()
-
 
     # 11. Compile the agent graph
     from k8s_autopilot.subagents.loader import load_async_subagents
@@ -1078,9 +1082,9 @@ def create_k8s_autopilot_agent(
 
 
 __all__ = [
-    "CLIContextSchema",
     "AgentContextSchema",
-    "create_k8s_autopilot_agent",
+    "CLIContextSchema",
     "_resolve_ptc_option",
     "_subagent_cli_middleware",
+    "create_k8s_autopilot_agent",
 ]

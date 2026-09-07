@@ -1,14 +1,13 @@
-"""MCP Session Manager with connection pooling, normalization, and lifecycle management.
-"""
+"""MCP Session Manager with connection pooling, normalization, and lifecycle management."""
 
 from __future__ import annotations
 
 import asyncio
-import fnmatch
-import logging
-import os
+from collections.abc import Mapping, Sequence
 from contextlib import AsyncExitStack
-from typing import Any, Callable, Mapping, Sequence, cast
+import fnmatch
+import os
+from typing import Any, cast
 
 from langchain_core.tools import BaseTool, StructuredTool, ToolException
 
@@ -44,9 +43,7 @@ def _is_transient_session_error(exc: BaseException) -> bool:
     )
 
 
-def _normalize_mcp_arguments(
-    arguments: dict[str, Any], input_schema: Any
-) -> dict[str, Any]:
+def _normalize_mcp_arguments(arguments: dict[str, Any], input_schema: Any) -> dict[str, Any]:
     """Normalize MCP tool arguments, stripping empty string values for non-required fields."""
     if not isinstance(input_schema, dict):
         return arguments
@@ -59,9 +56,7 @@ def _normalize_mcp_arguments(
             continue
         prop = properties.get(key)
         prop_type = prop.get("type") if isinstance(prop, dict) else None
-        is_string_typed = prop_type == "string" or (
-            isinstance(prop_type, list) and "string" in prop_type
-        )
+        is_string_typed = prop_type == "string" or (isinstance(prop_type, list) and "string" in prop_type)
         if isinstance(prop, dict) and not is_string_typed and prop_type is not None:
             cleaned[key] = value
     return cleaned
@@ -105,17 +100,21 @@ def _filter_tool_name(
                 return False
 
     if allowed_tools:
-        return any(
-            pat == tool_name or fnmatch.fnmatch(tool_name, pat)
-            for pat in allowed_tools
-            if pat
-        )
+        return any(pat == tool_name or fnmatch.fnmatch(tool_name, pat) for pat in allowed_tools if pat)
 
     return True
 
 
 class _MCPSessionEntry:
+    """Internal tracking entry for an active MCP session connection."""
+
     def __init__(self, session: Any, exit_stack: AsyncExitStack) -> None:
+        """Initialize tracking entry for an active MCP session.
+
+        Args:
+            session: Active MCP client session instance.
+            exit_stack: AsyncExitStack managing connection cleanup.
+        """
         self.session = session
         self.exit_stack = exit_stack
         self._cached_tools: list[BaseTool] = []
@@ -176,10 +175,7 @@ def create_mcp_connection(resolved_config: Mapping[str, Any]) -> Any:
     headers = dict(resolved_config.get("headers") or {})
 
     if not transport or transport == "stdio":
-        if url:
-            transport = "sse" if "sse" in url.lower() else "http"
-        else:
-            transport = "stdio"
+        transport = ("sse" if "sse" in url.lower() else "http") if url else "stdio"
 
     if transport in ("http", "streamable_http"):
         return StreamableHttpConnection(  # type: ignore[call-arg]
@@ -270,7 +266,17 @@ def _build_cached_mcp_tool(
         runtime: Any = None,
         **arguments: Any,
     ) -> Any:
+        """Execute the remote MCP tool with safety checks and error handling.
+
+        Args:
+            runtime: Optional LangGraph tool runtime context.
+            **arguments: Keyword arguments to pass to the MCP tool.
+
+        Returns:
+            Any: Tool call result payload.
+        """
         import time
+
         start_time = time.perf_counter()
         logger.info(
             "Invoking MCP tool '%s' on server '%s'",
@@ -391,9 +397,17 @@ class MCPSessionManager:
     _instance: MCPSessionManager | None = None
 
     @classmethod
-    def get_instance(
-        cls, mcp_config: dict[str, Any] | None = None, *args: Any, **kwargs: Any
-    ) -> MCPSessionManager:
+    def get_instance(cls, mcp_config: dict[str, Any] | None = None, *args: Any, **kwargs: Any) -> MCPSessionManager:
+        """Retrieve the singleton instance of MCPSessionManager.
+
+        Args:
+            mcp_config: Optional MCP server configuration dictionary.
+            *args: Positional arguments for instance creation.
+            **kwargs: Keyword arguments for instance creation.
+
+        Returns:
+            MCPSessionManager: The singleton session manager instance.
+        """
         if cls._instance is None:
             cls._instance = cls(mcp_config)
         elif mcp_config is not None:
@@ -401,14 +415,18 @@ class MCPSessionManager:
         return cls._instance
 
     def __init__(self, mcp_config: dict[str, Any] | None = None) -> None:
-        self._config: dict[str, Any] = (
-            mcp_config.get("mcpServers", mcp_config) if mcp_config else {}
-        )
+        """Initialize MCPSessionManager with server configuration.
+
+        Args:
+            mcp_config: Optional configuration dictionary containing server settings.
+        """
+        self._config: dict[str, Any] = mcp_config.get("mcpServers", mcp_config) if mcp_config else {}
         self._sessions: dict[str, _MCPSessionEntry] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._lock = asyncio.Lock()
         self._errors: dict[str, str] = {}
         self._closed = False
+        self._background_tasks: set[asyncio.Task[Any]] = set()
 
     def _get_server_lock(self, server_name: str) -> asyncio.Lock:
         if server_name not in self._locks:
@@ -417,6 +435,11 @@ class MCPSessionManager:
 
     @property
     def sessions(self) -> dict[str, Any]:
+        """Dictionary of active MCP sessions mapped by server name.
+
+        Returns:
+            dict[str, Any]: Mapping of server names to active session instances.
+        """
         return {name: entry.session for name, entry in self._sessions.items()}
 
     def register_server(self, name: str, config: Mapping[str, Any]) -> None:
@@ -476,9 +499,7 @@ class MCPSessionManager:
         await self.invalidate(server_name)
         self.remove_server_config(server_name)
 
-    def sync_active_configs(
-        self, active_configs: dict[str, Any], purge_missing: bool = False
-    ) -> list[str]:
+    def sync_active_configs(self, active_configs: dict[str, Any], purge_missing: bool = False) -> list[str]:
         """Synchronize active configurations, returning names of removed servers."""
         raw_cfg = active_configs.get("mcpServers", active_configs)
         removed: list[str] = []
@@ -494,7 +515,9 @@ class MCPSessionManager:
             if r_name in self._sessions:
                 try:
                     loop = asyncio.get_running_loop()
-                    loop.create_task(self.invalidate(r_name))
+                    task = loop.create_task(self.invalidate(r_name))
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
                 except RuntimeError:
                     pass
         return removed

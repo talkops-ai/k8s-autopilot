@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import fnmatch
-import logging
 from collections.abc import Sequence
+import fnmatch
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
@@ -86,6 +85,15 @@ def discover_skill_dirs(
     backend: BackendProtocol,
     source_path: str,
 ) -> list[tuple[str, tuple[str, ...]]]:
+    """Recursively search for directories containing a SKILL.md definition under source_path.
+
+    Args:
+        backend: Storage backend providing directory listing capabilities.
+        source_path: Root filesystem path to search.
+
+    Returns:
+        List of tuples mapping resolved skill directory path to relative path segments.
+    """
     found: list[tuple[str, tuple[str, ...]]] = []
     source_root = Path(source_path).resolve()
     visited: set[Path] = set()
@@ -115,15 +123,23 @@ def load_namespaced_skills(
     source_path: str,
     namespace: SkillNamespace,
 ) -> list[sdk_skills.SkillMetadata]:
+    """Discover and parse all skill definitions within a source root under a given namespace.
+
+    Args:
+        backend: Storage backend providing file reading and listing.
+        source_path: Root directory path containing skills.
+        namespace: Skill namespace identifier for prefixing skill names.
+
+    Returns:
+        List of loaded and namespaced SkillMetadata objects.
+    """
     skill_dirs = discover_skill_dirs(backend, source_path)
     if not skill_dirs:
         return []
     paths = [_skill_md_path(skill_dir) for skill_dir, _ in skill_dirs]
     responses = backend.download_files(paths)
     skills: list[sdk_skills.SkillMetadata] = []
-    for (skill_dir, segments), path, response in zip(
-        skill_dirs, paths, responses, strict=True
-    ):
+    for (skill_dir, segments), path, response in zip(skill_dirs, paths, responses, strict=True):
         skill = sdk_skills._skill_metadata_from_response(response, skill_dir, path)
         if skill is not None:
             skills.append(_namespace_skill(skill, namespace, segments))
@@ -155,29 +171,36 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         subagents: Sequence[Any] | None = None,
         planning_mode: bool = False,
     ) -> None:
+        """Initialize PluginSkillsMiddleware with backend, sources, and filtering options.
+
+        Args:
+            backend: Storage backend instance.
+            sources: Custom skill root sources.
+            skill_sources: Structured skill source definitions.
+            system_prompt: Custom system prompt template for skill injection.
+            allowed_skills: Optional whitelist of skill names permitted for execution.
+            include_subagent_skills: Whether to inherit subagent-specific skills.
+            subagents: Sequence of subagents whose skills to discover.
+            planning_mode: Whether planning mode is active.
+        """
         self._planning_mode = planning_mode
         if system_prompt is None:
-            system_prompt = (
-                CRITERIA_SKILLS_SYSTEM_PROMPT
-                if planning_mode
-                else sdk_skills.SKILLS_SYSTEM_PROMPT
-            )
+            system_prompt = CRITERIA_SKILLS_SYSTEM_PROMPT if planning_mode else sdk_skills.SKILLS_SYSTEM_PROMPT
 
         if backend is None:
             from deepagents.backends.filesystem import FilesystemBackend
+
             backend = FilesystemBackend(virtual_mode=False)
 
-        self._dynamic_sources = (sources is None and skill_sources is None)
+        self._dynamic_sources = sources is None and skill_sources is None
         self._include_subagent_skills = include_subagent_skills
         self._subagents = subagents
         if sources is None:
             if skill_sources is not None:
-                sources = [
-                    (str(getattr(s, "path", s)), getattr(s, "name", str(s)))
-                    for s in skill_sources
-                ]
+                sources = [(str(getattr(s, "path", s)), getattr(s, "name", str(s))) for s in skill_sources]
             else:
                 from k8s_autopilot.skills.registry import SkillRegistry
+
                 sources = SkillRegistry.get_instance().get_sources_for_middleware(
                     include_subagent_skills=include_subagent_skills,
                     subagents=subagents,
@@ -190,8 +213,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             system_prompt=system_prompt,
         )
         self._namespaces = tuple(
-            source[2] if len(source) == _PLUGIN_SKILL_SOURCE_LENGTH else None
-            for source in sources
+            source[2] if len(source) == _PLUGIN_SKILL_SOURCE_LENGTH else None for source in sources
         )
         self._allowed_skills = tuple(allowed_skills) if allowed_skills is not None else None
 
@@ -231,16 +253,14 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     def _get_live_skills(self) -> tuple[list[sdk_skills.SkillMetadata], list[str]]:
         if self._dynamic_sources:
             from k8s_autopilot.skills.registry import SkillRegistry
+
             live_sources = SkillRegistry.get_instance().get_sources_for_middleware(
                 include_subagent_skills=self._include_subagent_skills,
                 subagents=self._subagents,
             )
             self.sources = [s[0] for s in live_sources]
             self.source_labels = [s[1] for s in live_sources]
-            self._namespaces = tuple(
-                s[2] if len(s) == _PLUGIN_SKILL_SOURCE_LENGTH else None
-                for s in live_sources
-            )
+            self._namespaces = tuple(s[2] if len(s) == _PLUGIN_SKILL_SOURCE_LENGTH else None for s in live_sources)
 
         backend = self._backend
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}
@@ -251,9 +271,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             self.sources, self.source_labels, self._namespaces, strict=True
         ):
             if namespace is None:
-                source_skills, source_error = sdk_skills._list_skills_with_errors(
-                    backend, source_path
-                )
+                source_skills, source_error = sdk_skills._list_skills_with_errors(backend, source_path)
                 if source_error is not None:
                     errors.append(source_error)
             else:
@@ -282,6 +300,16 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         runtime: Runtime,
         config: RunnableConfig,
     ) -> sdk_skills.SkillsStateUpdate | None:
+        """Discover live skills and prepare state updates before agent execution.
+
+        Args:
+            state: Current agent state.
+            runtime: Active execution runtime.
+            config: Runnable configuration for the invocation.
+
+        Returns:
+            SkillsStateUpdate if changes were detected, or None.
+        """
         live_skills, errors = self._get_live_skills()
         current_names = [s["name"] for s in state.get("skills_metadata", [])]
         live_names = [s["name"] for s in live_skills]
@@ -301,18 +329,34 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         runtime: Runtime,
         config: RunnableConfig,
     ) -> sdk_skills.SkillsStateUpdate | None:
+        """Asynchronously discover live skills and prepare state updates before agent execution.
+
+        Args:
+            state: Current agent state.
+            runtime: Active execution runtime.
+            config: Runnable configuration for the invocation.
+
+        Returns:
+            SkillsStateUpdate if changes were detected, or None.
+        """
         return await asyncio.to_thread(self.before_agent, state, runtime, config)
 
     def modify_request(self, request: Any) -> Any:
+        """Filter out stale skill metadata before formatting the system prompt.
+
+        Args:
+            request: Model request to modify.
+
+        Returns:
+            Modified request with pruned skill metadata.
+        """
         live_skills, _ = self._get_live_skills()
         live_names = {s["name"] for s in live_skills}
 
         if hasattr(request, "state") and isinstance(request.state, dict):
             # Prune any stale or uninstalled skills from request state before formatting system prompt
             existing = request.state.get("skills_metadata", [])
-            request.state["skills_metadata"] = [
-                s for s in existing if s.get("name") in live_names
-            ]
+            request.state["skills_metadata"] = [s for s in existing if s.get("name") in live_names]
             if not request.state["skills_metadata"]:
                 request.state["skills_metadata"] = live_skills
 
@@ -324,4 +368,3 @@ __all__ = [
     "discover_skill_dirs",
     "load_namespaced_skills",
 ]
-

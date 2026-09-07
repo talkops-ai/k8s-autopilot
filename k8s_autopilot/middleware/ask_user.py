@@ -7,30 +7,37 @@ more questions when clarification or input is needed. Uses LangGraph's
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Awaitable, Callable
+import contextlib
 from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
 
-from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
+from deepagents.middleware._utils import append_to_system_message
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    ModelRequest,
+    ModelResponse,
+)
 from langchain.tools import InjectedToolCallId
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
-from deepagents.middleware._utils import append_to_system_message
 
 from k8s_autopilot.middleware.registry import register_middleware
 from k8s_autopilot.middleware.unified_system_message import unify_system_message
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class Choice(TypedDict):
+    """Single selectable option in an ask_user question."""
+
     value: str
 
 
 class Question(TypedDict):
+    """Structured question with choices for human-in-the-loop prompts."""
+
     question: str
     type: Literal["text", "multiple_choice"]
     choices: NotRequired[list[Choice]]
@@ -38,6 +45,8 @@ class Question(TypedDict):
 
 
 class AskUserRequest(TypedDict):
+    """Complete ask_user interrupt payload with one or more questions."""
+
     type: Literal["ask_user"]
     questions: list[Question]
     tool_call_id: str
@@ -62,7 +71,7 @@ Use this tool when:
 Do NOT use this tool for:
 - Simple yes/no confirmations (just proceed with your best judgment)
 - Questions you can answer yourself from context
-- Trivial decisions that don't meaningfully affect the outcome"""  # noqa: E501
+- Trivial decisions that don't meaningfully affect the outcome"""
 
 ASK_USER_SYSTEM_PROMPT = """## `ask_user`
 
@@ -74,7 +83,7 @@ When using `ask_user`:
 - Use multiple choice when there are clear options to choose from
 - Use text input when you need free-form responses
 - Group related questions into a single ask_user call rather than making multiple calls
-- Never ask questions you can answer yourself from the available context"""  # noqa: E501
+- Never ask questions you can answer yourself from the available context"""
 
 
 def _validate_questions(questions: list[Question]) -> None:
@@ -112,10 +121,8 @@ def _parse_answers(
     if isinstance(response, str):
         trimmed = response.strip()
         if (trimmed.startswith("{") and trimmed.endswith("}")) or (trimmed.startswith("[") and trimmed.endswith("]")):
-            try:
+            with contextlib.suppress(Exception):
                 response = json.loads(trimmed)
-            except Exception:
-                pass
 
     if isinstance(response, str):
         answers = [response]
@@ -162,7 +169,6 @@ def _parse_answers(
         status = "error"
         error_text = "invalid ask_user response payload"
 
-
     if status == "error":
         detail = error_text or "ask_user interaction failed"
         answers = [f"(error: {detail})" for _ in questions]
@@ -193,7 +199,6 @@ def _parse_answers(
     )
 
 
-
 @register_middleware(name="ask_user")
 class AskUserMiddleware(AgentMiddleware[Any, Any]):
     """Expose ask_user tool and inject system guidance into model requests."""
@@ -204,6 +209,12 @@ class AskUserMiddleware(AgentMiddleware[Any, Any]):
         system_prompt: str = ASK_USER_SYSTEM_PROMPT,
         tool_description: str = ASK_USER_TOOL_DESCRIPTION,
     ) -> None:
+        """Initialize AskUserMiddleware and register the ask_user tool.
+
+        Args:
+            system_prompt: Guidance prompt injected into the model's system message.
+            tool_description: Custom description for the ask_user tool.
+        """
         super().__init__()
         self.system_prompt = system_prompt
         self.tool_description = tool_description
@@ -242,6 +253,15 @@ class AskUserMiddleware(AgentMiddleware[Any, Any]):
         request: ModelRequest[Any],
         handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
     ) -> ModelResponse[Any]:
+        """Wrap synchronous model call to inject ask_user system instructions.
+
+        Args:
+            request: Model invocation request.
+            handler: Next synchronous model handler.
+
+        Returns:
+            ModelResponse from the handler.
+        """
         return handler(self._with_ask_user_prompt(request))
 
     async def awrap_model_call(
@@ -249,4 +269,13 @@ class AskUserMiddleware(AgentMiddleware[Any, Any]):
         request: ModelRequest[Any],
         handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
     ) -> ModelResponse[Any]:
+        """Wrap asynchronous model call to inject ask_user system instructions.
+
+        Args:
+            request: Model invocation request.
+            handler: Next asynchronous model handler.
+
+        Returns:
+            ModelResponse from the handler.
+        """
         return await handler(self._with_ask_user_prompt(request))

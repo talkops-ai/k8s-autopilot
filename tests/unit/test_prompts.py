@@ -104,3 +104,52 @@ class TestSystemPromptTemplate:
         assert "Stateful Planning & Goal-Driven Execution" in prompt
         assert "write_todos" in prompt
 
+
+class TestSREMemorySystemPrompt:
+    """Tests for SRE memory system prompt used by MemoryMiddleware."""
+
+    def test_sre_memory_prompt_format_and_placeholders(self) -> None:
+        from k8s_autopilot.prompts import SRE_MEMORY_SYSTEM_PROMPT
+
+        assert "{agent_memory}" in SRE_MEMORY_SYSTEM_PROMPT
+        assert "<agent_memory>" in SRE_MEMORY_SYSTEM_PROMPT
+        assert "</agent_memory>" in SRE_MEMORY_SYSTEM_PROMPT
+        assert "<memory_guidelines>" in SRE_MEMORY_SYSTEM_PROMPT
+        assert "</memory_guidelines>" in SRE_MEMORY_SYSTEM_PROMPT
+
+    def test_sre_memory_prompt_rules(self) -> None:
+        from k8s_autopilot.prompts import SRE_MEMORY_SYSTEM_PROMPT
+
+        # SRE specific guidelines
+        assert "Trust and Verification" in SRE_MEMORY_SYSTEM_PROMPT
+        assert "Information Hygiene" in SRE_MEMORY_SYSTEM_PROMPT
+        assert "When to Update Memory" in SRE_MEMORY_SYSTEM_PROMPT
+        assert "When NOT to Update Memory" in SRE_MEMORY_SYSTEM_PROMPT
+        assert "AGENTS.md" in SRE_MEMORY_SYSTEM_PROMPT
+
+        # Ensure consumer chat narratives are eliminated
+        assert "basketball" not in SRE_MEMORY_SYSTEM_PROMPT
+        assert "google account" not in SRE_MEMORY_SYSTEM_PROMPT
+        assert "calendar" not in SRE_MEMORY_SYSTEM_PROMPT
+        assert "recipe" not in SRE_MEMORY_SYSTEM_PROMPT
+
+    def test_memory_middleware_accepts_sre_prompt(self) -> None:
+        from deepagents.backends.filesystem import FilesystemBackend
+        from deepagents.middleware.memory import MemoryMiddleware
+        from k8s_autopilot.prompts import SRE_MEMORY_SYSTEM_PROMPT
+
+        mw = MemoryMiddleware(
+            backend=FilesystemBackend(virtual_mode=False),
+            sources=["/tmp/test_agents.md"],
+            system_prompt=SRE_MEMORY_SYSTEM_PROMPT,
+        )
+        assert mw.system_prompt == SRE_MEMORY_SYSTEM_PROMPT
+        formatted = mw._format_agent_memory(
+            {"/tmp/test_agents.md": "# Cluster Guidelines\nAlways use internal ingress"},
+            mw.system_prompt,
+        )
+        assert "Always use internal ingress" in formatted
+        assert "Trust and Verification" in formatted
+        assert "basketball" not in formatted
+
+

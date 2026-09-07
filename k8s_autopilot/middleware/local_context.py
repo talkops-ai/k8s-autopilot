@@ -9,12 +9,18 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import logging
 import os
-import platform
-from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, Protocol, cast, runtime_checkable
+import platform
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    NotRequired,
+    Protocol,
+    cast,
+    runtime_checkable,
+)
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -29,6 +35,7 @@ from k8s_autopilot.middleware.registry import register_middleware
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
     from langgraph.runtime import Runtime
 
 from k8s_autopilot.utils.logger import get_logger
@@ -42,9 +49,17 @@ _DETECT_SCRIPT_TIMEOUT = 10
 class _ExecutableBackend(Protocol):
     """Any backend that supports execute(command) -> ExecuteResponse."""
 
-    def execute(
-        self, command: str, *, timeout: int | None = None
-    ) -> Any: ...
+    def execute(self, command: str, *, timeout: int | None = None) -> Any:
+        """Execute a shell command synchronously.
+
+        Args:
+            command: Shell command string to run.
+            timeout: Maximum allowed execution time in seconds.
+
+        Returns:
+            Execution response object.
+        """
+        ...
 
 
 @runtime_checkable
@@ -56,7 +71,17 @@ class _AsyncExecutableBackend(Protocol):
         command: str,
         *,
         timeout: int | None = None,
-    ) -> Any: ...
+    ) -> Any:
+        """Execute a shell command asynchronously.
+
+        Args:
+            command: Shell command string to run.
+            timeout: Maximum allowed execution time in seconds.
+
+        Returns:
+            Execution response object.
+        """
+        ...
 
 
 def _section_header() -> str:
@@ -211,6 +236,11 @@ fi"""
 
 
 def build_detect_script() -> str:
+    """Generate a combined bash script to probe project runtime, git status, and package managers in parallel.
+
+    Returns:
+        Complete bash heredoc script string for execution.
+    """
     serial_prefix = f"{_section_header()}\n{_section_project()}"
     parallel_sections = [
         ("02_pkgmgr", _section_package_managers()),
@@ -218,10 +248,7 @@ def build_detect_script() -> str:
         ("04_git", _section_git()),
     ]
     parallel_setup = "_DCT=$(mktemp -d) || exit 1\ntrap 'rm -rf \"$_DCT\"' EXIT"
-    parallel_block = "\n".join(
-        f'(\n{body}\n) > "$_DCT/{name}" 2>/dev/null &'
-        for name, body in parallel_sections
-    )
+    parallel_block = "\n".join(f'(\n{body}\n) > "$_DCT/{name}" 2>/dev/null &' for name, body in parallel_sections)
     cat_line = "cat " + " ".join(f'"$_DCT/{name}"' for name, _ in parallel_sections)
     body = f"{serial_prefix}\n{parallel_setup}\n{parallel_block}\nwait\n{cat_line}"
     return f"bash <<'__DETECT_CONTEXT_EOF__'\n{body}\n__DETECT_CONTEXT_EOF__\n"
@@ -298,6 +325,14 @@ class LocalContextMiddleware(AgentMiddleware[LocalContextState, Any]):
         tracing_project: str | None = None,
         user_tracing_project: str | None = None,
     ) -> None:
+        """Initialize LocalContextMiddleware with backend and project details.
+
+        Args:
+            backend: Storage or execution backend to probe project files and run commands.
+            working_dir: Working directory root path.
+            tracing_project: Optional telemetry project name.
+            user_tracing_project: Optional user-specific tracing project name.
+        """
         self.backend = backend
         self._working_dir = str(working_dir)
         self._tracing_project = tracing_project
@@ -311,13 +346,13 @@ class LocalContextMiddleware(AgentMiddleware[LocalContextState, Any]):
     def _run_detect_script(self) -> str | None:
         backend = self.backend
         if backend is None:
-            return f"**Platform**: {platform.system()} {platform.release()}\n**Working Directory**: `{self._working_dir}`"
+            return (
+                f"**Platform**: {platform.system()} {platform.release()}\n**Working Directory**: `{self._working_dir}`"
+            )
         if not isinstance(backend, _ExecutableBackend):
             return None
         try:
-            result = backend.execute(
-                DETECT_CONTEXT_SCRIPT, timeout=_DETECT_SCRIPT_TIMEOUT
-            )
+            result = backend.execute(DETECT_CONTEXT_SCRIPT, timeout=_DETECT_SCRIPT_TIMEOUT)
             output = getattr(result, "output", "") or ""
             return output.strip() or None
         except Exception:
@@ -331,12 +366,12 @@ class LocalContextMiddleware(AgentMiddleware[LocalContextState, Any]):
     async def _arun_detect_script(self) -> str | None:
         backend = self.backend
         if backend is None:
-            return f"**Platform**: {platform.system()} {platform.release()}\n**Working Directory**: `{self._working_dir}`"
+            return (
+                f"**Platform**: {platform.system()} {platform.release()}\n**Working Directory**: `{self._working_dir}`"
+            )
         if isinstance(backend, _AsyncExecutableBackend) and inspect.iscoroutinefunction(backend.aexecute):
             try:
-                result = await backend.aexecute(
-                    DETECT_CONTEXT_SCRIPT, timeout=_DETECT_SCRIPT_TIMEOUT
-                )
+                result = await backend.aexecute(DETECT_CONTEXT_SCRIPT, timeout=_DETECT_SCRIPT_TIMEOUT)
                 output = getattr(result, "output", "") or ""
                 return output.strip() or None
             except Exception:
@@ -353,6 +388,15 @@ class LocalContextMiddleware(AgentMiddleware[LocalContextState, Any]):
         state: LocalContextState,
         runtime: Runtime[Any],
     ) -> dict[str, Any] | None:
+        """Probe the environment before agent execution begins and update state with detected context.
+
+        Args:
+            state: Current agent state.
+            runtime: Active execution runtime.
+
+        Returns:
+            Dictionary updating '_local_context' if detected, or None.
+        """
         if state.get("_local_context"):
             return None
         output = self._run_detect_script()
@@ -365,6 +409,15 @@ class LocalContextMiddleware(AgentMiddleware[LocalContextState, Any]):
         state: LocalContextState,
         runtime: Runtime[Any],
     ) -> dict[str, Any] | None:
+        """Asynchronously probe the environment before agent execution begins and update state.
+
+        Args:
+            state: Current agent state.
+            runtime: Active execution runtime.
+
+        Returns:
+            Dictionary updating '_local_context' if detected, or None.
+        """
         if state.get("_local_context"):
             return None
         output = await self._arun_detect_script()
@@ -383,15 +436,22 @@ class LocalContextMiddleware(AgentMiddleware[LocalContextState, Any]):
         if self._static_k8s_context:
             parts.append(self._static_k8s_context)
 
-        return request.override(
-            system_message=SystemMessage(content="\n\n".join(filter(None, parts)))
-        )
+        return request.override(system_message=SystemMessage(content="\n\n".join(filter(None, parts))))
 
     def wrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
+        """Wrap synchronous model call to inject detected local environment context.
+
+        Args:
+            request: Model request to modify.
+            handler: Synchronous model handler.
+
+        Returns:
+            ModelResponse from the handler.
+        """
         modified_request = self._get_modified_request(request)
         return handler(modified_request or request)
 
@@ -400,6 +460,15 @@ class LocalContextMiddleware(AgentMiddleware[LocalContextState, Any]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
+        """Wrap asynchronous model call to inject detected local environment context.
+
+        Args:
+            request: Model request to modify.
+            handler: Asynchronous model handler.
+
+        Returns:
+            ModelResponse from the handler.
+        """
         modified_request = self._get_modified_request(request)
         return await handler(modified_request or request)
 

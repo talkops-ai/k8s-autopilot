@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 from pathlib import Path
-from typing import Any
 
 from k8s_autopilot.config import paths
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -19,6 +16,11 @@ class SkillTrustStore:
     """Tracks approved skill directories to prevent remote execution exploits."""
 
     def __init__(self, trust_file_path: Path | None = None) -> None:
+        """Initialize SkillTrustStore.
+
+        Args:
+            trust_file_path: Optional path to the JSON trust persistence file.
+        """
         if trust_file_path is None:
             self.trust_file_path = paths.DATA_DIR / "skill_trust.json"
         else:

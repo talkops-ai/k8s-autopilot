@@ -19,13 +19,12 @@ from k8s_autopilot.utils.session_stats import (
 from k8s_autopilot.utils.startup_error import STARTUP_ERROR_MARKER, emit_startup_failure
 
 __all__ = [
-    "AgentLogger",
-    "configure_logging",
-    "get_logger",
-    "ModelStats",
     "STARTUP_ERROR_MARKER",
+    "AgentLogger",
+    "ModelStats",
     "SessionStats",
     "TokenCostEstimator",
+    "configure_logging",
     "emit_startup_failure",
     "estimate_cost",
     "find_git_dir",
@@ -34,4 +33,5 @@ __all__ = [
     "get_git_branch",
     "get_git_remote_url",
     "get_git_root",
+    "get_logger",
 ]

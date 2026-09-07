@@ -1,5 +1,8 @@
 """Settings and Models REST API — manifest-aware, typed, DB-backed.
 
+Note: Route handlers use inline imports to avoid circular dependencies
+and keep server startup fast. This is intentional — do not move to top-level.
+
 Endpoints:
 - **Models**:
   - ``GET /api/models`` — list available models with metadata & current active selection
@@ -24,6 +27,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -48,12 +52,10 @@ from k8s_autopilot.model.config import (
     resolve_model_spec,
 )
 from k8s_autopilot.model.reasoning import (
-    SUPPORTED_EFFORT_LEVELS,
     default_effort_for_model,
     is_effort_supported_for_model,
     supported_efforts_for_model,
 )
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -110,9 +112,9 @@ def _find_option(key: str) -> ConfigOption | None:
 
 # ─── Integration Test Helpers ────────────────────────────────────────────
 
-async def test_slack_token(token: str) -> tuple[bool, str]:
-    import httpx
 
+async def test_slack_token(token: str) -> tuple[bool, str]:
+    """Test Slack authentication token against Slack API."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
@@ -130,8 +132,7 @@ async def test_slack_token(token: str) -> tuple[bool, str]:
 
 
 async def test_github_token(token: str) -> tuple[bool, str]:
-    import httpx
-
+    """Test GitHub personal access token against GitHub API."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
@@ -152,9 +153,9 @@ async def test_github_token(token: str) -> tuple[bool, str]:
 
 # ─── Route Factory ───────────────────────────────────────────────────────
 
+
 def create_settings_routes(config: Any = None) -> list[Route]:
     """Create Starlette routes for the Settings and Model APIs."""
-
     # ── Model Endpoints ───────────────────────────────────
 
     async def list_models(request: Request) -> JSONResponse:
@@ -170,37 +171,43 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                 spec = f"{provider}:{model_id}"
                 prof = get_model_profile(spec)
                 profile = prof["profile"] if prof else {}
-                models_by_provider[provider].append({
-                    "spec": spec,
-                    "model_id": model_id,
-                    "display_name": display_name,
-                    "provider": provider,
-                    "provider_display_name": get_provider_display_name(provider),
-                    "reasoning_output": profile.get("reasoning_output", False),
-                    "tool_calling": profile.get("tool_calling", True),
-                    "max_input_tokens": profile.get("max_input_tokens"),
-                    "max_output_tokens": profile.get("max_output_tokens"),
-                    "is_active": spec == current_model or model_id == current_model,
-                })
+                models_by_provider[provider].append(
+                    {
+                        "spec": spec,
+                        "model_id": model_id,
+                        "display_name": display_name,
+                        "provider": provider,
+                        "provider_display_name": get_provider_display_name(provider),
+                        "reasoning_output": profile.get("reasoning_output", False),
+                        "tool_calling": profile.get("tool_calling", True),
+                        "max_input_tokens": profile.get("max_input_tokens"),
+                        "max_output_tokens": profile.get("max_output_tokens"),
+                        "is_active": spec == current_model or model_id == current_model,
+                    }
+                )
 
-        return JSONResponse({
-            "current_model": current_model,
-            "current_effort": current_effort,
-            "providers": list(AVAILABLE_MODELS.keys()),
-            "models_by_provider": models_by_provider,
-            "all_models": get_available_models_list(),
-        })
+        return JSONResponse(
+            {
+                "current_model": current_model,
+                "current_effort": current_effort,
+                "providers": list(AVAILABLE_MODELS.keys()),
+                "models_by_provider": models_by_provider,
+                "all_models": get_available_models_list(),
+            }
+        )
 
     async def get_model_effort_options(request: Request) -> JSONResponse:
         """GET /api/models/effort?model=... — get effort levels for a model."""
         model_spec = request.query_params.get("model")
         efforts = supported_efforts_for_model(model_spec)
         default_eff = default_effort_for_model(model_spec)
-        return JSONResponse({
-            "model": model_spec,
-            "supported_efforts": list(efforts),
-            "default_effort": default_eff,
-        })
+        return JSONResponse(
+            {
+                "model": model_spec,
+                "supported_efforts": list(efforts),
+                "default_effort": default_eff,
+            }
+        )
 
     async def select_model(request: Request) -> JSONResponse:
         """POST /api/models/select — dynamically set active model and/or thinking effort."""
@@ -215,7 +222,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
 
         if model_spec:
             normalized = normalize_model_spec(model_spec)
-            provider, model_name = resolve_model_spec(normalized)
+            provider, _model_name = resolve_model_spec(normalized)
 
             await store.set(
                 key="MODEL",
@@ -235,6 +242,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
 
             if provider:
                 from k8s_autopilot.model.config import apply_stored_credentials
+
                 apply_stored_credentials(provider)
 
             response["model"] = normalized
@@ -278,6 +286,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                 response["warning"] = f"Effort level '{effort}' may not be natively supported by {model_spec}"
 
         from k8s_autopilot.config.settings import reload_from_store
+
         await reload_from_store(store)
         await _invalidate_mcp_and_agent_caches()
 
@@ -286,8 +295,8 @@ def create_settings_routes(config: Any = None) -> list[Route]:
     async def _invalidate_mcp_and_agent_caches() -> None:
         """Evict active MCP sessions and cached agent instances on configuration changes."""
         try:
-            from k8s_autopilot.mcp.session_manager import MCPSessionManager
             from k8s_autopilot.mcp.preload import clear_cached_mcp_server_infos
+            from k8s_autopilot.mcp.session_manager import MCPSessionManager
             from k8s_autopilot.server.executor import A2AAutoPilotExecutor
 
             await MCPSessionManager.get_instance().close_all()
@@ -310,18 +319,20 @@ def create_settings_routes(config: Any = None) -> list[Route]:
             manifest_keys.add(option.key)
             value, source = await store.resolve(option)
             display_value = value if (reveal or not option.redacted) else ("******" if value else "")
-            result.append({
-                "key": option.key,
-                "db_key": option.db_key,
-                "value": display_value,
-                "source": source,
-                "group": option.group,
-                "kind": option.kind.value,
-                "summary": option.summary,
-                "default": option.default,
-                "is_sensitive": option.redacted,
-                "choices": option.choices,
-            })
+            result.append(
+                {
+                    "key": option.key,
+                    "db_key": option.db_key,
+                    "value": display_value,
+                    "source": source,
+                    "group": option.group,
+                    "kind": option.kind.value,
+                    "summary": option.summary,
+                    "default": option.default,
+                    "is_sensitive": option.redacted,
+                    "choices": option.choices,
+                }
+            )
 
         # Include custom config entries from DB
         all_entries = await store.list_all()
@@ -332,18 +343,20 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                 and not entry.key.startswith("credentials.")
             ):
                 display_val = entry.value if (reveal or not entry.is_secret) else ("******" if entry.value else "")
-                result.append({
-                    "key": entry.key,
-                    "db_key": entry.key,
-                    "value": display_val,
-                    "source": "db",
-                    "group": "Custom",
-                    "kind": "str",
-                    "summary": entry.display_name or "Custom Environment Variable",
-                    "default": None,
-                    "is_sensitive": entry.is_secret,
-                    "choices": None,
-                })
+                result.append(
+                    {
+                        "key": entry.key,
+                        "db_key": entry.key,
+                        "value": display_val,
+                        "source": "db",
+                        "group": "Custom",
+                        "kind": "str",
+                        "summary": entry.display_name or "Custom Environment Variable",
+                        "default": None,
+                        "is_sensitive": entry.is_secret,
+                        "choices": None,
+                    }
+                )
 
         return JSONResponse(result)
 
@@ -358,35 +371,39 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         if option is not None:
             value, source = await store.resolve(option)
             display_value = value if (reveal or not option.redacted) else ("******" if value else "")
-            return JSONResponse({
-                "key": option.key,
-                "db_key": option.db_key,
-                "value": display_value,
-                "source": source,
-                "group": option.group,
-                "kind": option.kind.value,
-                "summary": option.summary,
-                "default": option.default,
-                "is_sensitive": option.redacted,
-                "choices": option.choices,
-            })
+            return JSONResponse(
+                {
+                    "key": option.key,
+                    "db_key": option.db_key,
+                    "value": display_value,
+                    "source": source,
+                    "group": option.group,
+                    "kind": option.kind.value,
+                    "summary": option.summary,
+                    "default": option.default,
+                    "is_sensitive": option.redacted,
+                    "choices": option.choices,
+                }
+            )
 
         # Check for custom configuration entry
         entry = await store.get_entry(key) or await store.get_entry(key.upper())
         if entry is not None:
             display_value = entry.value if (reveal or not entry.is_secret) else ("******" if entry.value else "")
-            return JSONResponse({
-                "key": entry.key,
-                "db_key": entry.key,
-                "value": display_value,
-                "source": "db",
-                "group": "Custom",
-                "kind": "str",
-                "summary": entry.display_name or "Custom Environment Variable",
-                "default": None,
-                "is_sensitive": entry.is_secret,
-                "choices": None,
-            })
+            return JSONResponse(
+                {
+                    "key": entry.key,
+                    "db_key": entry.key,
+                    "value": display_value,
+                    "source": "db",
+                    "group": "Custom",
+                    "kind": "str",
+                    "summary": entry.display_name or "Custom Environment Variable",
+                    "default": None,
+                    "is_sensitive": entry.is_secret,
+                    "choices": None,
+                }
+            )
 
         return JSONResponse({"detail": f"Unknown setting: {key}"}, status_code=404)
 
@@ -417,10 +434,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
             option = _find_option(key)
             if option is not None:
                 if option.choices and str(value) not in option.choices:
-                    errors.append(
-                        f"Invalid value for {key}: {value!r}. "
-                        f"Valid choices: {', '.join(option.choices)}"
-                    )
+                    errors.append(f"Invalid value for {key}: {value!r}. Valid choices: {', '.join(option.choices)}")
                     continue
 
                 coerced = coerce_str_value(option.kind, str(value))
@@ -469,15 +483,16 @@ def create_settings_routes(config: Any = None) -> list[Route]:
 
         if env_updates:
             from k8s_autopilot.config.paths import upsert_env_vars
+
             upsert_env_vars(env_updates)
 
         # Dynamic Storage Hot-Swapping
         if storage_changed:
             try:
                 from k8s_autopilot.api.service import ThreadService, set_thread_service
+                from k8s_autopilot.config.store_factory import create_config_store
                 from k8s_autopilot.server.executor import A2AAutoPilotExecutor
                 from k8s_autopilot.state.session import create_runtime_checkpointer
-                from k8s_autopilot.config.store_factory import create_config_store
 
                 target_backend = os.environ.get("CHECKPOINT_BACKEND", "sqlite")
 
@@ -515,6 +530,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                 # 4. Rehydrate plugins for the new store and reset active MCP sessions
                 try:
                     from k8s_autopilot.plugins.discovery import discover_plugins_async
+
                     await discover_plugins_async(store=new_store)
                 except Exception as p_err:
                     logger.warning("Plugin rehydration warning on storage switch: %s", p_err)
@@ -535,6 +551,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
 
         if updated > 0:
             from k8s_autopilot.config.settings import reload_from_store
+
             await reload_from_store(store)
             await _invalidate_mcp_and_agent_caches()
 
@@ -567,6 +584,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
 
         # Clear from os.environ and .env file across option keys and generic aliases
         from k8s_autopilot.config.paths import delete_env_vars
+
         keys_to_del = [target_key]
         if option and option.effective_env_var:
             keys_to_del.append(option.effective_env_var)
@@ -581,6 +599,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         delete_env_vars(list(set(keys_to_del)))
 
         from k8s_autopilot.config.settings import reload_from_store
+
         await reload_from_store(store)
         await _invalidate_mcp_and_agent_caches()
 
@@ -634,7 +653,11 @@ def create_settings_routes(config: Any = None) -> list[Route]:
             else:
                 error = "Missing LANGSMITH_API_KEY"
         elif integration_type == "argocd":
-            server_url = payload.get("ARGOCD_SERVER_URL") or await store.get("ARGOCD_SERVER_URL") or os.environ.get("ARGOCD_SERVER_URL")
+            server_url = (
+                payload.get("ARGOCD_SERVER_URL")
+                or await store.get("ARGOCD_SERVER_URL")
+                or os.environ.get("ARGOCD_SERVER_URL")
+            )
             token = payload.get("ARGOCD_AUTH_TOKEN")
             if token == "******" or not token:
                 token = await store.get("ARGOCD_AUTH_TOKEN") or os.environ.get("ARGOCD_AUTH_TOKEN")
@@ -648,7 +671,6 @@ def create_settings_routes(config: Any = None) -> list[Route]:
             elif not token:
                 error = "Missing ARGOCD_AUTH_TOKEN"
             else:
-                import httpx
                 try:
                     async with httpx.AsyncClient(verify=not insecure, timeout=10.0) as client:
                         resp = await client.get(
@@ -671,14 +693,14 @@ def create_settings_routes(config: Any = None) -> list[Route]:
             if uri:
                 try:
                     import asyncio
+
                     from psycopg import AsyncConnection
 
                     conn = await asyncio.wait_for(AsyncConnection.connect(uri), timeout=5.0)
-                    async with conn:
-                        async with conn.cursor() as cur:
-                            await cur.execute("SELECT version();")
-                            row = await cur.fetchone()
-                            version = row[0] if row else "PostgreSQL"
+                    async with conn, conn.cursor() as cur:
+                        await cur.execute("SELECT version();")
+                        row = await cur.fetchone()
+                        version = row[0] if row else "PostgreSQL"
                     return JSONResponse({"success": True, "version": version, "message": f"Connected: {version}"})
                 except Exception as e:
                     return JSONResponse({"success": False, "error": f"Connection failed: {e}"})
@@ -686,15 +708,20 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                 return JSONResponse({"success": False, "error": "Missing POSTGRES_URI"})
         elif integration_type == "sqlite":
             try:
-                from k8s_autopilot.state.session import get_db_path
                 import aiosqlite
 
+                from k8s_autopilot.state.session import get_db_path
+
                 db_path = get_db_path()
-                async with aiosqlite.connect(str(db_path)) as db:
-                    async with db.execute("SELECT sqlite_version();") as cur:
-                        row = await cur.fetchone()
-                        version = row[0] if row else "SQLite"
-                return JSONResponse({"success": True, "version": f"SQLite {version}", "message": f"Connected: SQLite {version}"})
+                async with (
+                    aiosqlite.connect(str(db_path)) as db,
+                    db.execute("SELECT sqlite_version();") as cur,
+                ):
+                    row = await cur.fetchone()
+                    version = row[0] if row else "SQLite"
+                return JSONResponse(
+                    {"success": True, "version": f"SQLite {version}", "message": f"Connected: SQLite {version}"}
+                )
             except Exception as e:
                 return JSONResponse({"success": False, "error": f"SQLite check failed: {e}"})
         else:
@@ -713,42 +740,50 @@ def create_settings_routes(config: Any = None) -> list[Route]:
 
         project_name = get_langsmith_project_name()
         if not project_name:
-            return JSONResponse({
-                "configured": False,
-                "project_name": None,
-                "url": None,
-                "message": "LangSmith tracing is not enabled or configured.",
-            })
+            return JSONResponse(
+                {
+                    "configured": False,
+                    "project_name": None,
+                    "url": None,
+                    "message": "LangSmith tracing is not enabled or configured.",
+                }
+            )
 
         try:
             import asyncio
 
             project_url = await asyncio.to_thread(fetch_langsmith_project_url_or_raise, project_name)
             url = _assemble_langsmith_thread_url(project_url, thread_id)
-            return JSONResponse({
-                "configured": True,
-                "project_name": project_name,
-                "url": url,
-                "project_url": project_url,
-            })
+            return JSONResponse(
+                {
+                    "configured": True,
+                    "project_name": project_name,
+                    "url": url,
+                    "project_url": project_url,
+                }
+            )
         except Exception as e:
-            return JSONResponse({
-                "configured": True,
-                "project_name": project_name,
-                "url": None,
-                "error": str(e),
-            })
+            return JSONResponse(
+                {
+                    "configured": True,
+                    "project_name": project_name,
+                    "url": None,
+                    "error": str(e),
+                }
+            )
 
     async def get_settings_health(request: Request) -> JSONResponse:
         """GET /api/settings/health — health check."""
         try:
             store = await get_config_store()
             entries = await store.list_all()
-            return JSONResponse({
-                "status": "healthy",
-                "db_connected": True,
-                "entry_count": len(entries),
-            })
+            return JSONResponse(
+                {
+                    "status": "healthy",
+                    "db_connected": True,
+                    "entry_count": len(entries),
+                }
+            )
         except Exception as e:
             return JSONResponse(
                 {"status": "unhealthy", "db_connected": False, "error": str(e)},
@@ -758,12 +793,18 @@ def create_settings_routes(config: Any = None) -> list[Route]:
     # ── MCP Server CRUD & Diagnostics ─────────────────────
 
     async def list_mcp_servers(request: Request) -> JSONResponse:
+        """List all configured MCP servers."""
         store = await get_config_store()
         servers = await store.list_mcp_servers()
         return JSONResponse(servers)
 
     async def list_mcp_servers_status(request: Request) -> JSONResponse:
-        from k8s_autopilot.mcp.preload import preload_mcp_metadata, format_mcp_status_response
+        """List probed connection and tool status for all MCP servers."""
+        from k8s_autopilot.mcp.preload import (
+            format_mcp_status_response,
+            preload_mcp_metadata,
+        )
+
         store = await get_config_store()
         db_servers = await store.list_mcp_servers()
         config_map = {s["name"]: s for s in db_servers}
@@ -772,7 +813,9 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         return JSONResponse(status_payload)
 
     async def probe_single_mcp_server(request: Request) -> JSONResponse:
+        """Probe a single MCP server for connection status and tools."""
         from k8s_autopilot.mcp.preload import probe_one_mcp_server
+
         name = request.path_params["name"]
         store = await get_config_store()
         server = await store.get_mcp_server(name)
@@ -782,6 +825,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         return JSONResponse(info.to_dict())
 
     async def toggle_mcp_server(request: Request) -> JSONResponse:
+        """Enable or disable an MCP server configuration."""
         name = request.path_params["name"]
         data = await request.json()
         enabled = bool(data.get("enabled", True))
@@ -794,12 +838,12 @@ def create_settings_routes(config: Any = None) -> list[Route]:
 
         # Update session manager, probed cache, and invalidate executor agents
         try:
-            from k8s_autopilot.mcp.session_manager import MCPSessionManager
             from k8s_autopilot.mcp.preload import (
+                evict_cached_mcp_server_info,
                 probe_one_mcp_server,
                 set_cached_mcp_server_info,
-                evict_cached_mcp_server_info,
             )
+            from k8s_autopilot.mcp.session_manager import MCPSessionManager
             from k8s_autopilot.server.executor import A2AAutoPilotExecutor
 
             mcp_mgr = MCPSessionManager.get_instance()
@@ -820,6 +864,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         return JSONResponse({"name": name, "enabled": enabled, "success": True})
 
     async def upsert_mcp_servers(request: Request) -> JSONResponse:
+        """Create or update one or more MCP server configurations."""
         data = await request.json()
         store = await get_config_store()
         names: list[str] = []
@@ -838,12 +883,12 @@ def create_settings_routes(config: Any = None) -> list[Route]:
 
         # Update session manager & preload cache & invalidate agents
         try:
-            from k8s_autopilot.mcp.session_manager import MCPSessionManager
             from k8s_autopilot.mcp.preload import (
                 evict_cached_mcp_server_info,
                 probe_one_mcp_server,
                 set_cached_mcp_server_info,
             )
+            from k8s_autopilot.mcp.session_manager import MCPSessionManager
             from k8s_autopilot.server.executor import A2AAutoPilotExecutor
 
             mcp_mgr = MCPSessionManager.get_instance()
@@ -869,6 +914,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         return JSONResponse({"success": True, "count": len(names), "names": names})
 
     async def delete_mcp_server(request: Request) -> JSONResponse:
+        """Delete an MCP server configuration by name."""
         name = request.path_params["name"]
         store = await get_config_store()
         deleted = await store.delete_mcp_server(name)
@@ -876,8 +922,8 @@ def create_settings_routes(config: Any = None) -> list[Route]:
             return JSONResponse({"detail": "MCP server not found"}, status_code=404)
 
         try:
-            from k8s_autopilot.mcp.session_manager import MCPSessionManager
             from k8s_autopilot.mcp.preload import evict_cached_mcp_server_info
+            from k8s_autopilot.mcp.session_manager import MCPSessionManager
             from k8s_autopilot.server.executor import A2AAutoPilotExecutor
 
             mcp_mgr = MCPSessionManager.get_instance()
@@ -890,14 +936,18 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         return JSONResponse({"success": True, "name": name})
 
     async def get_raw_mcp_config(request: Request) -> JSONResponse:
+        """Export all MCP server configurations in standard JSON format."""
         from k8s_autopilot.mcp.raw_config import export_raw_mcp_config
+
         store = await get_config_store()
         db_servers = await store.list_mcp_servers()
         payload = export_raw_mcp_config(db_servers)
         return JSONResponse(payload)
 
     async def put_raw_mcp_config(request: Request) -> JSONResponse:
+        """Import and synchronize raw MCP server configurations."""
         from k8s_autopilot.mcp.raw_config import import_raw_mcp_config
+
         data = await request.json()
         store = await get_config_store()
         try:
@@ -907,17 +957,18 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         except Exception as exc:
             return JSONResponse({"detail": str(exc)}, status_code=400)
 
-
-
     # ── Marketplace CRUD ──────────────────────────────────
 
     async def list_marketplaces_route(request: Request) -> JSONResponse:
+        """List all configured plugin marketplaces."""
         store = await get_config_store()
         marketplaces = await store.list_marketplaces()
         return JSONResponse(marketplaces)
 
     async def add_marketplace_route(request: Request) -> JSONResponse:
+        """Add and synchronize a new plugin marketplace source."""
         from k8s_autopilot.plugins.discovery import add_marketplace_source_async
+
         data = await request.json()
         source = data.get("source") or data.get("source_value")
         if not source:
@@ -925,17 +976,21 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         store = await get_config_store()
         try:
             marketplace = await add_marketplace_source_async(source, store=store)
-            return JSONResponse({
-                "name": marketplace.name,
-                "plugin_count": len(marketplace.plugins),
-                "plugins": [p.name for p in marketplace.plugins],
-            })
+            return JSONResponse(
+                {
+                    "name": marketplace.name,
+                    "plugin_count": len(marketplace.plugins),
+                    "plugins": [p.name for p in marketplace.plugins],
+                }
+            )
         except Exception as exc:
             logger.warning("Failed to add marketplace: %s", exc)
             return JSONResponse({"detail": str(exc)}, status_code=400)
 
     async def delete_marketplace_route(request: Request) -> JSONResponse:
+        """Remove a plugin marketplace source."""
         from k8s_autopilot.plugins.discovery import remove_marketplace_async
+
         name = request.path_params["name"]
         store = await get_config_store()
         deleted = await remove_marketplace_async(name, store=store)
@@ -946,25 +1001,32 @@ def create_settings_routes(config: Any = None) -> list[Route]:
     # ── Plugin Discovery & Lifecycle ──────────────────────
 
     async def discover_available_plugins_route(request: Request) -> JSONResponse:
+        """List all available plugins across configured marketplaces."""
         from k8s_autopilot.plugins.discovery import list_available_plugins_async
+
         include_installed = request.query_params.get("include_installed", "false").lower() == "true"
         store = await get_config_store()
         available = await list_available_plugins_async(store=store, include_installed=include_installed)
         return JSONResponse(available)
 
     async def list_installed_plugins_route(request: Request) -> JSONResponse:
+        """List all locally installed plugins."""
         store = await get_config_store()
         plugins = await store.list_plugins()
         return JSONResponse(plugins)
 
     async def list_plugin_errors_route(request: Request) -> JSONResponse:
+        """List any plugin discovery or initialization errors."""
         from k8s_autopilot.plugins.discovery import get_plugin_errors_async
+
         store = await get_config_store()
         errors = await get_plugin_errors_async(store=store)
         return JSONResponse(errors)
 
     async def install_plugin_route(request: Request) -> JSONResponse:
+        """Install a plugin from a configured marketplace."""
         from k8s_autopilot.plugins.discovery import install_plugin_async
+
         data = await request.json()
         plugin_id = data.get("plugin_id")
         scope = data.get("scope", "global")
@@ -975,23 +1037,28 @@ def create_settings_routes(config: Any = None) -> list[Route]:
             instance = await install_plugin_async(plugin_id, scope=scope, store=store)
             try:
                 from k8s_autopilot.server.executor import A2AAutoPilotExecutor
+
                 A2AAutoPilotExecutor.invalidate_all_agents()
             except Exception:
                 pass
-            return JSONResponse({
-                "plugin_id": instance.plugin_id,
-                "name": instance.name,
-                "marketplace": instance.marketplace,
-                "version": instance.version,
-                "root": str(instance.root),
-                "skills_count": len(instance.inventory.skills),
-            })
+            return JSONResponse(
+                {
+                    "plugin_id": instance.plugin_id,
+                    "name": instance.name,
+                    "marketplace": instance.marketplace,
+                    "version": instance.version,
+                    "root": str(instance.root),
+                    "skills_count": len(instance.inventory.skills),
+                }
+            )
         except Exception as exc:
             logger.warning("Failed to install plugin %s: %s", plugin_id, exc)
             return JSONResponse({"detail": str(exc)}, status_code=400)
 
     async def uninstall_plugin_route(request: Request) -> JSONResponse:
+        """Uninstall an installed plugin."""
         from k8s_autopilot.plugins.discovery import uninstall_plugin_async
+
         plugin_id = request.path_params["plugin_id"]
         store = await get_config_store()
         success = await uninstall_plugin_async(plugin_id, store=store)
@@ -999,30 +1066,37 @@ def create_settings_routes(config: Any = None) -> list[Route]:
             return JSONResponse({"detail": "Plugin not found"}, status_code=404)
         try:
             from k8s_autopilot.server.executor import A2AAutoPilotExecutor
+
             A2AAutoPilotExecutor.invalidate_all_agents()
         except Exception:
             pass
         return JSONResponse({"success": True})
 
     async def enable_plugin_route(request: Request) -> JSONResponse:
+        """Enable an installed plugin."""
         from k8s_autopilot.plugins.discovery import set_plugin_enabled_async
+
         plugin_id = request.path_params["plugin_id"]
         store = await get_config_store()
         await set_plugin_enabled_async(plugin_id, True, store=store)
         try:
             from k8s_autopilot.server.executor import A2AAutoPilotExecutor
+
             A2AAutoPilotExecutor.invalidate_all_agents()
         except Exception:
             pass
         return JSONResponse({"success": True})
 
     async def disable_plugin_route(request: Request) -> JSONResponse:
+        """Disable an installed plugin."""
         from k8s_autopilot.plugins.discovery import set_plugin_enabled_async
+
         plugin_id = request.path_params["plugin_id"]
         store = await get_config_store()
         await set_plugin_enabled_async(plugin_id, False, store=store)
         try:
             from k8s_autopilot.server.executor import A2AAutoPilotExecutor
+
             A2AAutoPilotExecutor.invalidate_all_agents()
         except Exception:
             pass
@@ -1031,17 +1105,20 @@ def create_settings_routes(config: Any = None) -> list[Route]:
     # ── Plugin Metadata CRUD ──────────────────────────────
 
     async def list_plugins(request: Request) -> JSONResponse:
+        """List stored plugin configurations."""
         store = await get_config_store()
         plugins = await store.list_plugins()
         return JSONResponse(plugins)
 
     async def upsert_plugin(request: Request) -> JSONResponse:
+        """Create or update a plugin configuration record."""
         data = await request.json()
         store = await get_config_store()
         await store.upsert_plugin(data)
         return JSONResponse({"success": True})
 
     async def delete_plugin(request: Request) -> JSONResponse:
+        """Delete a plugin configuration record."""
         plugin_id = request.path_params["plugin_id"]
         store = await get_config_store()
         deleted = await store.delete_plugin(plugin_id)
@@ -1052,7 +1129,9 @@ def create_settings_routes(config: Any = None) -> list[Route]:
     # ── Skill Metadata & Discovery ────────────────────────
 
     async def list_skills(request: Request) -> JSONResponse:
+        """List all discovered skills across installed plugins and workspaces."""
         from k8s_autopilot.skills.loader import list_skills as discover_skills
+
         include_subagents = request.query_params.get("include_subagents", "false").lower() == "true"
         store = await get_config_store()
         skills = discover_skills(
@@ -1062,38 +1141,48 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         return JSONResponse(skills)
 
     async def get_skill(request: Request) -> JSONResponse:
+        """Get metadata and content for a specific skill."""
         from k8s_autopilot.skills.loader import get_skill_content_by_name
+
         name = request.path_params["name"]
         store = await get_config_store()
         skill, content = get_skill_content_by_name(name, store=store)
         if not skill:
             return JSONResponse({"detail": f"Skill '{name}' not found"}, status_code=404)
-        return JSONResponse({
-            "skill": skill,
-            "content": content or "",
-        })
+        return JSONResponse(
+            {
+                "skill": skill,
+                "content": content or "",
+            }
+        )
 
     async def get_skill_content(request: Request) -> JSONResponse:
+        """Retrieve raw Markdown content for a specific skill."""
         from k8s_autopilot.skills.loader import get_skill_content_by_name
+
         name = request.path_params["name"]
         store = await get_config_store()
         skill, content = get_skill_content_by_name(name, store=store)
         if not skill or content is None:
             return JSONResponse({"detail": f"Content for skill '{name}' not found"}, status_code=404)
-        return JSONResponse({
-            "name": name,
-            "content": content,
-            "path": skill.get("path"),
-            "scope": skill.get("scope"),
-        })
+        return JSONResponse(
+            {
+                "name": name,
+                "content": content,
+                "path": skill.get("path"),
+                "scope": skill.get("scope"),
+            }
+        )
 
     async def upsert_skill(request: Request) -> JSONResponse:
+        """Save or update custom skill metadata."""
         data = await request.json()
         store = await get_config_store()
         await store.upsert_skill(data)
         return JSONResponse({"success": True})
 
     async def delete_skill(request: Request) -> JSONResponse:
+        """Delete a custom skill configuration."""
         name = request.path_params["name"]
         store = await get_config_store()
         deleted = await store.delete_skill(name)
@@ -1104,17 +1193,20 @@ def create_settings_routes(config: Any = None) -> list[Route]:
     # ── Subagent Metadata CRUD ────────────────────────────
 
     async def list_subagents(request: Request) -> JSONResponse:
+        """List all custom configured subagents."""
         store = await get_config_store()
         subagents = await store.list_subagents()
         return JSONResponse(subagents)
 
     async def upsert_subagent(request: Request) -> JSONResponse:
+        """Create or update a custom subagent configuration."""
         data = await request.json()
         store = await get_config_store()
         await store.upsert_subagent(data)
         return JSONResponse({"success": True})
 
     async def delete_subagent(request: Request) -> JSONResponse:
+        """Delete a custom subagent configuration."""
         name = request.path_params["name"]
         store = await get_config_store()
         deleted = await store.delete_subagent(name)
@@ -1155,10 +1247,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
 
         store = await get_config_store()
         db_mode = await store.get("APPROVAL_MODE")
-        if db_mode:
-            mode = db_mode.lower().strip()
-        else:
-            mode = getattr(get_settings(), "approval_mode", "manual") or "manual"
+        mode = db_mode.lower().strip() if db_mode else getattr(get_settings(), "approval_mode", "manual") or "manual"
 
         return JSONResponse({"status": "success", "approval_mode": mode})
 
@@ -1228,7 +1317,9 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         data = await request.json()
         store = await get_config_store()
 
-        server_url = (data.get("server_url") or await store.get("ARGOCD_SERVER_URL") or os.environ.get("ARGOCD_SERVER_URL") or "").strip()
+        server_url = (
+            data.get("server_url") or await store.get("ARGOCD_SERVER_URL") or os.environ.get("ARGOCD_SERVER_URL") or ""
+        ).strip()
         username = (data.get("username") or "").strip()
         password = data.get("password") or ""
         insecure_raw = data.get("insecure")
@@ -1244,8 +1335,9 @@ def create_settings_routes(config: Any = None) -> list[Route]:
             return JSONResponse({"success": False, "error": "Missing ArgoCD Password"}, status_code=400)
 
         import httpx
+
         try:
-            base = server_url.rstrip('/')
+            base = server_url.rstrip("/")
             session_url = f"{base}/api/v1/session"
             async with httpx.AsyncClient(verify=not insecure, timeout=15.0) as client:
                 resp = await client.post(
@@ -1260,7 +1352,10 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                     except Exception:
                         pass
                     return JSONResponse(
-                        {"success": False, "error": f"ArgoCD authentication failed (HTTP {resp.status_code}): {err_msg}"},
+                        {
+                            "success": False,
+                            "error": f"ArgoCD authentication failed (HTTP {resp.status_code}): {err_msg}",
+                        },
                         status_code=400,
                     )
 
@@ -1279,7 +1374,10 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                 )
                 if probe_resp.status_code != 200:
                     return JSONResponse(
-                        {"success": False, "error": f"Token generated but validation probe failed (HTTP {probe_resp.status_code})"},
+                        {
+                            "success": False,
+                            "error": f"Token generated but validation probe failed (HTTP {probe_resp.status_code})",
+                        },
                         status_code=400,
                     )
 
@@ -1299,29 +1397,36 @@ def create_settings_routes(config: Any = None) -> list[Route]:
 
             try:
                 from k8s_autopilot.config.paths import upsert_env_vars
+
                 upsert_env_vars(env_updates)
             except Exception:
                 pass
 
             try:
                 from k8s_autopilot.config.settings import reload_from_store
+
                 await reload_from_store(store)
             except Exception:
                 pass
 
             await _invalidate_mcp_and_agent_caches()
 
-            return JSONResponse({
-                "success": True,
-                "token": token,
-                "server_url": base,
-                "message": "ArgoCD authentication token generated and saved successfully",
-            })
+            return JSONResponse(
+                {
+                    "success": True,
+                    "token": token,
+                    "server_url": base,
+                    "message": "ArgoCD authentication token generated and saved successfully",
+                }
+            )
         except httpx.ConnectError as ce:
-            return JSONResponse({"success": False, "error": f"Cannot connect to ArgoCD at {server_url}: {ce}"}, status_code=400)
+            return JSONResponse(
+                {"success": False, "error": f"Cannot connect to ArgoCD at {server_url}: {ce}"}, status_code=400
+            )
         except Exception as e:
-            return JSONResponse({"success": False, "error": f"Unexpected error generating ArgoCD token: {e}"}, status_code=500)
-
+            return JSONResponse(
+                {"success": False, "error": f"Unexpected error generating ArgoCD token: {e}"}, status_code=500
+            )
 
     return [
         # Models

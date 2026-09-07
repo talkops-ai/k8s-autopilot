@@ -10,10 +10,9 @@ Provides thread lifecycle operations accessible via A2A protocol:
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-from k8s_autopilot.server.message_parser import MessageParser, ParsedMessage
+from k8s_autopilot.server.message_parser import MessageParser
 from k8s_autopilot.state.session import (
     ThreadInfo,
     delete_thread,
@@ -21,7 +20,6 @@ from k8s_autopilot.state.session import (
     generate_thread_id,
     list_threads,
 )
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,13 +29,28 @@ class A2AThreadHandler:
     """Handles thread management requests from A2A / A2UI clients."""
 
     def __init__(self, current_thread_id: str | None = None) -> None:
+        """Initialize A2AThreadHandler with optional active thread ID.
+
+        Args:
+            current_thread_id: Initial active thread identifier.
+        """
         self._current_thread_id = current_thread_id
 
     @property
     def current_thread_id(self) -> str | None:
+        """Retrieve the currently active thread identifier.
+
+        Returns:
+            str | None: Active thread ID or None.
+        """
         return self._current_thread_id
 
     def set_current_thread(self, thread_id: str) -> None:
+        """Set the currently active thread identifier.
+
+        Args:
+            thread_id: Thread identifier to activate.
+        """
         self._current_thread_id = thread_id
 
     async def list_threads(

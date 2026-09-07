@@ -17,6 +17,6 @@ from k8s_autopilot.integrations.slack.app import create_slack_integration_server
 from k8s_autopilot.integrations.slack.integration import SlackMessagingIntegration
 
 __all__ = [
-    "create_slack_integration_server",
     "SlackMessagingIntegration",
+    "create_slack_integration_server",
 ]

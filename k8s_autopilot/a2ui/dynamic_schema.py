@@ -20,7 +20,6 @@ Reference:
 from __future__ import annotations
 
 import json
-from k8s_autopilot.utils.logger import AgentLogger
 from typing import Any
 
 from copilotkit import a2ui
@@ -29,21 +28,21 @@ from langchain_core.tools import tool as langchain_tool
 from pydantic import BaseModel, Field
 
 from k8s_autopilot.model.factory import create_model
+from k8s_autopilot.utils.logger import AgentLogger
 
 logger = AgentLogger("A2UIDynamicSchema")
 
 # ── Constants ────────────────────────────────────────────────────────────
 
-CUSTOM_CATALOG_ID = (
-    "https://github.com/google/A2UI/blob/main/specification/"
-    "v0_9/json/standard_catalog_definition.json"
-)
+CUSTOM_CATALOG_ID = "https://github.com/google/A2UI/blob/main/specification/v0_9/json/standard_catalog_definition.json"
 """Standard v0.9 A2UI catalog used by the K8s Autopilot frontend."""
 
 # ── render_a2ui — the tool schema the secondary LLM must call ─────────
 
+
 class RenderA2UIInput(BaseModel):
     """Input schema for the render_a2ui tool the secondary LLM calls."""
+
     surfaceId: str = Field(
         description="Unique surface identifier, e.g. 'dynamic-dashboard'.",
     )
@@ -79,12 +78,11 @@ def render_a2ui(
 
 # ── build_a2ui_operations ─────────────────────────────────────────────
 
+
 def build_a2ui_operations_from_tool_call(
     args: dict[str, Any],
 ) -> dict[str, Any]:
-    """Convert the secondary LLM's ``render_a2ui`` tool-call args into an
-    ``a2ui_operations`` container the A2UI middleware can detect.
-    """
+    """Convert secondary LLM render_a2ui tool-call args into an a2ui_operations container."""
     surface_id = args.get("surfaceId", "dynamic-surface")
     catalog_id = args.get("catalogId", CUSTOM_CATALOG_ID)
     components = args.get("components", [])
@@ -104,6 +102,7 @@ def build_a2ui_operations_from_tool_call(
 
 
 # ── generate_a2ui — the public tool registered with the supervisor ────
+
 
 def create_generate_a2ui_tool(config: dict[str, Any] | None = None):
     """Factory that creates the ``generate_a2ui`` LangChain tool.

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 from typing import Any
 
@@ -24,14 +23,16 @@ def list_skills_command() -> list[dict[str, Any]]:
         source_str = skill.get("source", "")
         path = Path(path_str)
         trusted = store.is_trusted(name_str, path)
-        results.append({
-            "name": name_str,
-            "description": skill.get("description", ""),
-            "source": source_str,
-            "plugin_id": skill.get("plugin_id"),
-            "path": str(path),
-            "trusted": "Yes" if trusted else "No",
-        })
+        results.append(
+            {
+                "name": name_str,
+                "description": skill.get("description", ""),
+                "source": source_str,
+                "plugin_id": skill.get("plugin_id"),
+                "path": str(path),
+                "trusted": "Yes" if trusted else "No",
+            }
+        )
     return results
 
 

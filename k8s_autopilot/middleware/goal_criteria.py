@@ -15,18 +15,17 @@ middleware to the nested criteria agent graphs.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import inspect
 import json
-import logging
 import threading
-from collections import OrderedDict
-from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast, override
 
+from deepagents.middleware.skills import SkillsState
 from langchain.agents.middleware.types import (
     AgentMiddleware,
-    AgentState,
     OmitFromOutput,
+    PrivateStateAttr,
     hook_config,
 )
 from langchain_core.messages import (
@@ -39,10 +38,9 @@ from langchain_core.messages import (
     get_buffer_string,
 )
 from langgraph.errors import GraphRecursionError
-from typing_extensions import TypedDict, override
+from typing_extensions import TypedDict
 
 from k8s_autopilot.middleware._repository_bounds import (
-    REPOSITORY_GREP_MATCH_LIMIT as _REPOSITORY_GREP_MATCH_LIMIT,
     REPOSITORY_TOOL_CALL_LIMIT as _REPOSITORY_TOOL_CALL_LIMIT,
     REPOSITORY_TOOL_NAMES as _REPOSITORY_TOOL_NAMES,
     RepositoryBounds,
@@ -51,7 +49,6 @@ from k8s_autopilot.middleware.goal_state_notice import is_conversation_control_m
 from k8s_autopilot.middleware.registry import register_middleware
 from k8s_autopilot.middleware.resume_state import ResumeState
 from k8s_autopilot.rubrics.generator import (
-    GOAL_AMENDMENT_SYSTEM_PROMPT,
     GOAL_RUBRIC_SYSTEM_PROMPT,
     _goal_amendment_human_prompt,
     _goal_rubric_human_prompt,
@@ -67,6 +64,7 @@ if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
     from langgraph.types import Command
+
     from k8s_autopilot.subagents.types import SubagentMetadata
 
 from k8s_autopilot.utils.logger import get_logger
@@ -136,19 +134,7 @@ GoalCriteriaRequest = GoalCreateRequest | GoalAmendRequest
 class GoalCriteriaState(ResumeState):
     """Main-agent state carrying a criteria request until it is cleared."""
 
-    goal_criteria_request: NotRequired[
-        Annotated[GoalCriteriaRequest | None, OmitFromOutput]
-    ]
-
-
-from deepagents.middleware.skills import SkillsState
-from langchain.agents.middleware.types import (
-    AgentMiddleware,
-    AgentState,
-    OmitFromOutput,
-    PrivateStateAttr,
-    hook_config,
-)
+    goal_criteria_request: NotRequired[Annotated[GoalCriteriaRequest | None, OmitFromOutput]]
 
 
 class GoalCriteriaAgentState(SkillsState):
@@ -168,6 +154,15 @@ class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
+        """Wrap synchronous model call with fallback to goal-only messages on error.
+
+        Args:
+            request: Model execution request.
+            handler: Synchronous model handler.
+
+        Returns:
+            ModelResponse from primary or fallback invocation.
+        """
         try:
             return handler(request)
         except Exception as first_error:
@@ -183,9 +178,7 @@ class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
                     )
                 )
             except Exception:
-                logger.warning(
-                    "Criteria goal-only fallback also failed", exc_info=True
-                )
+                logger.warning("Criteria goal-only fallback also failed", exc_info=True)
                 raise first_error from None
 
     @override
@@ -194,6 +187,15 @@ class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
+        """Wrap asynchronous model call with fallback to goal-only messages on error.
+
+        Args:
+            request: Model execution request.
+            handler: Asynchronous model handler.
+
+        Returns:
+            ModelResponse from primary or fallback invocation.
+        """
         try:
             return await handler(request)
         except Exception as first_error:
@@ -209,9 +211,7 @@ class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):
                     )
                 )
             except Exception:
-                logger.warning(
-                    "Criteria goal-only fallback also failed", exc_info=True
-                )
+                logger.warning("Criteria goal-only fallback also failed", exc_info=True)
                 raise first_error from None
 
 
@@ -222,12 +222,15 @@ def _goal_only_messages(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
     return []
 
 
-class _CriteriaContextBudgetMiddleware(
-    AgentMiddleware[GoalCriteriaAgentState, None]
-):
+class _CriteriaContextBudgetMiddleware(AgentMiddleware[GoalCriteriaAgentState, None]):
     """Bound tool-result text accumulated by one nested context operation."""
 
     def __init__(self, *, label: str = "Criteria context") -> None:
+        """Initialize context budget middleware.
+
+        Args:
+            label: Display label used in omission markers.
+        """
         super().__init__()
         self._label = label
         self._remaining: OrderedDict[str, int] = OrderedDict()
@@ -260,10 +263,7 @@ class _CriteriaContextBudgetMiddleware(
             bounded = ""
         else:
             marker = f"\n[{self._label} limit reached; additional content omitted.]"
-            if allowed <= len(marker):
-                bounded = marker[:allowed]
-            else:
-                bounded = content[: allowed - len(marker)] + marker
+            bounded = marker[:allowed] if allowed <= len(marker) else content[: allowed - len(marker)] + marker
         return result.model_copy(update={"content": bounded})
 
     @override
@@ -272,16 +272,16 @@ class _CriteriaContextBudgetMiddleware(
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap synchronous tool call and bound accumulated tool result text size."""
         return self._bound_result(request, handler(request))
 
     @override
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
-        handler: Callable[
-            [ToolCallRequest], Awaitable[ToolMessage | Command[Any]]
-        ],
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap asynchronous tool call and bound accumulated tool result text size."""
         return self._bound_result(request, await handler(request))
 
 
@@ -289,6 +289,12 @@ class _ContextToolCallBudgetMiddleware(AgentMiddleware[Any, Any]):
     """Bound selected context-tool calls independently for each nested operation."""
 
     def __init__(self, tool_names: set[str], *, limit: int) -> None:
+        """Initialize call budget middleware for selected tool names.
+
+        Args:
+            tool_names: Set of tool names subject to invocation limits.
+            limit: Maximum allowed calls per operation.
+        """
         super().__init__()
         self._tool_names = frozenset(tool_names)
         self._limit = limit
@@ -310,12 +316,13 @@ class _ContextToolCallBudgetMiddleware(AgentMiddleware[Any, Any]):
     @staticmethod
     def _error(request: ToolCallRequest) -> ToolMessage:
         return ToolMessage(
-            content=(
-                "Verification context limit reached. Decide using the evidence "
-                "already gathered."
-            ),
-            name=request.tool_call.get("name", "unknown") if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else "unknown",
-            tool_call_id=request.tool_call.get("id", "") if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else "",
+            content=("Verification context limit reached. Decide using the evidence already gathered."),
+            name=request.tool_call.get("name", "unknown")
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else "unknown",
+            tool_call_id=request.tool_call.get("id", "")
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else "",
             status="error",
         )
 
@@ -325,13 +332,11 @@ class _ContextToolCallBudgetMiddleware(AgentMiddleware[Any, Any]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap synchronous tool call and enforce per-operation call budget."""
         if not getattr(request, "tool_call", None) or not isinstance(request.tool_call, dict):
             return handler(request)
 
-        if (
-            request.tool_call.get("name") not in self._tool_names
-            or self._reserve(request)
-        ):
+        if request.tool_call.get("name") not in self._tool_names or self._reserve(request):
             return handler(request)
         return self._error(request)
 
@@ -339,17 +344,13 @@ class _ContextToolCallBudgetMiddleware(AgentMiddleware[Any, Any]):
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
-        handler: Callable[
-            [ToolCallRequest], Awaitable[ToolMessage | Command[Any]]
-        ],
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap asynchronous tool call and enforce per-operation call budget."""
         if not getattr(request, "tool_call", None) or not isinstance(request.tool_call, dict):
             return await handler(request)
 
-        if (
-            request.tool_call.get("name") not in self._tool_names
-            or self._reserve(request)
-        ):
+        if request.tool_call.get("name") not in self._tool_names or self._reserve(request):
             return await handler(request)
         return self._error(request)
 
@@ -364,10 +365,15 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[Any, None]):
         root: str = "/",
         allowed_tools: Sequence[str] | None = None,
     ) -> None:
+        """Initialize repository inspection budget middleware.
+
+        Args:
+            backend: Storage backend to guard.
+            root: Root path constraint.
+            allowed_tools: Sequence of allowed tool names.
+        """
         super().__init__()
-        self._bounds = RepositoryBounds(
-            backend, root=root, allowed_tools=allowed_tools
-        )
+        self._bounds = RepositoryBounds(backend, root=root, allowed_tools=allowed_tools)
         self._calls: OrderedDict[str, int] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -395,24 +401,44 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[Any, None]):
     def _error(request: ToolCallRequest, message: str) -> ToolMessage:
         return ToolMessage(
             content=message,
-            name=request.tool_call.get("name", "unknown") if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else "unknown",
-            tool_call_id=request.tool_call.get("id", "") if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else "",
+            name=request.tool_call.get("name", "unknown")
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else "unknown",
+            tool_call_id=request.tool_call.get("id", "")
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else "",
             status="error",
         )
 
     def _preflight(self, request: ToolCallRequest) -> ToolMessage | None:
-        name = request.tool_call.get("name") if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else None
+        name = (
+            request.tool_call.get("name")
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else None
+        )
         if name is None:
             return None
-        args = request.tool_call.get("args", {}) if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else {}
+        args = (
+            request.tool_call.get("args", {})
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else {}
+        )
         error = self._bounds.preflight(name, args)
         return self._error(request, error) if error is not None else None
 
     async def _apreflight(self, request: ToolCallRequest) -> ToolMessage | None:
-        name = request.tool_call.get("name") if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else None
+        name = (
+            request.tool_call.get("name")
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else None
+        )
         if name is None:
             return None
-        args = request.tool_call.get("args", {}) if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else {}
+        args = (
+            request.tool_call.get("args", {})
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else {}
+        )
         error = await self._bounds.apreflight(name, args)
         return self._error(request, error) if error is not None else None
 
@@ -421,25 +447,39 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[Any, None]):
         request: ToolCallRequest,
         result: ToolMessage | Command[Any],
     ) -> ToolMessage:
-        non_text = (
-            "Non-text repository content omitted; criteria drafting supports "
-            "text results only."
-        )
-        if not isinstance(result, ToolMessage) or not isinstance(
-            result.content, str
-        ):
+        non_text = "Non-text repository content omitted; criteria drafting supports text results only."
+        if not isinstance(result, ToolMessage) or not isinstance(result.content, str):
             return self._error(request, non_text)
         bounded = self._bounds.bound_text(
-            (request.tool_call.get("name") if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else "unknown") or "unknown", result.content
+            (
+                request.tool_call.get("name")
+                if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+                else "unknown"
+            )
+            or "unknown",
+            result.content,
         )
         return result.model_copy(update={"content": bounded})
 
     def _bounded_request(self, request: ToolCallRequest) -> ToolCallRequest:
-        name = request.tool_call.get("name") if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else None
+        name = (
+            request.tool_call.get("name")
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else None
+        )
         if name is None:
             return request
-        args = request.tool_call.get("args", {}) if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else {}
-        new_tool_call = {**(request.tool_call if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else {}), "args": args}
+        args = (
+            request.tool_call.get("args", {})
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else {}
+        )
+        new_tool_call = {
+            **(
+                request.tool_call if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else {}
+            ),
+            "args": args,
+        }
         return request.override(tool_call=cast(ToolCall, new_tool_call))
 
     @override
@@ -448,6 +488,7 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[Any, None]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap synchronous repository tool call and enforce containment and budget."""
         if not getattr(request, "tool_call", None) or not isinstance(request.tool_call, dict):
             return handler(request)
 
@@ -471,10 +512,9 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[Any, None]):
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
-        handler: Callable[
-            [ToolCallRequest], Awaitable[ToolMessage | Command[Any]]
-        ],
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap asynchronous repository tool call and enforce containment and budget."""
         if not getattr(request, "tool_call", None) or not isinstance(request.tool_call, dict):
             return await handler(request)
 
@@ -495,12 +535,11 @@ class _RepositoryToolBudgetMiddleware(AgentMiddleware[Any, None]):
         return self._bound_result(request, await handler(request))
 
 
-class _WebSearchBudgetMiddleware(
-    AgentMiddleware[GoalCriteriaAgentState, None]
-):
+class _WebSearchBudgetMiddleware(AgentMiddleware[GoalCriteriaAgentState, None]):
     """Limit web searches independently for each nested context operation."""
 
     def __init__(self) -> None:
+        """Initialize web search budget tracking per operation."""
         super().__init__()
         self._calls: OrderedDict[str, int] = OrderedDict()
         self._lock = threading.Lock()
@@ -520,12 +559,13 @@ class _WebSearchBudgetMiddleware(
     @staticmethod
     def _error(request: ToolCallRequest) -> ToolMessage:
         return ToolMessage(
-            content=(
-                "Web search limit reached. Continue using the available evidence "
-                "and context already gathered."
-            ),
-            name=request.tool_call.get("name", "unknown") if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else "unknown",
-            tool_call_id=request.tool_call.get("id", "") if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict) else "",
+            content=("Web search limit reached. Continue using the available evidence and context already gathered."),
+            name=request.tool_call.get("name", "unknown")
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else "unknown",
+            tool_call_id=request.tool_call.get("id", "")
+            if getattr(request, "tool_call", None) and isinstance(request.tool_call, dict)
+            else "",
             status="error",
         )
 
@@ -535,6 +575,7 @@ class _WebSearchBudgetMiddleware(
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap synchronous tool call and enforce web search limits."""
         if not getattr(request, "tool_call", None) or not isinstance(request.tool_call, dict):
             return handler(request)
 
@@ -546,10 +587,9 @@ class _WebSearchBudgetMiddleware(
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
-        handler: Callable[
-            [ToolCallRequest], Awaitable[ToolMessage | Command[Any]]
-        ],
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
+        """Wrap asynchronous tool call and enforce web search limits."""
         if not getattr(request, "tool_call", None) or not isinstance(request.tool_call, dict):
             return await handler(request)
 
@@ -742,9 +782,7 @@ def _conversation_context(messages: Sequence[BaseMessage]) -> str:
         text = text[: min(_CONVERSATION_CONTEXT_MESSAGE_TEXT_LIMIT, remaining)]
         if not text:
             break
-        projected_type = (
-            HumanMessage if isinstance(message, HumanMessage) else AIMessage
-        )
+        projected_type = HumanMessage if isinstance(message, HumanMessage) else AIMessage
         projected_reversed.append(projected_type(content=text))
         remaining -= len(text)
         if remaining == 0:
@@ -790,6 +828,12 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
         criteria_agent: Any | None = None,
         fallback_agent: Any | None = None,
     ) -> None:
+        """Initialize GoalCriteriaMiddleware with primary and fallback criteria agents.
+
+        Args:
+            criteria_agent: Primary agent graph invoked for criteria drafting.
+            fallback_agent: Fallback agent graph invoked if primary context fails.
+        """
         super().__init__()
         self._criteria_agent = criteria_agent
         self._fallback_agent = fallback_agent
@@ -803,9 +847,7 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
             "messages": [
                 {
                     "role": "user",
-                    "content": _prompt_with_conversation_context(
-                        request, messages
-                    ),
+                    "content": _prompt_with_conversation_context(request, messages),
                 }
             ],
             "criteria_objective": request["objective"],
@@ -826,11 +868,7 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
             msg = "The server criteria agent returned no complete proposal."
             raise RuntimeError(msg)
         proposed_objective, criteria = proposal
-        objective = (
-            request["objective"]
-            if request["kind"] == "create"
-            else proposed_objective
-        )
+        objective = request["objective"] if request["kind"] == "create" else proposed_objective
         return {
             "goal_criteria_request": None,
             "rubric": None,
@@ -847,15 +885,22 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
         state: GoalCriteriaState,
         runtime: Runtime[Any],
     ) -> dict[str, Any] | None:
+        """Draft acceptance criteria synchronously if a goal_criteria_request is pending.
+
+        Args:
+            state: Current agent state.
+            runtime: Agent execution runtime.
+
+        Returns:
+            State update dictionary with drafted criteria and jump instruction, or None.
+        """
         value = state.get("goal_criteria_request")
         if value is None or self._criteria_agent is None:
             return None
         request = _goal_criteria_request(value)
         child_input = self._input(request, state.get("messages", []))
         try:
-            result = self._criteria_agent.invoke(
-                child_input, context=runtime.context
-            )
+            result = self._criteria_agent.invoke(child_input, context=runtime.context)
         except _CRITERIA_FALLBACK_ERRORS:
             if self._fallback_agent is None:
                 raise
@@ -863,21 +908,13 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
                 "Criteria context agent failed; drafting from the goal alone",
                 exc_info=True,
             )
-            result = self._fallback_agent.invoke(
-                child_input, context=runtime.context
-            )
+            result = self._fallback_agent.invoke(child_input, context=runtime.context)
         else:
-            if (
-                self._fallback_agent is not None
-                and _proposal_from_result(result) is None
-            ):
+            if self._fallback_agent is not None and _proposal_from_result(result) is None:
                 logger.warning(
-                    "Criteria context agent returned no proposal; drafting from "
-                    "the goal alone",
+                    "Criteria context agent returned no proposal; drafting from the goal alone",
                 )
-                result = self._fallback_agent.invoke(
-                    child_input, context=runtime.context
-                )
+                result = self._fallback_agent.invoke(child_input, context=runtime.context)
         return self._update(request, result)
 
     @hook_config(can_jump_to=["end"])
@@ -886,15 +923,22 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
         state: GoalCriteriaState,
         runtime: Runtime[Any],
     ) -> dict[str, Any] | None:
+        """Draft acceptance criteria asynchronously if a goal_criteria_request is pending.
+
+        Args:
+            state: Current agent state.
+            runtime: Agent execution runtime.
+
+        Returns:
+            State update dictionary with drafted criteria and jump instruction, or None.
+        """
         value = state.get("goal_criteria_request")
         if value is None or self._criteria_agent is None:
             return None
         request = _goal_criteria_request(value)
         child_input = self._input(request, state.get("messages", []))
         try:
-            result = await self._criteria_agent.ainvoke(
-                child_input, context=runtime.context
-            )
+            result = await self._criteria_agent.ainvoke(child_input, context=runtime.context)
         except _CRITERIA_FALLBACK_ERRORS:
             if self._fallback_agent is None:
                 raise
@@ -902,21 +946,13 @@ class GoalCriteriaMiddleware(AgentMiddleware[GoalCriteriaState, Any]):
                 "Criteria context agent failed; drafting from the goal alone",
                 exc_info=True,
             )
-            result = await self._fallback_agent.ainvoke(
-                child_input, context=runtime.context
-            )
+            result = await self._fallback_agent.ainvoke(child_input, context=runtime.context)
         else:
-            if (
-                self._fallback_agent is not None
-                and _proposal_from_result(result) is None
-            ):
+            if self._fallback_agent is not None and _proposal_from_result(result) is None:
                 logger.warning(
-                    "Criteria context agent returned no proposal; drafting from "
-                    "the goal alone",
+                    "Criteria context agent returned no proposal; drafting from the goal alone",
                 )
-                result = await self._fallback_agent.ainvoke(
-                    child_input, context=runtime.context
-                )
+                result = await self._fallback_agent.ainvoke(child_input, context=runtime.context)
         return self._update(request, result)
 
 
@@ -948,18 +984,14 @@ def create_goal_criteria_agent(
         if isinstance(t, _BaseTool):
             normalized_context_tools.append(t)
         elif inspect.iscoroutinefunction(t):
-            normalized_context_tools.append(
-                StructuredTool.from_function(coroutine=t)
-            )
+            normalized_context_tools.append(StructuredTool.from_function(coroutine=t))
         else:
             normalized_context_tools.append(StructuredTool.from_function(func=t))
 
     reserved_names = {_STRUCTURED_OUTPUT_TOOL_NAME}
     if repository_backend is not None:
         reserved_names.update(_REPOSITORY_TOOL_NAMES)
-    conflicting_names = sorted(
-        t.name for t in normalized_context_tools if t.name in reserved_names
-    )
+    conflicting_names = sorted(t.name for t in normalized_context_tools if t.name in reserved_names)
     if conflicting_names:
         names = ", ".join(conflicting_names)
         msg = f"Context tool names conflict with criteria-agent tools: {names}."
@@ -1010,9 +1042,7 @@ def create_goal_criteria_agent(
         )
 
     # Attach subagents middleware: provides capability overview without js_eval or execution instructions
-    effective_subagent_metas = (
-        list(subagent_metas) if subagent_metas is not None else []
-    )
+    effective_subagent_metas = list(subagent_metas) if subagent_metas is not None else []
     if not effective_subagent_metas:
         try:
             from k8s_autopilot.subagents.loader import (
@@ -1038,10 +1068,7 @@ def create_goal_criteria_agent(
 
     from k8s_autopilot.middleware.auto_mode import AsyncApprovalHITLMiddleware
 
-    criteria_interrupt_on: dict[str, Any] = {
-        t.name: True
-        for t in normalized_context_tools
-    }
+    criteria_interrupt_on: dict[str, Any] = {t.name: True for t in normalized_context_tools}
     if criteria_interrupt_on:
         middleware.append(AsyncApprovalHITLMiddleware(criteria_interrupt_on))
 

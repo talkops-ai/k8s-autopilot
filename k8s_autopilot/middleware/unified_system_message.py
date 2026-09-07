@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import ast
-import re
 from collections.abc import Awaitable, Callable
+import re
 from typing import Any
 
 from langchain.agents.middleware.types import (
@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 
 
 def _parse_stringified_content_blocks(content: str) -> str | None:
-    """Parse stringified Python lists of dicts e.g. \"[{'type': 'text', ...}]\"."""
+    r"""Parse stringified Python lists of dicts e.g. \"[{'type': 'text', ...}]\"."""
     trimmed = content.strip()
     if not (trimmed.startswith(("[{'type':", '[{"type":')) and "}]" in trimmed):
         return None
@@ -57,11 +57,7 @@ def _parse_stringified_content_blocks(content: str) -> str | None:
         if matches:
             regex_parts: list[str] = []
             for _, match_text in matches:
-                cleaned = (
-                    match_text.encode("utf-8")
-                    .decode("unicode_escape", errors="replace")
-                    .strip()
-                )
+                cleaned = match_text.encode("utf-8").decode("unicode_escape", errors="replace").strip()
                 if cleaned:
                     regex_parts.append(cleaned)
             if rest_part:
@@ -133,6 +129,15 @@ class UnifiedSystemMessageMiddleware(AgentMiddleware[Any, Any]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse | ExtendedModelResponse:
+        """Wrap synchronous model call to normalize system messages into the expected schema.
+
+        Args:
+            request: Model request to normalize.
+            handler: Synchronous model handler.
+
+        Returns:
+            Model response from the handler.
+        """
         return handler(self._normalize_request(request))
 
     async def awrap_model_call(
@@ -140,4 +145,13 @@ class UnifiedSystemMessageMiddleware(AgentMiddleware[Any, Any]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse | ExtendedModelResponse:
+        """Wrap asynchronous model call to normalize system messages into the expected schema.
+
+        Args:
+            request: Model request to normalize.
+            handler: Asynchronous model handler.
+
+        Returns:
+            Model response from the handler.
+        """
         return await handler(self._normalize_request(request))

@@ -27,8 +27,8 @@ from k8s_autopilot.skills.registry import (
 from k8s_autopilot.skills.trust import SkillTrustStore
 
 __all__ = [
-    "ExtendedSkillMetadata",
     "STATIC_SKILL_ALIASES",
+    "ExtendedSkillMetadata",
     "SkillInvocationEnvelope",
     "SkillMetadata",
     "SkillRegistry",

@@ -12,8 +12,8 @@ Implements storage for:
 
 from __future__ import annotations
 
+import contextlib
 import json
-import logging
 from typing import Any, cast
 
 import psycopg
@@ -21,7 +21,6 @@ from psycopg import Connection
 from psycopg.rows import DictRow, dict_row
 
 from k8s_autopilot.config.store import ConfigCategory, ConfigEntry, ConfigStorageAdapter
-
 from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -159,6 +158,7 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
     """PostgreSQL-backed config storage with pg_notify support."""
 
     def __init__(self, connection_uri: str) -> None:
+        """Initialize the PostgreSQL configuration storage adapter."""
         self._uri = connection_uri
 
     def _connect(self) -> Connection[DictRow]:
@@ -186,53 +186,44 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
                 "ALTER TABLE plugins ADD COLUMN IF NOT EXISTS load_error TEXT",
             )
             for stmt in plugin_migration_stmts:
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute(stmt)
-                except Exception:
-                    pass
-            try:
+            with contextlib.suppress(Exception):
                 conn.execute("ALTER TABLE skills ADD COLUMN IF NOT EXISTS content TEXT DEFAULT ''")
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 conn.execute("ALTER TABLE subagents ADD COLUMN IF NOT EXISTS system_prompt TEXT DEFAULT ''")
-            except Exception:
-                pass
             mcp_migration_stmts = (
                 "ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS disabled_tools TEXT DEFAULT '[]'",
                 "ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS allowed_tools TEXT DEFAULT '[]'",
             )
             for stmt in mcp_migration_stmts:
-                try:
+                with contextlib.suppress(Exception):
                     conn.execute(stmt)
-                except Exception:
-                    pass
-            conn.execute(
-                "INSERT INTO model_preferences (id) VALUES ('current') ON CONFLICT (id) DO NOTHING"
-            )
+            conn.execute("INSERT INTO model_preferences (id) VALUES ('current') ON CONFLICT (id) DO NOTHING")
             conn.commit()
         logger.debug("PostgresConfigAdapter initialized")
 
     # ── ConfigEntry CRUD ─────────────────────────────────
 
     async def load_all(self) -> list[ConfigEntry]:
+        """Load all configuration entries from the database."""
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT key, value, category, display_name, description, is_secret "
-                "FROM config_store ORDER BY key"
+                "SELECT key, value, category, display_name, description, is_secret FROM config_store ORDER BY key"
             ).fetchall()
             return [self._row_to_entry(row) for row in rows]
 
     async def get(self, key: str) -> ConfigEntry | None:
+        """Retrieve a single configuration entry by its key."""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT key, value, category, display_name, description, is_secret "
-                "FROM config_store WHERE key = %s",
+                "SELECT key, value, category, display_name, description, is_secret FROM config_store WHERE key = %s",
                 (key,),
             ).fetchone()
             return self._row_to_entry(row) if row else None
 
     async def set(self, entry: ConfigEntry) -> None:
+        """Store or update a configuration entry."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -258,14 +249,14 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             conn.commit()
 
     async def delete(self, key: str) -> bool:
+        """Delete a configuration entry by its key."""
         with self._connect() as conn:
-            result = conn.execute(
-                "DELETE FROM config_store WHERE key = %s", (key,)
-            )
+            result = conn.execute("DELETE FROM config_store WHERE key = %s", (key,))
             conn.commit()
             return result.rowcount > 0
 
     async def list_by_category(self, category: ConfigCategory) -> list[ConfigEntry]:
+        """Retrieve all configuration entries belonging to a category."""
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT key, value, category, display_name, description, is_secret "
@@ -277,6 +268,7 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
     # ── Model Preferences CRUD ────────────────────
 
     async def get_model_preferences(self) -> dict[str, Any]:
+        """Retrieve saved model preferences."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT default_model, recent_models, effort_by_model, provider_configs "
@@ -297,6 +289,7 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             }
 
     async def save_model_preferences(self, prefs: dict[str, Any]) -> None:
+        """Save or update model preferences."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -321,10 +314,9 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
     # ── MCP Server CRUD ──────────────────────────────────
 
     async def list_mcp_servers(self) -> list[dict[str, Any]]:
+        """List all configured MCP servers."""
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM mcp_servers ORDER BY name"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM mcp_servers ORDER BY name").fetchall()
             return [
                 {
                     "name": row["name"],
@@ -333,11 +325,17 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
                     "args": json.loads(row["args"] or "[]") if isinstance(row["args"], str) else (row["args"] or []),
                     "url": row["url"],
                     "env": json.loads(row["env"] or "{}") if isinstance(row["env"], str) else (row["env"] or {}),
-                    "headers": json.loads(row["headers"] or "{}") if isinstance(row["headers"], str) else (row["headers"] or {}),
+                    "headers": json.loads(row["headers"] or "{}")
+                    if isinstance(row["headers"], str)
+                    else (row["headers"] or {}),
                     "source": row["source"],
                     "auth_token_env_var": row["auth_token_env_var"],
-                    "disabled_tools": json.loads(row["disabled_tools"] or "[]") if isinstance(row.get("disabled_tools"), str) else (row.get("disabled_tools") or []),
-                    "allowed_tools": json.loads(row["allowed_tools"] or "[]") if isinstance(row.get("allowed_tools"), str) else (row.get("allowed_tools") or []),
+                    "disabled_tools": json.loads(row["disabled_tools"] or "[]")
+                    if isinstance(row.get("disabled_tools"), str)
+                    else (row.get("disabled_tools") or []),
+                    "allowed_tools": json.loads(row["allowed_tools"] or "[]")
+                    if isinstance(row.get("allowed_tools"), str)
+                    else (row.get("allowed_tools") or []),
                     "enabled": bool(row["enabled"]),
                     "trusted": bool(row["trusted"]),
                 }
@@ -345,10 +343,9 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             ]
 
     async def get_mcp_server(self, name: str) -> dict[str, Any] | None:
+        """Retrieve an MCP server configuration by name."""
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM mcp_servers WHERE name = %s", (name,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM mcp_servers WHERE name = %s", (name,)).fetchone()
             if row is None:
                 return None
             return {
@@ -358,16 +355,23 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
                 "args": json.loads(row["args"] or "[]") if isinstance(row["args"], str) else (row["args"] or []),
                 "url": row["url"],
                 "env": json.loads(row["env"] or "{}") if isinstance(row["env"], str) else (row["env"] or {}),
-                "headers": json.loads(row["headers"] or "{}") if isinstance(row["headers"], str) else (row["headers"] or {}),
+                "headers": json.loads(row["headers"] or "{}")
+                if isinstance(row["headers"], str)
+                else (row["headers"] or {}),
                 "source": row["source"],
                 "auth_token_env_var": row["auth_token_env_var"],
-                "disabled_tools": json.loads(row["disabled_tools"] or "[]") if isinstance(row.get("disabled_tools"), str) else (row.get("disabled_tools") or []),
-                "allowed_tools": json.loads(row["allowed_tools"] or "[]") if isinstance(row.get("allowed_tools"), str) else (row.get("allowed_tools") or []),
+                "disabled_tools": json.loads(row["disabled_tools"] or "[]")
+                if isinstance(row.get("disabled_tools"), str)
+                else (row.get("disabled_tools") or []),
+                "allowed_tools": json.loads(row["allowed_tools"] or "[]")
+                if isinstance(row.get("allowed_tools"), str)
+                else (row.get("allowed_tools") or []),
                 "enabled": bool(row["enabled"]),
                 "trusted": bool(row["trusted"]),
             }
 
     async def upsert_mcp_server(self, server: dict[str, Any]) -> None:
+        """Create or update an MCP server configuration."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -407,20 +411,18 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             conn.commit()
 
     async def delete_mcp_server(self, name: str) -> bool:
+        """Delete an MCP server configuration by name."""
         with self._connect() as conn:
-            result = conn.execute(
-                "DELETE FROM mcp_servers WHERE name = %s", (name,)
-            )
+            result = conn.execute("DELETE FROM mcp_servers WHERE name = %s", (name,))
             conn.commit()
             return result.rowcount > 0
 
     # ── Marketplace Metadata CRUD ─────────────────────────
 
     async def list_marketplaces(self) -> list[dict[str, Any]]:
+        """List all configured plugin marketplaces."""
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM marketplaces ORDER BY name"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM marketplaces ORDER BY name").fetchall()
             return [
                 {
                     "name": row["name"],
@@ -437,6 +439,7 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             ]
 
     async def get_marketplace(self, name: str) -> dict[str, Any] | None:
+        """Retrieve a plugin marketplace by name."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM marketplaces WHERE name = %s",
@@ -457,6 +460,7 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             }
 
     async def upsert_marketplace(self, marketplace: dict[str, Any]) -> None:
+        """Create or update a plugin marketplace record."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -484,10 +488,9 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             conn.commit()
 
     async def delete_marketplace(self, name: str) -> bool:
+        """Delete a plugin marketplace by name."""
         with self._connect() as conn:
-            result = conn.execute(
-                "DELETE FROM marketplaces WHERE name = %s", (name,)
-            )
+            result = conn.execute("DELETE FROM marketplaces WHERE name = %s", (name,))
             conn.commit()
             return result.rowcount > 0
 
@@ -503,14 +506,20 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             "description": row.get("description"),
             "author": row.get("author"),
             "skill_count": row.get("skill_count") or 0,
-            "skill_names": json.loads(row["skill_names"] or "[]") if isinstance(row.get("skill_names"), str) else (row.get("skill_names") or []),
-            "mcp_server_names": json.loads(row["mcp_server_names"] or "[]") if isinstance(row.get("mcp_server_names"), str) else (row.get("mcp_server_names") or []),
+            "skill_names": json.loads(row["skill_names"] or "[]")
+            if isinstance(row.get("skill_names"), str)
+            else (row.get("skill_names") or []),
+            "mcp_server_names": json.loads(row["mcp_server_names"] or "[]")
+            if isinstance(row.get("mcp_server_names"), str)
+            else (row.get("mcp_server_names") or []),
             "install_path": row["install_path"],
             "scope": row["scope"],
             "source_type": row["source_type"],
             "source_value": row["source_value"],
             "enabled": bool(row["enabled"]),
-            "config": json.loads(row["config"] or "{}") if isinstance(row.get("config"), str) else (row.get("config") or {}),
+            "config": json.loads(row["config"] or "{}")
+            if isinstance(row.get("config"), str)
+            else (row.get("config") or {}),
             "installed_at": str(row["installed_at"]) if row.get("installed_at") else None,
             "last_updated": str(row["last_updated"]) if row.get("last_updated") else None,
             "git_commit_sha": row.get("git_commit_sha"),
@@ -518,13 +527,13 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
         }
 
     async def list_plugins(self) -> list[dict[str, Any]]:
+        """List all installed plugin records."""
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM plugins ORDER BY plugin_id"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM plugins ORDER BY plugin_id").fetchall()
             return [self._row_to_plugin(row) for row in rows]
 
     async def get_plugin(self, plugin_id: str) -> dict[str, Any] | None:
+        """Retrieve an installed plugin record by ID."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM plugins WHERE plugin_id = %s",
@@ -535,18 +544,13 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             return self._row_to_plugin(row)
 
     async def upsert_plugin(self, plugin: dict[str, Any]) -> None:
+        """Create or update an installed plugin record."""
         p_id = plugin.get("plugin_id") or f"{plugin['name']}@{plugin.get('marketplace', 'default')}"
         skill_names = plugin.get("skill_names")
-        if isinstance(skill_names, (list, tuple)):
-            skill_names_json = json.dumps(list(skill_names))
-        else:
-            skill_names_json = json.dumps([])
+        skill_names_json = json.dumps(list(skill_names)) if isinstance(skill_names, (list, tuple)) else json.dumps([])
 
         mcp_names = plugin.get("mcp_server_names")
-        if isinstance(mcp_names, (list, tuple)):
-            mcp_names_json = json.dumps(list(mcp_names))
-        else:
-            mcp_names_json = json.dumps([])
+        mcp_names_json = json.dumps(list(mcp_names)) if isinstance(mcp_names, (list, tuple)) else json.dumps([])
 
         with self._connect() as conn:
             conn.execute(
@@ -603,20 +607,18 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             conn.commit()
 
     async def delete_plugin(self, plugin_id: str) -> bool:
+        """Delete an installed plugin record by ID."""
         with self._connect() as conn:
-            result = conn.execute(
-                "DELETE FROM plugins WHERE plugin_id = %s", (plugin_id,)
-            )
+            result = conn.execute("DELETE FROM plugins WHERE plugin_id = %s", (plugin_id,))
             conn.commit()
             return result.rowcount > 0
 
     # ── Skill Metadata CRUD ───────────────────────────────
 
     async def list_skills(self) -> list[dict[str, Any]]:
+        """List all stored custom skill records."""
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM skills ORDER BY name"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM skills ORDER BY name").fetchall()
             return [
                 {
                     "name": row["name"],
@@ -632,6 +634,7 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             ]
 
     async def upsert_skill(self, skill: dict[str, Any]) -> None:
+        """Create or update a custom skill record."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -661,20 +664,18 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             conn.commit()
 
     async def delete_skill(self, name: str) -> bool:
+        """Delete a custom skill record by name."""
         with self._connect() as conn:
-            result = conn.execute(
-                "DELETE FROM skills WHERE name = %s", (name,)
-            )
+            result = conn.execute("DELETE FROM skills WHERE name = %s", (name,))
             conn.commit()
             return result.rowcount > 0
 
     # ── Subagent Metadata CRUD ────────────────────────────
 
     async def list_subagents(self) -> list[dict[str, Any]]:
+        """List all stored custom subagent records."""
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM subagents ORDER BY name"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM subagents ORDER BY name").fetchall()
             return [
                 {
                     "name": row["name"],
@@ -690,6 +691,7 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             ]
 
     async def upsert_subagent(self, subagent: dict[str, Any]) -> None:
+        """Create or update a custom subagent record."""
         with self._connect() as conn:
             conn.execute(
                 """
@@ -719,20 +721,18 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             conn.commit()
 
     async def delete_subagent(self, name: str) -> bool:
+        """Delete a custom subagent record by name."""
         with self._connect() as conn:
-            result = conn.execute(
-                "DELETE FROM subagents WHERE name = %s", (name,)
-            )
+            result = conn.execute("DELETE FROM subagents WHERE name = %s", (name,))
             conn.commit()
             return result.rowcount > 0
 
     # ── Agent Instruction Metadata ────────────────────────
 
     async def list_agent_instructions(self) -> list[dict[str, Any]]:
+        """List custom instructions configured for agents."""
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM agent_instructions ORDER BY scope"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM agent_instructions ORDER BY scope").fetchall()
             return [
                 {
                     "scope": row["scope"],
@@ -743,6 +743,7 @@ class PostgresConfigAdapter(ConfigStorageAdapter):
             ]
 
     async def upsert_agent_instruction(self, instruction: dict[str, Any]) -> None:
+        """Save or update custom instructions for an agent."""
         with self._connect() as conn:
             conn.execute(
                 """

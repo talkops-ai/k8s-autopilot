@@ -6,8 +6,6 @@ TUI/API ``/goal`` command for synchronous rubric generation.
 
 from __future__ import annotations
 
-from typing import Any
-
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from k8s_autopilot.model.factory import create_model
@@ -141,6 +139,7 @@ def _extract_text_content(content: object) -> str:
 def _extract_criteria_from_text(raw_text: str) -> str:
     """Extract clean markdown criteria bullets from model text or JSON structure."""
     import json
+
     text = raw_text.strip()
     if not text:
         return ""

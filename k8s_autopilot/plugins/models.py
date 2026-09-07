@@ -40,9 +40,7 @@ class UrlMarketplaceSource:
     value: str
 
 
-MarketplaceSource = (
-    LocalMarketplaceSource | RepositoryMarketplaceSource | UrlMarketplaceSource
-)
+MarketplaceSource = LocalMarketplaceSource | RepositoryMarketplaceSource | UrlMarketplaceSource
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -115,6 +113,21 @@ class PluginInstance:
         enabled: bool = True,
         source: InstallScope = "global",
     ) -> None:
+        """Initialize PluginInstance with optional legacy alias support.
+
+        Args:
+            plugin_id: Identifier of the plugin.
+            name: Human-readable plugin name.
+            marketplace: Marketplace source identifier.
+            version: Installed plugin version string.
+            root: Root path of the plugin directory.
+            root_dir: Alias for root directory path.
+            data_dir: Plugin data storage path.
+            manifest: Parsed plugin manifest.
+            inventory: Inventory of plugin components.
+            enabled: Whether plugin is enabled.
+            source: Installation scope ("global", "user", "project").
+        """
         effective_root = root or root_dir or Path(".")
         effective_name = name or (manifest.name if manifest and manifest.name else "")
         effective_version = version or (manifest.version if manifest and manifest.version else "1.0.0")
@@ -181,12 +194,7 @@ class UrlPluginSource:
     path: str | None = None
 
 
-PluginSource = (
-    LocalPluginSource
-    | GithubPluginSource
-    | GitSubdirectoryPluginSource
-    | UrlPluginSource
-)
+PluginSource = LocalPluginSource | GithubPluginSource | GitSubdirectoryPluginSource | UrlPluginSource
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
