@@ -79,8 +79,8 @@ class A2UIBufferMiddleware(BaseAgentMiddleware):
                         parts.append(block)
                     elif isinstance(block, dict) and "text" in block:
                         parts.append(str(block["text"]))
-                    elif hasattr(block, "text"):
-                        parts.append(str(block.text))
+                    elif (text_attr := getattr(block, "text", None)) is not None:
+                        parts.append(str(text_attr))
                     else:
                         parts.append(str(block))
                 content_str = "".join(parts)

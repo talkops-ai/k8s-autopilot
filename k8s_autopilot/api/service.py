@@ -91,6 +91,14 @@ class ThreadService:
             k: v for k, v in meta.items() if k not in ["title", "status", "user_id", "created_at", "updated_at"]
         }
 
+        # Normalize legacy agent names to canonical kebab-case id
+        if clean_metadata.get("agent_name") in ("k8sAutopilotSupervisorAgent", "k8s_autopilot", "k8sAutopilotAgent"):
+            clean_metadata["agent_name"] = "k8s-autopilot"
+        if clean_metadata.get("agent_id") in ("k8sAutopilotSupervisorAgent", "k8s_autopilot", "k8sAutopilotAgent"):
+            clean_metadata["agent_id"] = "k8s-autopilot"
+        clean_metadata.setdefault("agent_name", "k8s-autopilot")
+        clean_metadata.setdefault("agent_id", clean_metadata.get("agent_name", "k8s-autopilot"))
+
         effective_title = (
             title or meta.get("initial_prompt") or meta.get("user_query") or f"Conversation {thread_id[:8]}"
         )
@@ -138,6 +146,8 @@ class ThreadService:
             "created_at": now_iso,
             "updated_at": now_iso,
         }
+        metadata.setdefault("agent_name", "k8s-autopilot")
+        metadata.setdefault("agent_id", "k8s-autopilot")
 
         # Write an empty checkpoint just to establish the thread in the checkpointer
         checkpoint = empty_checkpoint()
@@ -172,11 +182,21 @@ class ThreadService:
         results: list[ThreadResponse] = []
         seen_ids: set[str] = set()
 
+        # Determine canonical agent aliases for backwards compatibility
+        agent_filter: tuple[str, ...] | None = None
+        if req.agent_id:
+            requested_agent = req.agent_id.strip()
+            if requested_agent in ("k8s-autopilot", "k8sAutopilotSupervisorAgent", "k8s_autopilot", "k8sAutopilotAgent"):
+                agent_filter = ("k8s-autopilot", "k8sAutopilotSupervisorAgent", "k8s_autopilot", "k8sAutopilotAgent")
+            else:
+                agent_filter = (requested_agent,)
+
         # 1. Primary: Use high-performance list_threads database query
         try:
             db_threads = await list_threads(
                 limit=req.limit,
                 offset=req.offset,
+                agent_name=agent_filter,
                 include_checkpoint_fields=True,
                 include_message_count=True,
                 sort_by="created" if req.sort_by == "created_at" else "updated",
@@ -194,8 +214,15 @@ class ThreadService:
                 created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00")) if created_at_str else now
                 title = t.get("initial_prompt") or f"Conversation {tid_str[:8]}"
 
+                raw_agent = t.get("agent_name")
+                if not raw_agent or raw_agent in ("k8sAutopilotSupervisorAgent", "k8s_autopilot", "k8sAutopilotAgent"):
+                    norm_agent = "k8s-autopilot"
+                else:
+                    norm_agent = raw_agent
+
                 meta = {
-                    "agent_name": t.get("agent_name"),
+                    "agent_name": norm_agent,
+                    "agent_id": norm_agent,
                     "message_count": t.get("message_count", 0),
                     "git_branch": t.get("git_branch"),
                     "cwd": t.get("cwd"),
@@ -239,6 +266,15 @@ class ThreadService:
                     seen_ids.add(tid_str)
 
                     cp_meta = dict(checkpoint_tuple.metadata or {})
+                    thread_agent = cp_meta.get("agent_id") or cp_meta.get("agent_name")
+                    if agent_filter:
+                        if "k8s-autopilot" in agent_filter:
+                            if thread_agent and thread_agent not in agent_filter:
+                                continue
+                        else:
+                            if thread_agent not in agent_filter:
+                                continue
+
                     if not cp_meta.get("title") and getattr(checkpoint_tuple, "checkpoint", None):
                         from k8s_autopilot.state.session import (
                             _initial_prompt_from_messages,
@@ -744,7 +780,7 @@ class ThreadService:
             "agent_name": agent_id or "k8s-autopilot",
             "status": "idle",
             "user_id": user_id,
-            "agent_id": agent_id,
+            "agent_id": agent_id or "k8s-autopilot",
             "created_at": now_iso,
             "updated_at": now_iso,
         }

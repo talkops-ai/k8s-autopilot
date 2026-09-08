@@ -162,7 +162,7 @@ def test_marketplaces_and_plugin_lifecycle_api(app_client, tmp_path):
     (p_dir / "skills" / "SKILL.md").write_text("# ArgoCD skill", encoding="utf-8")
 
     (m_dir / "marketplace.json").write_text(
-        f'{{"name": "test-api-marketplace", "plugins": [{{"name": "argocd-checker", "displayName": "ArgoCD Checker", "description": "Checks ArgoCD apps", "source": "./plugins/argocd-checker"}}]}}',
+        '{"name": "test-api-marketplace", "plugins": [{"name": "argocd-checker", "displayName": "ArgoCD Checker", "description": "Checks ArgoCD apps", "source": "./plugins/argocd-checker"}]}',
         encoding="utf-8",
     )
 
@@ -281,14 +281,16 @@ def test_generate_argocd_token_success(app_client, monkeypatch):
             pass
 
         async def post(self, url, json=None, **kwargs):
+            payload = json or {}
             if "api/v1/session" in url:
-                if json.get("password") == "valid-pass":
+                if payload.get("password") == "valid-pass":
                     return MockResponse(200, {"token": "jwt-token-12345"})
                 return MockResponse(401, {"error": "Invalid credentials"})
             return MockResponse(404, {})
 
         async def get(self, url, headers=None, **kwargs):
-            if "api/v1/applications" in url and headers.get("Authorization") == "Bearer jwt-token-12345":
+            hdrs = headers or {}
+            if "api/v1/applications" in url and hdrs.get("Authorization") == "Bearer jwt-token-12345":
                 return MockResponse(200, {"items": []})
             return MockResponse(401, {"error": "Unauthorized"})
 
@@ -362,3 +364,50 @@ def test_integration_argocd(app_client, monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json()["success"] is True
+
+
+def test_get_helpers_endpoint(app_client):
+    resp = app_client.get("/api/helpers")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "helpers" in data
+    helpers = data["helpers"]
+    assert len(helpers) >= 4
+    helper_ids = [h["id"] for h in helpers]
+    assert "docs" in helper_ids
+    assert "bug" in helper_ids
+    assert "github" in helper_ids
+    assert "slack" in helper_ids
+
+    # Verify bug link matches opscode issues/new standard
+    bug_helper = next(h for h in helpers if h["id"] == "bug")
+    assert "issues/new" in bug_helper["url"]
+    assert bug_helper["icon"] == "bug"
+
+    # Verify docs helper
+    docs_helper = next(h for h in helpers if h["id"] == "docs")
+    assert docs_helper["icon"] == "book"
+
+    # Verify slack helper
+    slack_helper = next(h for h in helpers if h["id"] == "slack")
+    assert slack_helper["icon"] == "slack"
+    assert "slack" in slack_helper["url"]
+
+
+def test_get_helpers_endpoint_env_overrides(app_client, monkeypatch):
+    monkeypatch.setenv("TALKOPS_SLACK_URL", "https://custom-team.slack.com")
+    monkeypatch.setenv("TALKOPS_ISSUES_URL", "https://github.com/custom/repo/issues/new")
+    monkeypatch.setenv("TALKOPS_DOCS_URL", "https://docs.custom.ai")
+    monkeypatch.setenv("TALKOPS_GITHUB_REPO", "https://github.com/custom/repo")
+
+    resp = app_client.get("/api/helpers")
+    assert resp.status_code == 200
+    data = resp.json()
+    helpers = data["helpers"]
+    helper_map = {h["id"]: h for h in helpers}
+
+    assert helper_map["slack"]["url"] == "https://custom-team.slack.com"
+    assert helper_map["bug"]["url"] == "https://github.com/custom/repo/issues/new"
+    assert helper_map["docs"]["url"] == "https://docs.custom.ai"
+    assert helper_map["github"]["url"] == "https://github.com/custom/repo"
+

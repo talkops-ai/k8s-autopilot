@@ -98,10 +98,23 @@ def create_app(
     else:
         logger.warning("Agent card file not found, using fallback card definition")
         card_data = {
-            "name": "k8s_autopilot",
+            "name": "k8s-autopilot",
             "description": "Production-grade multi-agent system for Kubernetes automation.",
             "version": "1.0.0",
             "supported_interfaces": [{"protocol_binding": "JSONRPC"}],
+            "capabilities": {
+                "extensions": [
+                    {
+                        "uri": "https://talkops.ai/a2a-extension/talkops-ui/v1",
+                        "params": {
+                            "metadata": {
+                                "id": "k8s-autopilot",
+                                "displayName": "k8s-autopilot",
+                            }
+                        },
+                    }
+                ]
+            },
         }
 
     if server_host and server_port:

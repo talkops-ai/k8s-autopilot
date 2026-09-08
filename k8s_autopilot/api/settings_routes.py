@@ -15,6 +15,8 @@ Endpoints:
   - ``DELETE /api/settings/{key}`` — reset a setting
   - ``POST /api/settings/test-integration`` — test integration connectivity
   - ``GET /api/settings/health`` — health check
+- **Helpers**:
+  - ``GET /api/helpers`` — list dynamic helper links (docs, bug/issues, github repo, slack)
 - **Entities**:
   - ``GET /api/mcp-servers``, ``PUT /api/mcp-servers``, ``DELETE /api/mcp-servers/{name}``
   - ``GET /api/plugins``, ``PUT /api/plugins``, ``DELETE /api/plugins/{plugin_id}``
@@ -48,6 +50,7 @@ from k8s_autopilot.model.config import (
     get_available_models_list,
     get_model_profile,
     get_provider_display_name,
+    has_provider_credentials,
     normalize_model_spec,
     resolve_model_spec,
 )
@@ -163,9 +166,14 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         store = await get_config_store()
         current_model = await store.get("MODEL") or get_settings().model
         current_effort = await store.get("REASONING_EFFORT") or get_settings().reasoning_effort
+        configured_only = request.query_params.get("configured_only", "").lower() in ("true", "1", "yes")
 
         models_by_provider: dict[str, list[dict[str, Any]]] = {}
         for provider, models in AVAILABLE_MODELS.items():
+            is_configured = has_provider_credentials(provider) is True
+            if configured_only and not is_configured:
+                continue
+
             models_by_provider[provider] = []
             for model_id, display_name in models:
                 spec = f"{provider}:{model_id}"
@@ -183,6 +191,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                         "max_input_tokens": profile.get("max_input_tokens"),
                         "max_output_tokens": profile.get("max_output_tokens"),
                         "is_active": spec == current_model or model_id == current_model,
+                        "is_configured": is_configured,
                     }
                 )
 
@@ -191,6 +200,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                 "current_model": current_model,
                 "current_effort": current_effort,
                 "providers": list(AVAILABLE_MODELS.keys()),
+                "configured_providers": [p for p in AVAILABLE_MODELS if has_provider_credentials(p) is True],
                 "models_by_provider": models_by_provider,
                 "all_models": get_available_models_list(),
             }
@@ -492,9 +502,26 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                 from k8s_autopilot.api.service import ThreadService, set_thread_service
                 from k8s_autopilot.config.store_factory import create_config_store
                 from k8s_autopilot.server.executor import A2AAutoPilotExecutor
-                from k8s_autopilot.state.session import create_runtime_checkpointer
+                from k8s_autopilot.state.session import (
+                    clear_session_caches,
+                    close_checkpointer,
+                    create_runtime_checkpointer,
+                )
 
-                target_backend = os.environ.get("CHECKPOINT_BACKEND", "sqlite")
+                target_backend = (
+                    os.environ.get("CHECKPOINT_BACKEND")
+                    or os.environ.get("CHECKPOINTER_BACKEND")
+                    or ("postgres" if os.environ.get("POSTGRES_URI") else "sqlite")
+                ).strip().lower()
+
+                # Cleanly close retired checkpointer connections across executors
+                for inst in A2AAutoPilotExecutor._instances:
+                    old_cp = getattr(inst, "checkpointer", None)
+                    if old_cp is not None:
+                        await close_checkpointer(old_cp)
+
+                # Invalidate in-memory session and thread caches
+                clear_session_caches()
 
                 # 1. Dynamically hot-swap thread/checkpoint runtime checkpointer
                 new_cp = await create_runtime_checkpointer(target_backend)
@@ -789,6 +816,99 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                 {"status": "unhealthy", "db_connected": False, "error": str(e)},
                 status_code=500,
             )
+
+    # ── Agent Helpers (Docs, Bug / Issues, Repo, Slack) ───
+
+    async def get_helpers(request: Request) -> JSONResponse:
+        """GET /api/helpers — returns dynamic helper links for UI and API clients."""
+        import json
+        from pathlib import Path
+
+        # Default fallback values
+        github_repo = os.environ.get("TALKOPS_GITHUB_REPO", "https://github.com/talkops-ai/k8s-autopilot")
+        issues_url = os.environ.get("TALKOPS_ISSUES_URL", f"{github_repo.rstrip('/')}/issues/new")
+        docs_url = os.environ.get("TALKOPS_DOCS_URL", f"{github_repo.rstrip('/')}#readme")
+        slack_url = os.environ.get("TALKOPS_SLACK_URL", "https://talkops-ai.slack.com")
+
+        helpers: list[dict[str, Any]] = []
+
+        # Attempt to load helper configuration from agent card JSON
+        card_file = Path(__file__).resolve().parent.parent / "card" / "k8s_autopilot.json"
+        if card_file.is_file():
+            try:
+                with card_file.open() as f:
+                    card_data = json.load(f)
+                extensions = card_data.get("capabilities", {}).get("extensions", [])
+                for ext in extensions:
+                    if ext.get("uri", "").startswith("https://talkops.ai/a2a-extension/talkops-ui"):
+                        meta = ext.get("params", {}).get("metadata", {})
+                        if "helpers" in meta and isinstance(meta["helpers"], list):
+                            helpers = [dict(h) for h in meta["helpers"]]
+                        if not helpers:
+                            if meta.get("docsUrl"):
+                                docs_url = meta["docsUrl"]
+                            elif card_data.get("documentation_url"):
+                                docs_url = card_data["documentation_url"]
+                            if meta.get("issuesUrl"):
+                                issues_url = meta["issuesUrl"]
+                            if meta.get("githubRepo"):
+                                github_repo = meta["githubRepo"]
+                            if meta.get("slackUrl"):
+                                slack_url = meta["slackUrl"]
+                        break
+            except Exception as exc:
+                logger.warning("Error reading agent card for helpers: %s", exc)
+
+        # If helpers array is empty, synthesize standard defaults
+        if not helpers:
+            helpers = [
+                {
+                    "id": "docs",
+                    "label": "Agent Documentation",
+                    "icon": "book",
+                    "url": docs_url,
+                },
+                {
+                    "id": "bug",
+                    "label": "Report Issue / Feature Request",
+                    "icon": "bug",
+                    "url": issues_url,
+                },
+                {
+                    "id": "github",
+                    "label": "GitHub Repository",
+                    "icon": "github",
+                    "url": github_repo,
+                },
+                {
+                    "id": "slack",
+                    "label": "Join Slack Community",
+                    "icon": "slack",
+                    "url": slack_url,
+                },
+            ]
+        else:
+            # Apply explicit environment variable overrides
+            for h in helpers:
+                hid = h.get("id")
+                if hid == "docs" and "TALKOPS_DOCS_URL" in os.environ:
+                    h["url"] = os.environ["TALKOPS_DOCS_URL"]
+                elif hid == "bug" and "TALKOPS_ISSUES_URL" in os.environ:
+                    h["url"] = os.environ["TALKOPS_ISSUES_URL"]
+                elif hid == "github" and "TALKOPS_GITHUB_REPO" in os.environ:
+                    h["url"] = os.environ["TALKOPS_GITHUB_REPO"]
+                elif hid == "slack" and "TALKOPS_SLACK_URL" in os.environ:
+                    h["url"] = os.environ["TALKOPS_SLACK_URL"]
+
+        return JSONResponse(
+            {
+                "helpers": helpers,
+                "docs_url": docs_url,
+                "issues_url": issues_url,
+                "github_repo": github_repo,
+                "slack_url": slack_url,
+            }
+        )
 
     # ── MCP Server CRUD & Diagnostics ─────────────────────
 
@@ -1436,6 +1556,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         # Settings
         Route("/api/settings", get_settings_list, methods=["GET"]),
         Route("/api/settings/health", get_settings_health, methods=["GET"]),
+        Route("/api/helpers", get_helpers, methods=["GET"]),
         Route("/api/settings/approval-mode", get_approval_mode, methods=["GET"]),
         Route("/api/settings/approval-mode", update_approval_mode, methods=["POST"]),
         Route("/api/settings/test-integration", test_integration, methods=["POST"]),

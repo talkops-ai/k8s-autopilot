@@ -17,6 +17,8 @@ from k8s_autopilot.state.goal_channels import (
 from k8s_autopilot.state.session import (
     SessionManager,
     ThreadInfo,
+    clear_session_caches,
+    close_checkpointer,
     create_checkpointer,
     create_runtime_checkpointer,
     delete_thread,
@@ -48,6 +50,8 @@ __all__ = [
     "K8sAgentState",
     "SessionManager",
     "ThreadInfo",
+    "clear_session_caches",
+    "close_checkpointer",
     "coerce_goal_proposal_kind",
     "coerce_goal_status",
     "create_checkpointer",

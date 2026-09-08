@@ -126,13 +126,27 @@ def test_get_active_backend_detection(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_create_runtime_checkpointer_sqlite(tmp_path, monkeypatch):
-    """Verify create_runtime_checkpointer creates initialized SQLite saver."""
+    """Verify create_runtime_checkpointer creates initialized SQLite saver that survives GC."""
+    import asyncio
+    import gc
+    from k8s_autopilot.state.session import close_checkpointer
+
     db_file = tmp_path / "runtime_sessions.db"
     monkeypatch.setattr("k8s_autopilot.state.session.get_db_path", lambda: db_file)
 
     saver = await create_runtime_checkpointer(backend="sqlite")
     assert saver is not None
     assert hasattr(saver, "aget_tuple")
+
+    # Force GC to ensure connection worker thread does not get terminated
+    gc.collect()
+    await asyncio.sleep(0.05)
+
+    config = {"configurable": {"thread_id": "test-gc-thread", "checkpoint_ns": ""}}
+    tup = await saver.aget_tuple(config)
+    assert tup is None
+
+    await close_checkpointer(saver)
 
 
 @pytest.mark.asyncio

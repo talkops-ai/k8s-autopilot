@@ -340,7 +340,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         A2AAutoPilotExecutor._instances.append(self)
         if self.agent is not None and not hasattr(self.agent, "name"):
             with contextlib.suppress(AttributeError, TypeError):
-                self.agent.name = "k8sAutopilotAgent"
+                self.agent.name = "k8s-autopilot"
 
     @classmethod
     def invalidate_all_agents(cls) -> None:
@@ -555,7 +555,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             self._active_mcp_fingerprint = active_mcp_fingerprint
             if not hasattr(self.agent, "name"):
                 with contextlib.suppress(AttributeError, TypeError):
-                    self.agent.name = "k8sAutopilotAgent"
+                    self.agent.name = "k8s-autopilot"
         return self.agent
 
     _get_or_create_agent = _ensure_agent
@@ -571,7 +571,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         req_model, req_effort = self._extract_model_and_effort(context)
         req_mode = self._extract_approval_mode(context)
         self._ensure_agent(requested_model=req_model, requested_effort=req_effort)
-        agent_name = getattr(self.agent, "name", "k8sAutopilotAgent")
+        agent_name = getattr(self.agent, "name", "k8s-autopilot")
         logger.info("Executing agent %s", agent_name, extra={"agent_name": agent_name})
 
         # 1. Extract query (text or A2UI userAction)
@@ -632,7 +632,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 await service.auto_touch(
                     ctx_id,
                     user_id="default",
-                    agent_id=getattr(self.agent, "name", "k8sAutopilotAgent"),
+                    agent_id=getattr(self.agent, "name", "k8s-autopilot"),
                     user_query=user_text,
                 )
         except Exception as exc:
@@ -738,14 +738,14 @@ class A2AAutoPilotExecutor(AgentExecutor):
         if query:
             logger.debug(
                 f"User text query extracted: {query[:120]}",
-                extra={"agent_name": getattr(self.agent, "name", "k8sAutopilotAgent")},
+                extra={"agent_name": getattr(self.agent, "name", "k8s-autopilot")},
             )
             return query
 
         if context.message and context.message.parts:
             logger.debug(
                 f"Extracting user action from {len(context.message.parts)} message parts",
-                extra={"agent_name": getattr(self.agent, "name", "k8sAutopilotAgent")},
+                extra={"agent_name": getattr(self.agent, "name", "k8s-autopilot")},
             )
             action_query = self._extract_user_action(context.message.parts)
             if action_query:
@@ -765,7 +765,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
                 "Extracted client userAction payload",
                 extra={
                     "action": query[:300],
-                    "agent_name": getattr(self.agent, "name", "k8sAutopilotAgent"),
+                    "agent_name": getattr(self.agent, "name", "k8s-autopilot"),
                 },
             )
             return query
@@ -2021,7 +2021,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         config: dict[str, Any] | None = None,
     ) -> None:
         """Stream agent Pregel graph events and dispatch A2A / A2UI updates."""
-        agent_name = getattr(self.agent, "name", "k8sAutopilotAgent")
+        agent_name = getattr(self.agent, "name", "k8s-autopilot")
         logger.info(
             "Starting agent execution stream",
             task_id=task.id,
@@ -2249,7 +2249,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
             is_task_complete=is_task_complete,
             require_user_input=require_user_input,
             phase_override=meta.get("phase"),
-            agent_name=getattr(self.agent, "name", "k8sAutopilotAgent"),
+            agent_name=getattr(self.agent, "name", "k8s-autopilot"),
             metadata=meta,
             use_ui=use_ui,
             session_id=session_id,
@@ -2293,9 +2293,9 @@ class A2AAutoPilotExecutor(AgentExecutor):
         reasoning_effort: str = "",
     ) -> None:
         """Attach trace metadata to a ``Message`` for the reasoning panel and telemetry status bar."""
-        agent_name = getattr(self.agent, "name", "k8sAutopilotAgent")
+        agent_name = getattr(self.agent, "name", "k8s-autopilot")
         if not isinstance(agent_name, str):
-            agent_name = "k8sAutopilotAgent"
+            agent_name = "k8s-autopilot"
 
         trace_dict = {
             "run_id": run_id,

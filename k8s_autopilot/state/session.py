@@ -310,7 +310,7 @@ async def list_threads(
     db_path: Path | None = None,
     cwd: str | None = None,
     project_root: str | None = None,
-    agent_name: str | None = None,
+    agent_name: str | Sequence[str] | None = None,
     git_branch: str | None = None,
     include_checkpoint_fields: bool = True,
     include_message_count: bool = True,
@@ -357,7 +357,7 @@ async def _list_threads_sqlite(
     db_path: Path | None = None,
     cwd: str | None = None,
     project_root: str | None = None,
-    agent_name: str | None = None,
+    agent_name: str | Sequence[str] | None = None,
     git_branch: str | None = None,
     include_checkpoint_fields: bool = True,
     include_message_count: bool = True,
@@ -379,8 +379,23 @@ async def _list_threads_sqlite(
         params: list[Any] = []
 
         if agent_name:
-            where_clauses.append("json_extract(metadata, '$.agent_name') = ?")
-            params.append(agent_name)
+            agents_list = [agent_name] if isinstance(agent_name, str) else list(agent_name)
+            is_k8s_autopilot = any(
+                a in ("k8s-autopilot", "k8sAutopilotSupervisorAgent", "k8s_autopilot", "k8sAutopilotAgent")
+                for a in agents_list
+            )
+            placeholders = ", ".join("?" for _ in agents_list)
+            null_clause = (
+                " OR (json_extract(metadata, '$.agent_name') IS NULL AND json_extract(metadata, '$.agent_id') IS NULL)"
+                if is_k8s_autopilot
+                else ""
+            )
+            where_clauses.append(
+                f"(json_extract(metadata, '$.agent_name') IN ({placeholders}) "
+                f"OR json_extract(metadata, '$.agent_id') IN ({placeholders}){null_clause})"
+            )
+            params.extend(agents_list)
+            params.extend(agents_list)
         if git_branch:
             where_clauses.append("json_extract(metadata, '$.git_branch') = ?")
             params.append(git_branch)
@@ -394,7 +409,7 @@ async def _list_threads_sqlite(
         query = f"""
             SELECT
                 thread_id,
-                MAX(json_extract(metadata, '$.agent_name')) as agent_name,
+                MAX(COALESCE(json_extract(metadata, '$.agent_name'), json_extract(metadata, '$.agent_id'), 'k8s-autopilot')) as agent_name,
                 MAX(json_extract(metadata, '$.updated_at')) as updated_at,
                 MAX(checkpoint_id) as latest_checkpoint_id,
                 MAX(json_extract(metadata, '$.cwd')) as cwd,
@@ -414,9 +429,15 @@ async def _list_threads_sqlite(
 
         threads: list[ThreadInfo] = []
         for r in rows:
+            raw_agent = r[1]
+            if not raw_agent or raw_agent in ("k8sAutopilotSupervisorAgent", "k8s_autopilot", "k8sAutopilotAgent"):
+                normalized_agent = "k8s-autopilot"
+            else:
+                normalized_agent = raw_agent
+
             t: ThreadInfo = {
                 "thread_id": str(r[0]),
-                "agent_name": r[1],
+                "agent_name": normalized_agent,
                 "updated_at": r[2],
                 "latest_checkpoint_id": r[3],
                 "cwd": r[4],
@@ -444,7 +465,7 @@ async def _list_threads_postgres(
     *,
     cwd: str | None = None,
     project_root: str | None = None,
-    agent_name: str | None = None,
+    agent_name: str | Sequence[str] | None = None,
     git_branch: str | None = None,
     include_checkpoint_fields: bool = True,
     include_message_count: bool = True,
@@ -466,8 +487,23 @@ async def _list_threads_postgres(
             params: list[Any] = []
 
             if agent_name:
-                where_clauses.append("metadata->>'agent_name' = %s")
-                params.append(agent_name)
+                agents_list = [agent_name] if isinstance(agent_name, str) else list(agent_name)
+                is_k8s_autopilot = any(
+                    a in ("k8s-autopilot", "k8sAutopilotSupervisorAgent", "k8s_autopilot", "k8sAutopilotAgent")
+                    for a in agents_list
+                )
+                placeholders = ", ".join("%s" for _ in agents_list)
+                null_clause = (
+                    " OR (metadata->>'agent_name' IS NULL AND metadata->>'agent_id' IS NULL)"
+                    if is_k8s_autopilot
+                    else ""
+                )
+                where_clauses.append(
+                    f"(metadata->>'agent_name' IN ({placeholders}) "
+                    f"OR metadata->>'agent_id' IN ({placeholders}){null_clause})"
+                )
+                params.extend(agents_list)
+                params.extend(agents_list)
             if git_branch:
                 where_clauses.append("metadata->>'git_branch' = %s")
                 params.append(git_branch)
@@ -481,7 +517,7 @@ async def _list_threads_postgres(
             query = f"""
                     SELECT
                         thread_id,
-                        MAX(metadata->>'agent_name') as agent_name,
+                        COALESCE(MAX(metadata->>'agent_name'), MAX(metadata->>'agent_id'), 'k8s-autopilot') as agent_name,
                         COALESCE(MAX(checkpoint->>'ts'), MAX(metadata->>'updated_at')) as updated_at,
                         MAX(checkpoint_id) as latest_checkpoint_id,
                         MAX(metadata->>'cwd') as cwd,
@@ -500,9 +536,15 @@ async def _list_threads_postgres(
 
             threads: list[ThreadInfo] = []
             for r in rows:
+                raw_agent = r[1]
+                if not raw_agent or raw_agent in ("k8sAutopilotSupervisorAgent", "k8s_autopilot", "k8sAutopilotAgent"):
+                    normalized_agent = "k8s-autopilot"
+                else:
+                    normalized_agent = raw_agent
+
                 t: ThreadInfo = {
                     "thread_id": str(r[0]),
-                    "agent_name": r[1],
+                    "agent_name": normalized_agent,
                     "updated_at": r[2],
                     "latest_checkpoint_id": r[3],
                     "cwd": r[4],
@@ -1413,6 +1455,31 @@ async def create_checkpointer(
         )
 
 
+def clear_session_caches() -> None:
+    """Clear in-memory session and thread caches upon storage backend switch."""
+    _recent_threads_cache.clear()
+    _message_count_cache.clear()
+    _initial_prompt_cache.clear()
+
+
+async def close_checkpointer(cp: Any) -> None:
+    """Cleanly close connection or pool of a retired checkpointer."""
+    if cp is None:
+        return
+    try:
+        conn = getattr(cp, "conn", None)
+        if conn is not None:
+            if hasattr(conn, "close"):
+                res = conn.close()
+                if asyncio.iscoroutine(res):
+                    await res
+            worker = getattr(conn, "_thread", None)
+            if worker is not None and hasattr(worker, "is_alive") and worker.is_alive():
+                await _drain_aiosqlite_worker(conn)
+    except Exception as exc:
+        logger.debug("Error closing retired checkpointer: %s", exc)
+
+
 async def create_runtime_checkpointer(backend: str = "auto", uri: str | None = None) -> Any:
     """Instantiate an initialized checkpointer for runtime hot-swapping."""
     if backend == "auto":
@@ -1439,12 +1506,18 @@ async def create_runtime_checkpointer(backend: str = "auto", uri: str | None = N
         await saver.setup()
         return saver
     elif backend == "sqlite":
+        import aiosqlite
         from langgraph.checkpoint.sqlite.aio import (
             AsyncSqliteSaver,  # Lazy import: optional dependency
         )
 
         _patch_aiosqlite()
-        return await AsyncSqliteSaver.from_conn_string(str(get_db_path())).__aenter__()
+        db_path = get_db_path()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = await aiosqlite.connect(str(db_path))
+        saver = AsyncSqliteSaver(conn)
+        await saver.setup()
+        return saver
     else:
         raise ValueError(
             f"Unsupported checkpointer backend: {backend!r}. "
@@ -1636,59 +1709,65 @@ class SessionManager:
                                     accumulated = list(msgs)
                             except Exception as exc:
                                 logger.debug("Failed deserializing PG blob for %s: %s", thread_id, exc)
-                return accumulated
+                if accumulated:
+                    return accumulated
             except Exception as exc:
                 logger.warning("Failed fetching PG thread history for %s: %s", thread_id, exc)
 
         # ── SQLite Branch ──────────────────────────────────────────────
-        if not self._db_path.exists():
-            return []
+        if self._db_path.exists():
+            import aiosqlite
 
-        import aiosqlite
-
-        _patch_aiosqlite()
-        try:
-            async with aiosqlite.connect(self._db_path) as conn:
-                async with conn.execute(
-                    """
-                    SELECT type, value FROM writes
-                    WHERE thread_id = ? AND channel = 'messages'
-                      AND checkpoint_ns = ''
-                    ORDER BY checkpoint_id ASC, task_id ASC, idx ASC
-                    """,
-                    (thread_id,),
-                ) as cursor:
-                    rows = await cursor.fetchall()
-
-                for type_str, blob in rows:
-                    if type_str and blob:
-                        try:
-                            delta = serde.loads_typed((type_str, blob))
-                            accumulated = list(add_messages(accumulated, delta if isinstance(delta, list) else [delta]))
-                        except Exception as exc:
-                            logger.debug("Failed deserializing SQLite write for %s: %s", thread_id, exc)
-
-                if not accumulated:
+            _patch_aiosqlite()
+            try:
+                async with aiosqlite.connect(self._db_path) as conn:
                     async with conn.execute(
                         """
-                        SELECT type, checkpoint FROM checkpoints
-                        WHERE thread_id = ? AND checkpoint_ns = ''
-                        ORDER BY checkpoint_id DESC LIMIT 1
+                        SELECT type, value FROM writes
+                        WHERE thread_id = ? AND channel = 'messages'
+                          AND checkpoint_ns = ''
+                        ORDER BY checkpoint_id ASC, task_id ASC, idx ASC
                         """,
                         (thread_id,),
                     ) as cursor:
-                        row = await cursor.fetchone()
-                    if row and row[0] and row[1]:
-                        try:
-                            cp_data = serde.loads_typed((row[0], row[1]))
-                            if isinstance(cp_data, dict):
-                                msgs = cp_data.get("channel_values", {}).get("messages", [])
-                                if isinstance(msgs, list):
-                                    accumulated = list(msgs)
-                        except Exception as exc:
-                            logger.debug("Failed deserializing SQLite checkpoint for %s: %s", thread_id, exc)
-        except Exception as exc:
-            logger.warning("Failed fetching SQLite thread history for %s: %s", thread_id, exc)
+                        rows = await cursor.fetchall()
+
+                    for type_str, blob in rows:
+                        if type_str and blob:
+                            try:
+                                delta = serde.loads_typed((type_str, blob))
+                                accumulated = list(add_messages(accumulated, delta if isinstance(delta, list) else [delta]))
+                            except Exception as exc:
+                                logger.debug("Failed deserializing SQLite write for %s: %s", thread_id, exc)
+
+                    if not accumulated:
+                        async with conn.execute(
+                            """
+                            SELECT type, checkpoint FROM checkpoints
+                            WHERE thread_id = ? AND checkpoint_ns = ''
+                            ORDER BY checkpoint_id DESC LIMIT 1
+                            """,
+                            (thread_id,),
+                        ) as cursor:
+                            row = await cursor.fetchone()
+                        if row and row[0] and row[1]:
+                            try:
+                                cp_data = serde.loads_typed((row[0], row[1]))
+                                if isinstance(cp_data, dict):
+                                    msgs = cp_data.get("channel_values", {}).get("messages", [])
+                                    if isinstance(msgs, list):
+                                        accumulated = list(msgs)
+                            except Exception as exc:
+                                logger.debug("Failed deserializing SQLite checkpoint for %s: %s", thread_id, exc)
+            except Exception as exc:
+                logger.warning("Failed fetching SQLite thread history for %s: %s", thread_id, exc)
+
+        # Cross-backend fallback if messages not found in active SQLite backend
+        if not accumulated and not self._postgres_uri:
+            fallback_uri = get_postgres_uri()
+            if fallback_uri:
+                with contextlib.suppress(Exception):
+                    return await SessionManager(postgres_uri=fallback_uri).get_thread_messages(thread_id)
 
         return accumulated
 
@@ -1759,71 +1838,77 @@ class SessionManager:
                             if "_session_cost_usd" in cv and cv["_session_cost_usd"] is not None:
                                 with contextlib.suppress(Exception):
                                     cost_usd = float(cv["_session_cost_usd"])
-                return input_tokens, output_tokens, cost_usd, seen_msg_ids
+                if seen_msg_ids:
+                    return input_tokens, output_tokens, cost_usd, seen_msg_ids
             except Exception as exc:
                 logger.warning("Failed calculating PG thread token usage for %s: %s", thread_id, exc)
 
         # ── SQLite Branch ──────────────────────────────────────────────
-        if not self._db_path.exists():
-            return 0, 0, 0.0, []
+        if self._db_path.exists():
+            import aiosqlite
 
-        import aiosqlite
+            _patch_aiosqlite()
+            try:
+                async with aiosqlite.connect(self._db_path) as conn:
+                    async with conn.execute(
+                        """
+                        SELECT type, value FROM writes
+                        WHERE thread_id = ? AND channel = 'messages'
+                        ORDER BY checkpoint_id ASC, task_id ASC, idx ASC
+                        """,
+                        (thread_id,),
+                    ) as cursor:
+                        rows = await cursor.fetchall()
 
-        _patch_aiosqlite()
-        try:
-            async with aiosqlite.connect(self._db_path) as conn:
-                async with conn.execute(
-                    """
-                    SELECT type, value FROM writes
-                    WHERE thread_id = ? AND channel = 'messages'
-                    ORDER BY checkpoint_id ASC, task_id ASC, idx ASC
-                    """,
-                    (thread_id,),
-                ) as cursor:
-                    rows = await cursor.fetchall()
+                    for type_str, blob in rows:
+                        if type_str and blob:
+                            try:
+                                delta = serde.loads_typed((type_str, blob))
+                                msgs = delta if isinstance(delta, list) else [delta]
+                                for m in msgs:
+                                    mid = getattr(m, "id", None)
+                                    u = (
+                                        getattr(m, "usage_metadata", None)
+                                        or getattr(m, "response_metadata", {}).get("token_usage")
+                                        or getattr(m, "response_metadata", {}).get("usage")
+                                    )
+                                    if mid and mid not in seen_set:
+                                        seen_set.add(mid)
+                                        seen_msg_ids.append(mid)
+                                        if isinstance(u, dict):
+                                            input_tokens += int(u.get("input_tokens") or u.get("prompt_tokens") or 0)
+                                            output_tokens += int(u.get("output_tokens") or u.get("completion_tokens") or 0)
+                            except Exception as exc:
+                                logger.debug("Failed deserializing SQLite message write for %s: %s", thread_id, exc)
 
-                for type_str, blob in rows:
-                    if type_str and blob:
+                    async with conn.execute(
+                        """
+                        SELECT type, checkpoint FROM checkpoints
+                        WHERE thread_id = ? AND checkpoint_ns = ''
+                        ORDER BY checkpoint_id DESC LIMIT 1
+                        """,
+                        (thread_id,),
+                    ) as cursor:
+                        row = await cursor.fetchone()
+                    if row and row[0] and row[1]:
                         try:
-                            delta = serde.loads_typed((type_str, blob))
-                            msgs = delta if isinstance(delta, list) else [delta]
-                            for m in msgs:
-                                mid = getattr(m, "id", None)
-                                u = (
-                                    getattr(m, "usage_metadata", None)
-                                    or getattr(m, "response_metadata", {}).get("token_usage")
-                                    or getattr(m, "response_metadata", {}).get("usage")
-                                )
-                                if mid and mid not in seen_set:
-                                    seen_set.add(mid)
-                                    seen_msg_ids.append(mid)
-                                    if isinstance(u, dict):
-                                        input_tokens += int(u.get("input_tokens") or u.get("prompt_tokens") or 0)
-                                        output_tokens += int(u.get("output_tokens") or u.get("completion_tokens") or 0)
+                            cp_data = serde.loads_typed((row[0], row[1]))
+                            if isinstance(cp_data, dict):
+                                cv = cp_data.get("channel_values", {})
+                                if "_session_cost_usd" in cv and cv["_session_cost_usd"] is not None:
+                                    with contextlib.suppress(Exception):
+                                        cost_usd = float(cv["_session_cost_usd"])
                         except Exception as exc:
-                            logger.debug("Failed deserializing SQLite message write for %s: %s", thread_id, exc)
+                            logger.debug("Failed deserializing SQLite checkpoint for cost: %s", exc)
+            except Exception as exc:
+                logger.warning("Failed calculating SQLite thread token usage for %s: %s", thread_id, exc)
 
-                async with conn.execute(
-                    """
-                    SELECT type, checkpoint FROM checkpoints
-                    WHERE thread_id = ? AND checkpoint_ns = ''
-                    ORDER BY checkpoint_id DESC LIMIT 1
-                    """,
-                    (thread_id,),
-                ) as cursor:
-                    row = await cursor.fetchone()
-                if row and row[0] and row[1]:
-                    try:
-                        cp_data = serde.loads_typed((row[0], row[1]))
-                        if isinstance(cp_data, dict):
-                            cv = cp_data.get("channel_values", {})
-                            if "_session_cost_usd" in cv and cv["_session_cost_usd"] is not None:
-                                with contextlib.suppress(Exception):
-                                    cost_usd = float(cv["_session_cost_usd"])
-                    except Exception as exc:
-                        logger.debug("Failed deserializing SQLite checkpoint for cost: %s", exc)
-        except Exception as exc:
-            logger.warning("Failed calculating SQLite thread token usage for %s: %s", thread_id, exc)
+        # Cross-backend fallback if usage not found in active SQLite backend
+        if not seen_msg_ids and not self._postgres_uri:
+            fallback_uri = get_postgres_uri()
+            if fallback_uri:
+                with contextlib.suppress(Exception):
+                    return await SessionManager(postgres_uri=fallback_uri).get_thread_token_usage_and_cost(thread_id)
 
         return input_tokens, output_tokens, cost_usd, seen_msg_ids
 
@@ -1919,95 +2004,101 @@ class SessionManager:
                                         res["rubric"] = val.strip()
                             except Exception:
                                 pass
-                    return res
+                    if res.get("objective") or res.get("status") or res.get("rubric"):
+                        return res
             except Exception as exc:
                 logger.warning("Failed fetching PG thread goal state for %s: %s", thread_id, exc)
 
         # ── SQLite Branch ──────────────────────────────────────────────
-        if not self._db_path.exists():
-            return res
+        if self._db_path.exists():
+            import aiosqlite
 
-        import aiosqlite
-
-        _patch_aiosqlite()
-        try:
-            async with aiosqlite.connect(self._db_path) as conn:
-                async with conn.execute(
-                    """
-                    SELECT type, checkpoint FROM checkpoints
-                    WHERE thread_id = ? AND checkpoint_ns = ''
-                    ORDER BY checkpoint_id DESC LIMIT 1
-                    """,
-                    (thread_id,),
-                ) as cursor:
-                    row = await cursor.fetchone()
-                if row and row[0] and row[1]:
-                    try:
-                        cp_data = serde.loads_typed((row[0], row[1]))
-                        if isinstance(cp_data, dict):
-                            cv = cp_data.get("channel_values", {})
-                            if cv.get("_goal_objective"):
-                                res["objective"] = str(cv["_goal_objective"])
-                            if cv.get("_goal_status"):
-                                res["status"] = str(cv["_goal_status"])
-                            if cv.get("_rubric_status"):
-                                r_stat = str(cv["_rubric_status"]).lower()
-                                if r_stat in ("satisfied", "passed", "complete"):
-                                    res["status"] = "complete"
-                                elif (
-                                    r_stat in ("max_iterations_reached", "failed", "blocked")
-                                    and res["status"] != "complete"
-                                ):
-                                    res["status"] = "blocked"
-                            raw_r = (
-                                cv.get("rubric")
-                                or cv.get("_goal_rubric")
-                                or cv.get("_sticky_rubric")
-                                or cv.get("criteria")
-                            )
-                            if isinstance(raw_r, list):
-                                res["rubric"] = "\n".join(f"- {c}" for c in raw_r if c)
-                            elif isinstance(raw_r, str) and raw_r.strip():
-                                res["rubric"] = raw_r.strip()
-                    except Exception:
-                        pass
-
-                async with conn.execute(
-                    """
-                    SELECT channel, type, value FROM writes
-                    WHERE thread_id = ? AND checkpoint_ns = ''
-                      AND channel IN ('_goal_objective', '_goal_status', '_goal_rubric', '_sticky_rubric', 'rubric', '_rubric_status')
-                    ORDER BY checkpoint_id ASC, task_id ASC, idx ASC
-                    """,
-                    (thread_id,),
-                ) as cursor:
-                    rows = await cursor.fetchall()
-                for ch, type_str, blob in rows:
-                    if type_str and blob:
+            _patch_aiosqlite()
+            try:
+                async with aiosqlite.connect(self._db_path) as conn:
+                    async with conn.execute(
+                        """
+                        SELECT type, checkpoint FROM checkpoints
+                        WHERE thread_id = ? AND checkpoint_ns = ''
+                        ORDER BY checkpoint_id DESC LIMIT 1
+                        """,
+                        (thread_id,),
+                    ) as cursor:
+                        row = await cursor.fetchone()
+                    if row and row[0] and row[1]:
                         try:
-                            val = serde.loads_typed((type_str, blob))
-                            if ch == "_goal_objective" and val:
-                                res["objective"] = str(val)
-                            elif ch == "_goal_status" and val:
-                                res["status"] = str(val)
-                            elif ch == "_rubric_status" and val:
-                                r_stat = str(val).lower()
-                                if r_stat in ("satisfied", "passed", "complete"):
-                                    res["status"] = "complete"
-                                elif (
-                                    r_stat in ("max_iterations_reached", "failed", "blocked")
-                                    and res["status"] != "complete"
-                                ):
-                                    res["status"] = "blocked"
-                            elif ch in ("_goal_rubric", "_sticky_rubric", "rubric") and val:
-                                if isinstance(val, list):
-                                    res["rubric"] = "\n".join(f"- {c}" for c in val if c)
-                                elif isinstance(val, str) and val.strip():
-                                    res["rubric"] = val.strip()
+                            cp_data = serde.loads_typed((row[0], row[1]))
+                            if isinstance(cp_data, dict):
+                                cv = cp_data.get("channel_values", {})
+                                if cv.get("_goal_objective"):
+                                    res["objective"] = str(cv["_goal_objective"])
+                                if cv.get("_goal_status"):
+                                    res["status"] = str(cv["_goal_status"])
+                                if cv.get("_rubric_status"):
+                                    r_stat = str(cv["_rubric_status"]).lower()
+                                    if r_stat in ("satisfied", "passed", "complete"):
+                                        res["status"] = "complete"
+                                    elif (
+                                        r_stat in ("max_iterations_reached", "failed", "blocked")
+                                        and res["status"] != "complete"
+                                    ):
+                                        res["status"] = "blocked"
+                                raw_r = (
+                                    cv.get("rubric")
+                                    or cv.get("_goal_rubric")
+                                    or cv.get("_sticky_rubric")
+                                    or cv.get("criteria")
+                                )
+                                if isinstance(raw_r, list):
+                                    res["rubric"] = "\n".join(f"- {c}" for c in raw_r if c)
+                                elif isinstance(raw_r, str) and raw_r.strip():
+                                    res["rubric"] = raw_r.strip()
                         except Exception:
                             pass
-        except Exception as exc:
-            logger.warning("Failed fetching SQLite thread goal state for %s: %s", thread_id, exc)
+
+                    async with conn.execute(
+                        """
+                        SELECT channel, type, value FROM writes
+                        WHERE thread_id = ? AND checkpoint_ns = ''
+                          AND channel IN ('_goal_objective', '_goal_status', '_goal_rubric', '_sticky_rubric', 'rubric', '_rubric_status')
+                        ORDER BY checkpoint_id ASC, task_id ASC, idx ASC
+                        """,
+                        (thread_id,),
+                    ) as cursor:
+                        rows = await cursor.fetchall()
+                    for ch, type_str, blob in rows:
+                        if type_str and blob:
+                            try:
+                                val = serde.loads_typed((type_str, blob))
+                                if ch == "_goal_objective" and val:
+                                    res["objective"] = str(val)
+                                elif ch == "_goal_status" and val:
+                                    res["status"] = str(val)
+                                elif ch == "_rubric_status" and val:
+                                    r_stat = str(val).lower()
+                                    if r_stat in ("satisfied", "passed", "complete"):
+                                        res["status"] = "complete"
+                                    elif (
+                                        r_stat in ("max_iterations_reached", "failed", "blocked")
+                                        and res["status"] != "complete"
+                                    ):
+                                        res["status"] = "blocked"
+                                elif ch in ("_goal_rubric", "_sticky_rubric", "rubric") and val:
+                                    if isinstance(val, list):
+                                        res["rubric"] = "\n".join(f"- {c}" for c in val if c)
+                                    elif isinstance(val, str) and val.strip():
+                                        res["rubric"] = val.strip()
+                            except Exception:
+                                pass
+            except Exception as exc:
+                logger.warning("Failed fetching SQLite thread goal state for %s: %s", thread_id, exc)
+
+        # Cross-backend fallback if goal state not found in active SQLite backend
+        if not (res.get("objective") or res.get("status") or res.get("rubric")) and not self._postgres_uri:
+            fallback_uri = get_postgres_uri()
+            if fallback_uri:
+                with contextlib.suppress(Exception):
+                    return await SessionManager(postgres_uri=fallback_uri).get_thread_goal_state(thread_id)
 
         return res
 
