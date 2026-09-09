@@ -15,14 +15,6 @@
 
 ---
 
-## See It in Action
-
-<img src="demo/observability-demo.gif" width="100%" alt="Observability Demo" />
-
-> The Observability Operator analyzing Prometheus metrics and rendering a CPU utilization dashboard in the conversation.
-
----
-
 ## What Is k8s-autopilot?
 
 k8s-autopilot is an **open-source AI operations framework** built on [LangGraph](https://docs.langchain.com/langgraph) and the [Deep Agents SDK](https://docs.langchain.com/oss/python/deepagents/quickstart). It ships with built-in operators for Helm, ArgoCD, Argo Rollouts, Traefik, Kubernetes cluster ops, and full-stack observability (Prometheus, Alertmanager, Loki, Tempo, OpenTelemetry) — but the framework itself is extensible to any domain.

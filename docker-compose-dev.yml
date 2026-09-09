@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_USER=k8s_autopilot
-      - POSTGRES_PASSWORD=k8s_autopilot_dev
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-TalkOpsAutopilot2026SecureDB}
       - POSTGRES_DB=k8s_autopilot
     ports:
       - "5432:5432"
@@ -31,7 +31,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      - POSTGRES_URI=postgresql://k8s_autopilot:k8s_autopilot_dev@postgres:5432/k8s_autopilot?sslmode=disable
+      - POSTGRES_URI=${POSTGRES_URI:-postgresql://k8s_autopilot:${POSTGRES_PASSWORD:-TalkOpsAutopilot2026SecureDB}@postgres:5432/k8s_autopilot?sslmode=disable}
       - KUBECONFIG=/app/.kube/config
     volumes:
       # Mount your container-ready kubeconfig so the server can access your cluster
