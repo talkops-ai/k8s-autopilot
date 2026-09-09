@@ -22,7 +22,9 @@ from k8s_autopilot.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-_ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}
+_ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control", "thinking", "output_config"}
+_GOOGLE_ONLY_SETTINGS: set[str] = {"thinking_level", "thinking_budget", "include_thoughts", "thinking_config"}
+_OPENAI_ONLY_SETTINGS: set[str] = {"reasoning"}
 
 
 def _get_ls_provider(model: object) -> str | None:
@@ -107,7 +109,13 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             return request, self._model_spec_from_model(request.model), None
 
         model_spec = ctx.get("model")
-        model_params = ctx.get("model_params") or {}
+        model_params = dict(ctx.get("model_params") or {})
+        effort = ctx.get("reasoning_effort") or model_params.get("reasoning_effort")
+        if effort and model_spec:
+            from k8s_autopilot.model.reasoning import is_effort_supported_for_model, with_effort_model_params
+
+            if is_effort_supported_for_model(model_spec, str(effort)):
+                model_params = with_effort_model_params(model_spec, model_params, str(effort))
 
         model_result = None
         if model_spec and not model_matches_spec(request.model, model_spec):
@@ -116,10 +124,11 @@ class ConfigurableModelMiddleware(AgentMiddleware):
 
             try:
                 model_result = create_model(model_spec)
-            except ModelConfigError:
+            except (ModelConfigError, Exception) as exc:
                 logger.exception(
-                    "Failed to resolve model override '%s'; keeping current model.",
+                    "Failed to resolve model override '%s'; keeping current model. Error: %s",
                     model_spec,
+                    exc,
                 )
 
         updated_request = self._build_overrides(request, model_result, model_params)
@@ -138,7 +147,13 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             return request, self._model_spec_from_model(request.model), None
 
         model_spec = ctx.get("model")
-        model_params = ctx.get("model_params") or {}
+        model_params = dict(ctx.get("model_params") or {})
+        effort = ctx.get("reasoning_effort") or model_params.get("reasoning_effort")
+        if effort and model_spec:
+            from k8s_autopilot.model.reasoning import is_effort_supported_for_model, with_effort_model_params
+
+            if is_effort_supported_for_model(model_spec, str(effort)):
+                model_params = with_effort_model_params(model_spec, model_params, str(effort))
 
         model_result = None
         if model_spec and not model_matches_spec(request.model, model_spec):
@@ -147,10 +162,11 @@ class ConfigurableModelMiddleware(AgentMiddleware):
 
             try:
                 model_result = await asyncio.to_thread(create_model, model_spec)
-            except ModelConfigError:
+            except (ModelConfigError, Exception) as exc:
                 logger.exception(
-                    "Failed to resolve model override '%s'; keeping current model.",
+                    "Failed to resolve model override '%s'; keeping current model. Error: %s",
                     model_spec,
+                    exc,
                 )
 
         updated_request = self._build_overrides(request, model_result, model_params)
@@ -197,12 +213,57 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         if model_params:
             overrides["model_settings"] = {**request.model_settings, **model_params}
 
-        # Switch away from Anthropic -> strip Anthropic settings
-        if new_model is not None and not _is_anthropic_model(new_model):
-            settings_dict = overrides.get("model_settings", request.model_settings)
-            dropped = settings_dict.keys() & _ANTHROPIC_ONLY_SETTINGS
-            if dropped:
-                overrides["model_settings"] = {k: v for k, v in settings_dict.items() if k not in dropped}
+        effective_model = new_model if new_model is not None else request.model
+        effective_provider = (
+            getattr(model_result, "provider", None)
+            or _get_ls_provider(effective_model)
+            or ""
+        )
+
+        settings_dict = overrides.get("model_settings", request.model_settings)
+        if settings_dict:
+            modified_settings = dict(settings_dict)
+            changed = False
+
+            # Switch away from Anthropic -> strip Anthropic settings
+            if effective_provider != "anthropic":
+                dropped = modified_settings.keys() & _ANTHROPIC_ONLY_SETTINGS
+                if dropped:
+                    for k in dropped:
+                        modified_settings.pop(k)
+                    changed = True
+
+            # Switch away from Google -> strip Google settings
+            if effective_provider not in {"google_genai", "google", "google_vertexai"}:
+                dropped = modified_settings.keys() & _GOOGLE_ONLY_SETTINGS
+                if dropped:
+                    for k in dropped:
+                        modified_settings.pop(k)
+                    changed = True
+
+            # Switch away from OpenAI -> strip OpenAI settings
+            if effective_provider not in {"openai", "openai_codex", "azure_openai"}:
+                dropped = modified_settings.keys() & _OPENAI_ONLY_SETTINGS
+                if dropped:
+                    for k in dropped:
+                        modified_settings.pop(k)
+                    changed = True
+            else:
+                # Effective provider is OpenAI/Azure OpenAI: ensure reasoning and reasoning_effort compose cleanly
+                from k8s_autopilot.model.factory import _compose_openai_reasoning_effort
+
+                composed = _compose_openai_reasoning_effort(
+                    effective_provider,
+                    modified_settings,
+                    modified_settings.get("reasoning_effort"),
+                    modified_settings.get("reasoning"),
+                )
+                if composed != modified_settings:
+                    modified_settings = composed
+                    changed = True
+
+            if changed:
+                overrides["model_settings"] = modified_settings
 
         if not overrides:
             return request

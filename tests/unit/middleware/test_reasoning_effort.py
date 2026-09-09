@@ -41,7 +41,7 @@ class TestSupportedEfforts:
     def test_unknown_model_defaults(self):
         from k8s_autopilot.model.reasoning import supported_efforts_for_model
 
-        assert supported_efforts_for_model("unknown:model") == ("low", "medium", "high")
+        assert supported_efforts_for_model("unknown:model") == ()
 
 
 class TestDefaultEffort:
@@ -83,13 +83,14 @@ class TestGeminiEffortParams:
         assert result["reasoning_effort"] == "high"
         assert result["include_thoughts"] is True
         assert result["thinking_level"] == "high"
-        assert result["thinking_budget"] == 8192
 
     def test_low_effort(self):
         from k8s_autopilot.model.reasoning import with_effort_model_params
 
         result = with_effort_model_params("google_genai:gemini-3.7-flash", None, "low")
-        assert result["thinking_budget"] == 1024
+        assert result["reasoning_effort"] == "low"
+        assert result["include_thoughts"] is True
+        assert result["thinking_level"] == "low"
 
 
 class TestAnthropicEffortParams:
@@ -98,8 +99,7 @@ class TestAnthropicEffortParams:
 
         result = with_effort_model_params("anthropic:claude-sonnet-4", None, "medium")
         assert result["reasoning_effort"] == "medium"
-        assert result["thinking"]["type"] == "enabled"
-        assert result["thinking"]["budget_tokens"] == 4096
+        assert result["thinking"] == {"type": "enabled", "budget_tokens": 4096}
 
 
 class TestOpenAIEffortParams:
@@ -108,7 +108,7 @@ class TestOpenAIEffortParams:
 
         result = with_effort_model_params("openai:o3", None, "low")
         assert result["reasoning_effort"] == "low"
-        assert result["reasoning"]["effort"] == "low"
+        assert "reasoning" not in result
 
 
 class TestEffortParamCleanup:
@@ -201,20 +201,20 @@ class TestEffortRoundTrip:
 
 
 class TestConfigurableModelMiddleware:
-    def test_dynamic_model_settings_openai(self):
+    def test_dynamic_model_settings_openai(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         from langchain.agents.middleware.types import ModelRequest, ModelResponse
         from langchain_core.messages import AIMessage
         from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
         from k8s_autopilot.middleware.configurable_model import ConfigurableModelMiddleware
 
         middleware = ConfigurableModelMiddleware(persist_model_state=False)
-
         fake_model = FakeMessagesListChatModel(responses=[AIMessage(content="ok")])
 
         class FakeRuntime:
             context = {
                 "model": "openai:o3-mini",
-                "model_params": {"reasoning": {"effort": "high"}},
+                "model_params": {"reasoning_effort": "high"},
             }
 
         req = ModelRequest(model=fake_model, messages=[], system_prompt=None, model_settings={}, runtime=FakeRuntime())
@@ -226,22 +226,22 @@ class TestConfigurableModelMiddleware:
 
         resp = middleware.wrap_model_call(req, fake_handler)
         assert len(captured_req) == 1
-        assert captured_req[0].model_settings["reasoning"] == {"effort": "high"}
+        assert captured_req[0].model_settings["reasoning_effort"] == "high"
 
-    def test_dynamic_model_settings_anthropic(self):
+    def test_dynamic_model_settings_anthropic(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         from langchain.agents.middleware.types import ModelRequest, ModelResponse
         from langchain_core.messages import AIMessage
         from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
         from k8s_autopilot.middleware.configurable_model import ConfigurableModelMiddleware
 
         middleware = ConfigurableModelMiddleware(persist_model_state=False)
-
         fake_model = FakeMessagesListChatModel(responses=[AIMessage(content="ok")])
 
         class FakeRuntime:
             context = {
                 "model": "anthropic:claude-3-7-sonnet-latest",
-                "model_params": {"thinking": {"type": "enabled", "budget_tokens": 8192}},
+                "model_params": {"reasoning_effort": "medium"},
             }
 
         req = ModelRequest(model=fake_model, messages=[], system_prompt=None, model_settings={}, runtime=FakeRuntime())
@@ -253,22 +253,22 @@ class TestConfigurableModelMiddleware:
 
         resp = middleware.wrap_model_call(req, fake_handler)
         assert len(captured_req) == 1
-        assert captured_req[0].model_settings["thinking"] == {"type": "enabled", "budget_tokens": 8192}
+        assert captured_req[0].model_settings["reasoning_effort"] == "medium"
 
-    def test_dynamic_model_settings_google(self):
+    def test_dynamic_model_settings_google(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSyTest")
         from langchain.agents.middleware.types import ModelRequest, ModelResponse
         from langchain_core.messages import AIMessage
         from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
         from k8s_autopilot.middleware.configurable_model import ConfigurableModelMiddleware
 
         middleware = ConfigurableModelMiddleware(persist_model_state=False)
-
         fake_model = FakeMessagesListChatModel(responses=[AIMessage(content="ok")])
 
         class FakeRuntime:
             context = {
                 "model": "google_genai:gemini-3.6-flash",
-                "model_params": {"thinking_level": "HIGH", "include_thoughts": True},
+                "model_params": {"reasoning_effort": "high"},
             }
 
         req = ModelRequest(model=fake_model, messages=[], system_prompt=None, model_settings={}, runtime=FakeRuntime())
@@ -280,6 +280,44 @@ class TestConfigurableModelMiddleware:
 
         resp = middleware.wrap_model_call(req, fake_handler)
         assert len(captured_req) == 1
-        assert captured_req[0].model_settings["thinking_level"] == "HIGH"
-        assert captured_req[0].model_settings["include_thoughts"] is True
+        assert captured_req[0].model_settings["reasoning_effort"] == "high"
+
+    def test_cross_provider_switch_cleans_settings(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        from langchain.agents.middleware.types import ModelRequest, ModelResponse
+        from langchain_core.messages import AIMessage
+        from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+        from k8s_autopilot.middleware.configurable_model import ConfigurableModelMiddleware
+
+        middleware = ConfigurableModelMiddleware(persist_model_state=False)
+        fake_model = FakeMessagesListChatModel(responses=[AIMessage(content="ok")])
+
+        initial_settings = {
+            "cache_control": True,
+            "thinking": {"type": "enabled"},
+            "thinking_level": "high",
+            "temperature": 0.2,
+        }
+
+        class FakeRuntime:
+            context = {
+                "model": "openai:gpt-5.5-pro",
+                "model_params": {"reasoning_effort": "medium"},
+            }
+
+        req = ModelRequest(model=fake_model, messages=[], system_prompt=None, model_settings=initial_settings, runtime=FakeRuntime())
+
+        captured_req = []
+        def fake_handler(r):
+            captured_req.append(r)
+            return ModelResponse(result=[AIMessage(content="ok")])
+
+        middleware.wrap_model_call(req, fake_handler)
+        assert len(captured_req) == 1
+        settings = captured_req[0].model_settings
+        assert "cache_control" not in settings
+        assert "thinking" not in settings
+        assert "thinking_level" not in settings
+        assert settings["reasoning_effort"] == "medium"
+        assert settings["temperature"] == 0.2
 

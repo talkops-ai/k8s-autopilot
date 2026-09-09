@@ -24,6 +24,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "azure_openai": "AZURE_OPENAI_API_KEY",
     "baseten": "BASETEN_API_KEY",
+    "bedrock": "AWS_ACCESS_KEY_ID",
     "cohere": "COHERE_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "fireworks": "FIREWORKS_API_KEY",
@@ -33,6 +34,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "huggingface": "HUGGINGFACEHUB_API_TOKEN",
     "ibm": "WATSONX_APIKEY",
     "litellm": "LITELLM_API_KEY",
+    "meta": "MODEL_API_KEY",
     "mistralai": "MISTRAL_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -382,6 +384,11 @@ PROVIDER_SETTINGS_FIELD_MAP: dict[str, str] = {
     "huggingface": "huggingface_api_key",
     "bedrock": "aws_access_key_id",
     "azure_openai": "azure_openai_api_key",
+    "baseten": "baseten_api_key",
+    "google_vertexai": "google_cloud_project",
+    "ibm": "watsonx_apikey",
+    "litellm": "litellm_api_key",
+    "meta": "model_api_key",
 }
 
 PROVIDER_KEY_ALIASES: dict[str, tuple[str, ...]] = {
@@ -553,6 +560,30 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         "structured_output": True,
     },
     # OpenAI
+    "openai:gpt-5.5": {
+        "name": "GPT-5.5",
+        "max_input_tokens": 400_000,
+        "max_output_tokens": 128_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["none", "low", "medium", "high", "xhigh"],
+        "reasoning_effort_default": "medium",
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    "openai:gpt-5.5-pro": {
+        "name": "GPT-5.5 Pro",
+        "max_input_tokens": 400_000,
+        "max_output_tokens": 128_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["none", "low", "medium", "high", "xhigh"],
+        "reasoning_effort_default": "medium",
+        "tool_calling": True,
+        "structured_output": True,
+    },
     "openai:gpt-5.4": {
         "name": "GPT-5.4",
         "max_input_tokens": 400_000,
@@ -560,7 +591,7 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         "text_inputs": True,
         "image_inputs": True,
         "reasoning_output": True,
-        "reasoning_effort_levels": ["low", "medium", "high"],
+        "reasoning_effort_levels": ["none", "low", "medium", "high", "xhigh"],
         "reasoning_effort_default": "medium",
         "tool_calling": True,
         "structured_output": True,
@@ -572,7 +603,7 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         "text_inputs": True,
         "image_inputs": True,
         "reasoning_output": True,
-        "reasoning_effort_levels": ["low", "medium", "high"],
+        "reasoning_effort_levels": ["none", "low", "medium", "high", "xhigh"],
         "reasoning_effort_default": "medium",
         "tool_calling": True,
         "structured_output": True,
@@ -611,6 +642,86 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         "tool_calling": True,
         "structured_output": True,
     },
+    "anthropic:claude-sonnet-4-5": {
+        "name": "Claude Sonnet 4.5",
+        "max_input_tokens": 200_000,
+        "max_output_tokens": 64_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "reasoning_output": False,
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    "anthropic:claude-sonnet-4-6": {
+        "name": "Claude Sonnet 4.6",
+        "max_input_tokens": 200_000,
+        "max_output_tokens": 64_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["low", "medium", "high", "max"],
+        "reasoning_effort_default": "high",
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    "anthropic:claude-sonnet-5": {
+        "name": "Claude Sonnet 5",
+        "max_input_tokens": 200_000,
+        "max_output_tokens": 64_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoning_effort_default": "high",
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    "anthropic:claude-opus-4-7": {
+        "name": "Claude Opus 4.7",
+        "max_input_tokens": 200_000,
+        "max_output_tokens": 64_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoning_effort_default": "high",
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    "anthropic:claude-opus-4-8": {
+        "name": "Claude Opus 4.8",
+        "max_input_tokens": 200_000,
+        "max_output_tokens": 64_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoning_effort_default": "high",
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    "anthropic:claude-opus-5": {
+        "name": "Claude Opus 5",
+        "max_input_tokens": 200_000,
+        "max_output_tokens": 64_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoning_effort_default": "high",
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    "anthropic:claude-haiku-4-5": {
+        "name": "Claude Haiku 4.5",
+        "max_input_tokens": 200_000,
+        "max_output_tokens": 8_192,
+        "text_inputs": True,
+        "image_inputs": True,
+        "reasoning_output": False,
+        "tool_calling": True,
+        "structured_output": True,
+    },
     "anthropic:claude-3-5-sonnet-latest": {
         "name": "Claude 3.5 Sonnet",
         "max_input_tokens": 200_000,
@@ -621,19 +732,31 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         "tool_calling": True,
         "structured_output": True,
     },
-    "anthropic:claude-opus-4-7": {
-        "name": "Claude Opus 4.7",
-        "max_input_tokens": 200_000,
-        "max_output_tokens": 16_384,
+    # Google GenAI
+    "google_genai:gemini-3.8-flash": {
+        "name": "Gemini 3.8 Flash",
+        "max_input_tokens": 1_000_000,
+        "max_output_tokens": 64_000,
         "text_inputs": True,
         "image_inputs": True,
         "reasoning_output": True,
-        "reasoning_effort_levels": ["low", "medium", "high", "max"],
+        "reasoning_effort_levels": ["low", "medium", "high"],
         "reasoning_effort_default": "high",
         "tool_calling": True,
         "structured_output": True,
     },
-    # Google GenAI
+    "google_vertexai:gemini-3.8-flash": {
+        "name": "Gemini 3.8 Flash",
+        "max_input_tokens": 1_000_000,
+        "max_output_tokens": 64_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["low", "medium", "high"],
+        "reasoning_effort_default": "high",
+        "tool_calling": True,
+        "structured_output": True,
+    },
     "google_genai:gemini-3.7-flash": {
         "name": "Gemini 3.7 Flash",
         "max_input_tokens": 1_000_000,
@@ -682,6 +805,30 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         "tool_calling": True,
         "structured_output": True,
     },
+    "google_genai:gemini-2.5-pro": {
+        "name": "Gemini 2.5 Pro",
+        "max_input_tokens": 1_000_000,
+        "max_output_tokens": 64_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["low", "medium", "high"],
+        "reasoning_effort_default": "medium",
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    "google_genai:gemini-2.5-flash": {
+        "name": "Gemini 2.5 Flash",
+        "max_input_tokens": 1_000_000,
+        "max_output_tokens": 64_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["low", "medium", "high"],
+        "reasoning_effort_default": "medium",
+        "tool_calling": True,
+        "structured_output": True,
+    },
     # Groq & DeepSeek
     "groq:llama-3.3-70b-versatile": {
         "name": "Llama 3.3 70B",
@@ -689,6 +836,15 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         "max_output_tokens": 32_768,
         "text_inputs": True,
         "reasoning_output": False,
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    "groq:deepseek-r1-distill-llama-70b": {
+        "name": "DeepSeek R1 Distill 70B",
+        "max_input_tokens": 128_000,
+        "max_output_tokens": 8_192,
+        "text_inputs": True,
+        "reasoning_output": True,
         "tool_calling": True,
         "structured_output": True,
     },
@@ -710,42 +866,233 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         "tool_calling": True,
         "structured_output": True,
     },
+    # Fireworks AI
+    "fireworks:accounts/fireworks/models/glm-5p2": {
+        "name": "GLM 5.2",
+        "max_input_tokens": 128_000,
+        "max_output_tokens": 8_192,
+        "text_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["none", "high", "max"],
+        "reasoning_effort_default": "max",
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    "fireworks:accounts/fireworks/models/deepseek-v4-pro": {
+        "name": "DeepSeek V4 Pro",
+        "max_input_tokens": 128_000,
+        "max_output_tokens": 8_192,
+        "text_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoning_effort_default": "high",
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    # xAI
+    "xai:grok-4.5": {
+        "name": "Grok 4.5",
+        "max_input_tokens": 131_072,
+        "max_output_tokens": 16_384,
+        "text_inputs": True,
+        "reasoning_output": True,
+        "reasoning_effort_levels": ["none", "low", "medium", "high"],
+        "reasoning_effort_default": "low",
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    "xai:grok-2-1212": {
+        "name": "Grok 2",
+        "max_input_tokens": 131_072,
+        "max_output_tokens": 8_192,
+        "text_inputs": True,
+        "reasoning_output": False,
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    # Mistral AI
+    "mistralai:mistral-large-latest": {
+        "name": "Mistral Large",
+        "max_input_tokens": 128_000,
+        "max_output_tokens": 8_192,
+        "text_inputs": True,
+        "reasoning_output": False,
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    "mistralai:codestral-latest": {
+        "name": "Codestral",
+        "max_input_tokens": 256_000,
+        "max_output_tokens": 8_192,
+        "text_inputs": True,
+        "reasoning_output": False,
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    # Together AI
+    "together:meta-llama/Llama-3.3-70B-Instruct-Turbo": {
+        "name": "Llama 3.3 70B Turbo",
+        "max_input_tokens": 131_072,
+        "max_output_tokens": 8_192,
+        "text_inputs": True,
+        "reasoning_output": False,
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    # Cohere
+    "cohere:command-r-plus": {
+        "name": "Command R+",
+        "max_input_tokens": 128_000,
+        "max_output_tokens": 4_096,
+        "text_inputs": True,
+        "reasoning_output": False,
+        "tool_calling": True,
+        "structured_output": True,
+    },
+    # Perplexity
+    "perplexity:sonar-pro": {
+        "name": "Sonar Pro",
+        "max_input_tokens": 200_000,
+        "max_output_tokens": 8_192,
+        "text_inputs": True,
+        "reasoning_output": True,
+        "tool_calling": True,
+        "structured_output": True,
+    },
 }
 
 AVAILABLE_MODELS: dict[str, list[tuple[str, str]]] = {
     "google_genai": [
-        ("gemini-3.7-flash", "Gemini 3.7 Flash"),
+        ("gemini-3.8-flash", "Gemini 3.8 Flash (Thinking)"),
+        ("gemini-3.7-flash", "Gemini 3.7 Flash (Thinking)"),
         ("gemini-3.6-flash", "Gemini 3.6 Flash"),
         ("gemini-3.5-flash", "Gemini 3.5 Flash"),
         ("gemini-3.1-pro", "Gemini 3.1 Pro"),
+        ("gemini-2.5-pro", "Gemini 2.5 Pro"),
+        ("gemini-2.5-flash", "Gemini 2.5 Flash"),
     ],
     "anthropic": [
         ("claude-3-7-sonnet", "Claude 3.7 Sonnet (Thinking)"),
-        ("claude-3-5-sonnet-latest", "Claude 3.5 Sonnet"),
+        ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+        ("claude-sonnet-5", "Claude Sonnet 5"),
         ("claude-opus-4-7", "Claude Opus 4.7 (Thinking)"),
+        ("claude-opus-4-8", "Claude Opus 4.8"),
+        ("claude-opus-5", "Claude Opus 5"),
+        ("claude-haiku-4-5", "Claude Haiku 4.5"),
+        ("claude-3-5-sonnet-latest", "Claude 3.5 Sonnet"),
     ],
     "openai": [
+        ("gpt-5.5", "GPT-5.5"),
+        ("gpt-5.5-pro", "GPT-5.5 Pro"),
         ("gpt-5.4", "GPT-5.4"),
         ("gpt-5.4-mini", "GPT-5.4 mini"),
-        ("gpt-4o", "GPT-4o"),
+        ("gpt-5.4-pro", "GPT-5.4 Pro"),
         ("o3-mini", "o3 Mini"),
+        ("o3", "o3"),
+        ("o4-mini", "o4 Mini"),
+        ("gpt-4o", "GPT-4o"),
+        ("gpt-4o-mini", "GPT-4o mini"),
     ],
     "openrouter": [
-        ("google/gemini-3.6-flash", "Gemini 3.6 Flash"),
         ("anthropic/claude-sonnet-5", "Claude Sonnet 5"),
         ("anthropic/claude-opus-4.7", "Claude Opus 4.7"),
+        ("anthropic/claude-opus-4.8", "Claude Opus 4.8"),
+        ("openai/gpt-5.5", "GPT-5.5"),
+        ("openai/gpt-5.4", "GPT-5.4"),
+        ("deepseek/deepseek-v4-pro", "DeepSeek V4 Pro"),
+        ("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash"),
+        ("google/gemini-3.6-flash", "Gemini 3.6 Flash"),
         ("moonshotai/kimi-k3", "Kimi K3"),
+        ("z-ai/glm-5.2", "GLM 5.2"),
+        ("qwen/qwen3.7-plus", "Qwen 3.7 Plus"),
+    ],
+    "fireworks": [
+        ("accounts/fireworks/models/glm-5p2", "GLM 5.2"),
+        ("accounts/fireworks/models/deepseek-v4-pro", "DeepSeek V4 Pro"),
+        ("accounts/fireworks/models/kimi-k3", "Kimi K3"),
+        ("accounts/fireworks/models/kimi-k2p7-code", "Kimi K2.7 Code"),
+        ("accounts/fireworks/models/qwen3p7-plus", "Qwen 3.7 Plus"),
+        ("accounts/fireworks/models/minimax-m3", "MiniMax-M3"),
+    ],
+    "together": [
+        ("meta-llama/Llama-3.3-70B-Instruct-Turbo", "Llama 3.3 70B Turbo"),
+        ("deepseek-ai/DeepSeek-V3", "DeepSeek V3"),
+        ("deepseek-ai/DeepSeek-R1", "DeepSeek R1"),
+        ("Qwen/Qwen2.5-72B-Instruct-Turbo", "Qwen 2.5 72B Turbo"),
+    ],
+    "xai": [
+        ("grok-4.5", "Grok 4.5"),
+        ("grok-2-1212", "Grok 2"),
+        ("grok-beta", "Grok Beta"),
+    ],
+    "mistralai": [
+        ("mistral-large-latest", "Mistral Large"),
+        ("codestral-latest", "Codestral"),
+        ("pixtral-large-latest", "Pixtral Large"),
     ],
     "groq": [
         ("llama-3.3-70b-versatile", "Llama 3.3 70B"),
+        ("deepseek-r1-distill-llama-70b", "DeepSeek R1 Distill 70B"),
+        ("mixtral-8x7b-32768", "Mixtral 8x7B"),
     ],
     "deepseek": [
         ("deepseek-chat", "DeepSeek V3"),
         ("deepseek-reasoner", "DeepSeek R1 (Reasoning)"),
     ],
+    "cohere": [
+        ("command-r-plus", "Command R+"),
+        ("command-r", "Command R"),
+    ],
+    "perplexity": [
+        ("sonar-pro", "Sonar Pro"),
+        ("sonar", "Sonar"),
+        ("sonar-reasoning-pro", "Sonar Reasoning Pro"),
+    ],
+    "nvidia": [
+        ("nvidia/nemotron-3-ultra-550b-a55b", "Nemotron 3 Ultra 550B"),
+        ("meta/llama-3.3-70b-instruct", "Llama 3.3 70B"),
+    ],
+    "baseten": [
+        ("zai-org/GLM-5.2", "GLM 5.2"),
+        ("moonshotai/Kimi-K3", "Kimi K3"),
+        ("deepseek-ai/DeepSeek-V4-Pro", "DeepSeek V4 Pro"),
+    ],
+    "azure_openai": [
+        ("gpt-5.4", "GPT-5.4"),
+        ("gpt-4o", "GPT-4o"),
+        ("o3-mini", "o3 Mini"),
+    ],
+    "bedrock": [
+        ("anthropic.claude-3-7-sonnet-20250219-v1:0", "Claude 3.7 Sonnet"),
+        ("anthropic.claude-opus-4-7", "Claude Opus 4.7"),
+        ("meta.llama3-3-70b-instruct-v1:0", "Llama 3.3 70B"),
+        ("amazon.nova-pro-v1:0", "Amazon Nova Pro"),
+    ],
+    "google_vertexai": [
+        ("gemini-3.8-flash", "Gemini 3.8 Flash"),
+        ("gemini-3.7-flash", "Gemini 3.7 Flash"),
+        ("gemini-3.6-flash", "Gemini 3.6 Flash"),
+        ("gemini-2.5-pro", "Gemini 2.5 Pro"),
+        ("claude-3-7-sonnet@20250219", "Claude 3.7 Sonnet (Vertex)"),
+    ],
+    "ibm": [
+        ("ibm/granite-3-8b-instruct", "Granite 3 8B"),
+        ("meta-llama/llama-3-3-70b-instruct", "Llama 3.3 70B"),
+    ],
+    "huggingface": [
+        ("meta-llama/Llama-3.3-70B-Instruct", "Llama 3.3 70B"),
+        ("Qwen/Qwen2.5-Coder-32B-Instruct", "Qwen 2.5 Coder 32B"),
+    ],
     "ollama": [
+        ("llama3.3", "Llama 3.3"),
         ("llama3.1", "Llama 3.1"),
         ("deepseek-r1:14b", "DeepSeek R1 14B"),
+        ("qwen2.5-coder:14b", "Qwen 2.5 Coder 14B"),
+    ],
+    "meta": [
+        ("muse-spark-1.1", "Muse Spark 1.1"),
+        ("llama-3.3-70b-instruct", "Llama 3.3 70B"),
     ],
 }
 
@@ -754,10 +1101,24 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
     "openrouter": "OpenRouter",
+    "fireworks": "Fireworks AI",
+    "together": "Together AI",
+    "xai": "xAI",
+    "mistralai": "Mistral AI",
     "groq": "Groq",
     "deepseek": "DeepSeek",
-    "ollama": "Ollama",
+    "cohere": "Cohere",
+    "perplexity": "Perplexity",
+    "nvidia": "NVIDIA NIM",
+    "baseten": "Baseten",
     "azure_openai": "Azure OpenAI",
+    "bedrock": "AWS Bedrock",
+    "google_vertexai": "Google Vertex AI",
+    "ibm": "IBM watsonx",
+    "huggingface": "Hugging Face",
+    "ollama": "Ollama",
+    "meta": "Meta",
+    "litellm": "LiteLLM",
 }
 
 
@@ -771,6 +1132,49 @@ def get_provider_display_name(provider: str) -> str:
         Formatted human-readable display name.
     """
     return PROVIDER_DISPLAY_NAMES.get(provider, provider.title())
+
+
+_UPSTREAM_PROFILES_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _get_upstream_profile(provider: str, model_id: str) -> dict[str, Any] | None:
+    """Load profile from upstream LangChain package data._profiles if installed."""
+    pkg_map = {
+        "anthropic": "langchain_anthropic",
+        "google_genai": "langchain_google_genai",
+        "google_vertexai": "langchain_google_vertexai",
+        "openai": "langchain_openai",
+        "azure_openai": "langchain_openai",
+        "fireworks": "langchain_fireworks",
+        "together": "langchain_together",
+        "groq": "langchain_groq",
+        "mistralai": "langchain_mistralai",
+        "xai": "langchain_xai",
+        "deepseek": "langchain_deepseek",
+        "perplexity": "langchain_perplexity",
+        "nvidia": "langchain_nvidia_ai_endpoints",
+        "baseten": "langchain_baseten",
+        "huggingface": "langchain_huggingface",
+    }
+    pkg = pkg_map.get(provider)
+    if not pkg:
+        return None
+    if pkg not in _UPSTREAM_PROFILES_CACHE:
+        try:
+            import importlib
+
+            mod = importlib.import_module(f"{pkg}.data._profiles")
+            _UPSTREAM_PROFILES_CACHE[pkg] = getattr(mod, "_PROFILES", {})
+        except Exception:
+            _UPSTREAM_PROFILES_CACHE[pkg] = {}
+
+    profiles = _UPSTREAM_PROFILES_CACHE[pkg]
+    if model_id in profiles:
+        return profiles[model_id]
+    for k, v in profiles.items():
+        if k == model_id or k.startswith(model_id) or model_id.startswith(k):
+            return v
+    return None
 
 
 def get_model_profile(spec: str) -> ModelProfileEntry | None:
@@ -790,16 +1194,33 @@ def get_model_profile(spec: str) -> ModelProfileEntry | None:
 
     base_profile = dict(MODEL_PROFILES.get(spec, {}))
     if not base_profile:
-        base_profile = {
-            "name": model_id,
-            "max_input_tokens": 128_000,
-            "max_output_tokens": 16_384,
-            "text_inputs": True,
-            "image_inputs": False,
-            "reasoning_output": False,
-            "tool_calling": True,
-            "structured_output": True,
-        }
+        upstream = _get_upstream_profile(provider, model_id)
+        if upstream:
+            base_profile = {
+                "name": upstream.get("name", model_id),
+                "max_input_tokens": upstream.get("max_input_tokens", 128_000),
+                "max_output_tokens": upstream.get("max_output_tokens", 16_384),
+                "text_inputs": upstream.get("text_inputs", True),
+                "image_inputs": upstream.get("image_inputs", False),
+                "reasoning_output": upstream.get("reasoning_output", False),
+                "tool_calling": upstream.get("tool_calling", True),
+                "structured_output": upstream.get("structured_output", True),
+            }
+            if "reasoning_effort_levels" in upstream and upstream["reasoning_effort_levels"]:
+                base_profile["reasoning_effort_levels"] = list(upstream["reasoning_effort_levels"])
+            if "reasoning_effort_default" in upstream and upstream["reasoning_effort_default"]:
+                base_profile["reasoning_effort_default"] = str(upstream["reasoning_effort_default"])
+        else:
+            base_profile = {
+                "name": model_id,
+                "max_input_tokens": 128_000,
+                "max_output_tokens": 16_384,
+                "text_inputs": True,
+                "image_inputs": False,
+                "reasoning_output": False,
+                "tool_calling": True,
+                "structured_output": True,
+            }
 
     return {"profile": cast(ModelProfile, base_profile), "overridden_keys": set()}
 
@@ -829,6 +1250,18 @@ def detect_provider(model_name: str) -> str | None:
         return "google_genai"
     if name_lower.startswith("deepseek"):
         return "deepseek"
+    if name_lower.startswith("grok"):
+        return "xai"
+    if name_lower.startswith(("mistral", "mixtral", "codestral", "pixtral")):
+        return "mistralai"
+    if name_lower.startswith("sonar"):
+        return "perplexity"
+    if name_lower.startswith("command"):
+        return "cohere"
+    if name_lower.startswith(("nemotron", "nvidia/")):
+        return "nvidia"
+    if name_lower.startswith("accounts/fireworks/"):
+        return "fireworks"
     if name_lower.startswith("groq"):
         return "groq"
     if name_lower.startswith("llama"):

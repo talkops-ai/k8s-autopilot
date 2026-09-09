@@ -194,6 +194,7 @@ def mock_llm_creator_fallback():
             thinking_level: str | None = None
             thinking_budget: int | None = None
             reasoning_effort: str | None = None
+            use_responses_api: bool = False
 
             def bind_tools(self, tools, **kwargs):
                 return self
@@ -203,6 +204,7 @@ def mock_llm_creator_fallback():
             thinking_level=kwargs.get("thinking_level"),
             thinking_budget=kwargs.get("thinking_budget"),
             reasoning_effort=kwargs.get("reasoning_effort"),
+            use_responses_api=bool(kwargs.get("use_responses_api", False)),
         )
 
     with patch("langchain.chat_models.init_chat_model", side_effect=fallback_init):

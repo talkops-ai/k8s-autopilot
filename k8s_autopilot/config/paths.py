@@ -188,6 +188,34 @@ def user_agent_md(name: str = DEFAULT_ASSISTANT_ID) -> Path:
     return agent_dir(name) / "AGENTS.md"
 
 
+def primary_agent_md() -> Path:
+    """Return ``~/.k8s_autopilot/AGENTS.md``."""
+    return DATA_DIR / "AGENTS.md"
+
+
+def ensure_user_agent_md(name: str = DEFAULT_ASSISTANT_ID) -> Path:
+    """Ensure ``~/.k8s_autopilot/AGENTS.md`` and ``~/.k8s_autopilot/{name}/AGENTS.md`` exist on disk.
+
+    Returns:
+        The primary persistent memory path (``~/.k8s_autopilot/AGENTS.md``).
+    """
+    ensure_data_dir()
+    root_md = primary_agent_md()
+    if not root_md.exists():
+        try:
+            root_md.touch()
+        except OSError as e:
+            logger.warning("Could not touch primary memory file %s: %s", root_md, e)
+    d = ensure_agent_dir(name)
+    agent_md = d / "AGENTS.md"
+    if not agent_md.exists():
+        try:
+            agent_md.touch()
+        except OSError as e:
+            logger.warning("Could not touch assistant memory file %s: %s", agent_md, e)
+    return root_md
+
+
 def project_k8s_autopilot_dir(project_root: Path) -> Path:
     """Return ``{project_root}/.k8s_autopilot/``."""
     return project_root / ".k8s_autopilot"

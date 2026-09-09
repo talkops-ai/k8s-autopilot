@@ -118,7 +118,8 @@ def create_app(
         }
 
     if server_host and server_port:
-        dynamic_url = f"http://{server_host}:{server_port}"
+        card_host = "localhost" if server_host in ("0.0.0.0", "") else server_host
+        dynamic_url = f"http://{card_host}:{server_port}"
         raw_interfaces = card_data.get("supported_interfaces")
         interfaces_list: list[Any] = (
             raw_interfaces if isinstance(raw_interfaces, list) else [{"protocol_binding": "JSONRPC"}]

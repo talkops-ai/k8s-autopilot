@@ -142,6 +142,7 @@ def test_settings_defaults():
     assert s.kube_namespace == "default"
     assert s.mcp_timeout == 30
     assert not s.debug
+    assert s.a2a_server_port == 10102
 
 
 def test_parse_shell_allow_list():
@@ -215,6 +216,10 @@ def test_manifest_options():
     assert model_opt.type_label == "str"
     assert model_opt.db_key == "MODEL"
     assert model_opt.default == "gemini-3.7-flash"
+
+    port_opt = get_option("a2a.server_port")
+    assert port_opt is not None
+    assert port_opt.default == 10102
 
 
 def test_manifest_option_by_db_key():

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable
 import hashlib
 from http.client import HTTPMessage
@@ -126,14 +127,18 @@ def _redact_url_credentials(value: str) -> str:
     return urlunparse(parsed._replace(netloc=netloc, path=path, query=query))
 
 
+_AUTH_HEADER_RE = re.compile(r"AUTHORIZATION:\s*(?:basic|bearer)\s+[A-Za-z0-9+/=._-]+", re.IGNORECASE)
+
+
 def redact_marketplace_source(value: str) -> str:
     """Return a marketplace source safe for display."""
     return _redact_url_credentials(value)
 
 
 def redact_urls_in_text(value: str) -> str:
-    """Redact credentials from every HTTP URL embedded in text."""
-    return _HTTP_URL_RE.sub(lambda match: _redact_url_credentials(match.group(0)), value)
+    """Redact credentials from every HTTP URL and authorization header embedded in text."""
+    redacted = _HTTP_URL_RE.sub(lambda match: _redact_url_credentials(match.group(0)), value)
+    return _AUTH_HEADER_RE.sub("AUTHORIZATION: [REDACTED]", redacted)
 
 
 def parse_marketplace_source(raw: str) -> MarketplaceSource:
@@ -242,6 +247,32 @@ def _run_git(args: list[str]) -> None:
         raise MarketplaceError(msg)
 
 
+def _get_github_token() -> str | None:
+    """Retrieve GitHub token from environment or Settings if available."""
+    token = os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if not token:
+        try:
+            from k8s_autopilot.config.settings import get_settings
+
+            token = getattr(get_settings(), "github_personal_access_token", None)
+        except Exception:
+            pass
+    if token and str(token).strip():
+        return str(token).strip()
+    return None
+
+
+def _is_github_url(url: str) -> bool:
+    """Check if a URL points to GitHub."""
+    return "github.com" in url.lower()
+
+
+def _build_github_auth_args(token: str) -> list[str]:
+    """Build git config CLI arguments to authenticate against github.com."""
+    b64_token = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+    return ["-c", f"http.https://github.com/.extraHeader=AUTHORIZATION: basic {b64_token}"]
+
+
 def _clone_repository_to_cache(
     source: RepositoryMarketplaceSource,
     git_url: str,
@@ -251,12 +282,67 @@ def _clone_repository_to_cache(
 ) -> Path:
     cache_path = get_marketplace_cache_dir() / (f"repository-{opaque_cache_key(cache_key)}")
     temp_path = Path(tempfile.mkdtemp(prefix=f".{cache_path.name}.", dir=cache_path.parent))
-    args = ["clone", "--depth", "1", "--recurse-submodules", "--shallow-submodules"]
+
+    # Check for GitHub token
+    github_token = _get_github_token() if _is_github_url(git_url) else None
+
+    # If GitHub SSH URL was provided and a token exists, convert to HTTPS
+    effective_git_url = git_url
+    if github_token and (git_url.startswith("git@github.com:") or "git@github.com" in git_url):
+        match = _SSH_GIT_RE.match(git_url)
+        if match:
+            raw_target = match.group(1).split(":", 1)[-1]
+            effective_git_url = f"https://github.com/{raw_target}"
+
+    base_args = ["clone", "--depth", "1", "--recurse-submodules", "--shallow-submodules"]
     if source.ref:
-        args.extend(["--branch", source.ref])
-    args.extend([git_url, str(temp_path)])
+        base_args.extend(["--branch", source.ref])
+    base_args.extend([effective_git_url, str(temp_path)])
+
     try:
-        _run_git(args)
+        if github_token:
+            auth_args = _build_github_auth_args(github_token) + base_args
+            try:
+                _run_git(auth_args)
+            except MarketplaceError as exc:
+                # If authenticated clone failed, it might be:
+                # 1. A public repository where the configured token is invalid/expired/missing scopes
+                # 2. A truly private repository where token lacks permission
+                # Resilient fallback: attempt unauthenticated clone so public repos NEVER fail due to bad tokens!
+                logger.warning(
+                    "Authenticated git clone failed for %s (%s). Retrying unauthenticated clone in case repository is public...",
+                    redact_urls_in_text(effective_git_url),
+                    exc,
+                )
+                if temp_path.exists():
+                    shutil.rmtree(temp_path, ignore_errors=True)
+                try:
+                    _run_git(base_args)
+                except MarketplaceError as unauth_exc:
+                    raise MarketplaceError(
+                        f"Failed to clone repository '{redact_urls_in_text(effective_git_url)}'. "
+                        "Authentication failed, and unauthenticated public clone also failed. "
+                        "Please verify the repository exists and that your GITHUB_PERSONAL_ACCESS_TOKEN has appropriate repository access."
+                    ) from unauth_exc
+        else:
+            # No token provided (user forgot to set it, or repository is public)
+            try:
+                _run_git(base_args)
+            except MarketplaceError as exc:
+                err_lower = str(exc).lower()
+                if any(phrase in err_lower for phrase in (
+                    "could not read username",
+                    "authentication failed",
+                    "terminal prompts disabled",
+                    "not found",
+                    "fatal: repository",
+                )):
+                    raise MarketplaceError(
+                        f"Failed to clone repository '{redact_urls_in_text(effective_git_url)}'. "
+                        "If this is a private repository, please configure your GITHUB_PERSONAL_ACCESS_TOKEN in Settings."
+                    ) from exc
+                raise
+
         if validate is not None:
             validate(temp_path)
         backup_path = cache_path.with_name(f".{cache_path.name}.backup")

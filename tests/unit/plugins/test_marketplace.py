@@ -91,3 +91,78 @@ def test_load_marketplace_valid(tmp_path: Path) -> None:
     assert marketplace.plugins[0].name == "prometheus-analyzer"
     assert marketplace.plugins[0].display_name == "Prometheus Analyzer"
     assert marketplace.plugins[1].name == "gitops-syncer"
+
+
+def test_redact_auth_headers_in_text() -> None:
+    """Test redacting basic and bearer auth headers."""
+    raw = "Git failed: -c http.https://github.com/.extraHeader=AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46c2VjcmV0"
+    redacted = redact_urls_in_text(raw)
+    assert "eC1hY2Nlc3MtdG9rZW46c2VjcmV0" not in redacted
+    assert "AUTHORIZATION: [REDACTED]" in redacted
+
+
+def test_clone_repository_with_github_token(monkeypatch, tmp_path):
+    """Test that GITHUB_PERSONAL_ACCESS_TOKEN injects the extraHeader auth arg."""
+    from k8s_autopilot.plugins.marketplace import _clone_repository_to_cache
+
+    monkeypatch.setenv("GITHUB_PERSONAL_ACCESS_TOKEN", "ghp_secrettoken123")
+    monkeypatch.setenv("PLUGIN_CACHE_DIR", str(tmp_path / "cache"))
+
+    calls = []
+
+    def mock_run_git(args: list[str]) -> None:
+        calls.append(args)
+        target = Path(args[-1])
+        target.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr("k8s_autopilot.plugins.marketplace._run_git", mock_run_git)
+
+    source = RepositoryMarketplaceSource(source_type="github", value="talkops-ai/private-tools")
+    res = _clone_repository_to_cache(source, "https://github.com/talkops-ai/private-tools.git", cache_key="test-key")
+    assert res.exists()
+    assert len(calls) == 1
+    assert any("http.https://github.com/.extraHeader=AUTHORIZATION: basic" in arg for arg in calls[0])
+
+
+def test_clone_repository_fallback_to_unauthenticated_on_auth_failure(monkeypatch, tmp_path):
+    """Test that if authenticated clone fails with a bad token, it retries unauthenticated."""
+    from k8s_autopilot.plugins.marketplace import _clone_repository_to_cache
+
+    monkeypatch.setenv("GITHUB_PERSONAL_ACCESS_TOKEN", "expired_token")
+    monkeypatch.setenv("PLUGIN_CACHE_DIR", str(tmp_path / "cache"))
+
+    calls = []
+
+    def mock_run_git(args: list[str]) -> None:
+        calls.append(args)
+        if len(calls) == 1:
+            raise MarketplaceError("fatal: could not read Username for 'https://github.com': terminal prompts disabled")
+        target = Path(args[-1])
+        target.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr("k8s_autopilot.plugins.marketplace._run_git", mock_run_git)
+
+    source = RepositoryMarketplaceSource(source_type="github", value="talkops-ai/public-tools")
+    res = _clone_repository_to_cache(source, "https://github.com/talkops-ai/public-tools.git", cache_key="test-fallback")
+    assert res.exists()
+    assert len(calls) == 2
+    assert any("http.https://github.com/.extraHeader=AUTHORIZATION: basic" in arg for arg in calls[0])
+    assert not any("http.https://github.com/.extraHeader=" in arg for arg in calls[1])
+
+
+def test_clone_repository_missing_token_informative_error(monkeypatch, tmp_path):
+    """Test that when token is missing and clone fails due to auth/missing repo, a clear error is raised."""
+    from k8s_autopilot.plugins.marketplace import _clone_repository_to_cache
+
+    monkeypatch.delenv("GITHUB_PERSONAL_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setenv("PLUGIN_CACHE_DIR", str(tmp_path / "cache"))
+
+    def mock_run_git(args: list[str]) -> None:
+        raise MarketplaceError("fatal: could not read Username for 'https://github.com': terminal prompts disabled")
+
+    monkeypatch.setattr("k8s_autopilot.plugins.marketplace._run_git", mock_run_git)
+
+    source = RepositoryMarketplaceSource(source_type="github", value="talkops-ai/private-repo")
+    with pytest.raises(MarketplaceError, match="If this is a private repository, please configure your GITHUB_PERSONAL_ACCESS_TOKEN in Settings"):
+        _clone_repository_to_cache(source, "https://github.com/talkops-ai/private-repo.git", cache_key="test-missing-token")

@@ -60,7 +60,7 @@ class ServerConfig:
     enable_interpreter: bool = True
     cwd: str | None = None
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 10102
 
     def to_env(self) -> dict[str, str]:
         """Serialize configuration into environment variables."""
@@ -104,5 +104,5 @@ class ServerConfig:
             enable_interpreter=_read_env_bool("ENABLE_INTERPRETER", default=True),
             cwd=_read_env_str("CWD"),
             host=_read_env_str("HOST") or "0.0.0.0",
-            port=_read_env_int("PORT", default=8000) or 8000,
+            port=_read_env_int("PORT", default=10102) or 10102,
         )

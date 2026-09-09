@@ -34,7 +34,8 @@ RUN apt-get update && \
     libffi-dev \
     libssl-dev \
     cargo \
-    curl && \
+    curl \
+    git && \
     rm -rf /var/lib/apt/lists/*
 
 # Install uv package manager
@@ -79,7 +80,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 # Install runtime dependencies and create application user
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl nodejs npm && \
+    apt-get install -y --no-install-recommends ca-certificates curl git nodejs npm && \
     npm install -g kubernetes-mcp-server@latest && \
     rm -rf /var/lib/apt/lists/* && \
     update-ca-certificates && \
@@ -103,15 +104,6 @@ RUN curl -fsSL "https://github.com/prometheus/prometheus/releases/download/v${PR
 # Copy application artifacts from build stage
 COPY --from=uv --chown=app:app /app/.venv /app/.venv
 COPY --from=uv --chown=app:app /app/k8s_autopilot /app/k8s_autopilot
-
-# Copy agent skills, memory, and workspace
-COPY --from=uv --chown=app:app /app/skills /app/skills
-COPY --from=uv --chown=app:app /app/memory /app/memory
-COPY --from=uv --chown=app:app /app/workspace /app/workspace
-
-# Copy agent card for A2A protocol
-COPY --from=uv --chown=app:app /app/k8s_autopilot/card /app/k8s_autopilot/card
-
 # Get entrypoint script
 COPY ./docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

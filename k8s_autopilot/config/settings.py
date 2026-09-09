@@ -207,6 +207,10 @@ class Settings:
     google_api_key: str | None = None
     groq_api_key: str | None = None
     deepseek_api_key: str | None = None
+    baseten_api_key: str | None = None
+    watsonx_apikey: str | None = None
+    litellm_api_key: str | None = None
+    model_api_key: str | None = None
     tavily_api_key: str | None = None
     azure_openai_api_key: str | None = None
     openrouter_api_key: str | None = None
@@ -225,6 +229,7 @@ class Settings:
     slack_bot_token: str | None = None
     slack_signing_secret: str | None = None
     argocd_auth_token: str | None = None
+    github_personal_access_token: str | None = None
     loki_auth_token: str | None = None
     tempo_auth_header: str | None = None
 
@@ -238,6 +243,14 @@ class Settings:
     groq_base_url: str | None = None
     deepseek_base_url: str | None = None
     openrouter_base_url: str | None = None
+    fireworks_base_url: str | None = None
+    together_base_url: str | None = None
+    xai_base_url: str | None = None
+    mistral_base_url: str | None = None
+    cohere_base_url: str | None = None
+    perplexity_base_url: str | None = None
+    nvidia_base_url: str | None = None
+    baseten_base_url: str | None = None
 
     # ── MCP Configuration ─────────────────────────────────
     mcp_timeout: int = 30
@@ -285,7 +298,7 @@ class Settings:
 
     # ── A2A Server ────────────────────────────────────────
     a2a_server_host: str = "0.0.0.0"
-    a2a_server_port: int = 8000
+    a2a_server_port: int = 10102
     autopilot_mode: str = "a2a"
 
     # ── System & Runtime ──────────────────────────────────
@@ -360,8 +373,8 @@ class Settings:
         mcp_timeout_str = resolve_env_var("MCP_TIMEOUT", ("MCP_TIMEOUT_SECONDS",))
         mcp_timeout = int(mcp_timeout_str) if mcp_timeout_str and mcp_timeout_str.isdigit() else 30
 
-        port_str = _get("A2A_SERVER_PORT", "8000", ("PORT",))
-        port = int(port_str) if port_str.isdigit() else 8000
+        port_str = _get("A2A_SERVER_PORT", "10102", ("PORT",))
+        port = int(port_str) if port_str.isdigit() else 10102
 
         model_val = _get("MODEL", "", ("DEFAULT_MODEL", "MODEL_NAME")) or None
 
@@ -519,6 +532,10 @@ async def reload_from_store(store: Any) -> Settings:
             to_file=getattr(_settings, "log_to_file", True),
             file_path=getattr(_settings, "log_file", "k8s_autopilot.log"),
         )
+
+        from k8s_autopilot.model.factory import clear_model_cache
+
+        clear_model_cache()
     return _settings
 
 
@@ -537,4 +554,8 @@ def reload_settings() -> Settings:
             to_file=_settings.log_to_file,
             file_path=_settings.log_file,
         )
+
+        from k8s_autopilot.model.factory import clear_model_cache
+
+        clear_model_cache()
     return _settings

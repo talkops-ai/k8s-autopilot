@@ -179,6 +179,8 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                 spec = f"{provider}:{model_id}"
                 prof = get_model_profile(spec)
                 profile = prof["profile"] if prof else {}
+                efforts = list(supported_efforts_for_model(spec))
+                default_eff = default_effort_for_model(spec)
                 models_by_provider[provider].append(
                     {
                         "spec": spec,
@@ -187,6 +189,8 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                         "provider": provider,
                         "provider_display_name": get_provider_display_name(provider),
                         "reasoning_output": profile.get("reasoning_output", False),
+                        "reasoning_effort_levels": efforts,
+                        "reasoning_effort_default": default_eff,
                         "tool_calling": profile.get("tool_calling", True),
                         "max_input_tokens": profile.get("max_input_tokens"),
                         "max_output_tokens": profile.get("max_output_tokens"),
@@ -298,7 +302,13 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         from k8s_autopilot.config.settings import reload_from_store
 
         await reload_from_store(store)
-        await _invalidate_mcp_and_agent_caches()
+        # Note: Dynamic model selection does NOT invalidate the compiled agent graph or tear down MCP sessions.
+        # ConfigurableModelMiddleware dynamically routes each invocation via runtime.context, enabling instant switching.
+        logger.info(
+            "Dynamically switched model to %s (effort=%s); agent graph and MCP sessions preserved",
+            response.get("model", "unchanged"),
+            response.get("effort", "unchanged"),
+        )
 
         return JSONResponse(response)
 
@@ -308,12 +318,25 @@ def create_settings_routes(config: Any = None) -> list[Route]:
             from k8s_autopilot.mcp.preload import clear_cached_mcp_server_infos
             from k8s_autopilot.mcp.session_manager import MCPSessionManager
             from k8s_autopilot.server.executor import A2AAutoPilotExecutor
+            from k8s_autopilot.skills.registry import SkillRegistry
 
+            SkillRegistry.reset()
             await MCPSessionManager.get_instance().close_all()
             clear_cached_mcp_server_infos()
             A2AAutoPilotExecutor.invalidate_all_agents()
         except Exception as exc:
             logger.debug("Failed evicting MCP sessions or agent caches: %s", exc)
+
+    async def _invalidate_agent_caches_only() -> None:
+        """Evict cached agent instances without terminating active MCP sessions."""
+        try:
+            from k8s_autopilot.server.executor import A2AAutoPilotExecutor
+            from k8s_autopilot.skills.registry import SkillRegistry
+
+            SkillRegistry.reset()
+            A2AAutoPilotExecutor.invalidate_agent_graphs_only()
+        except Exception as exc:
+            logger.debug("Failed evicting agent caches: %s", exc)
 
     # ── Settings Endpoints ────────────────────────────────
 
@@ -431,6 +454,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         errors: list[str] = []
         env_updates: dict[str, str] = {}
         storage_changed = False
+        mcp_changed = False
 
         for item in data:
             key = item.get("key") or item.get("db_key")
@@ -472,6 +496,13 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                     storage_changed = True
                     if option.db_key == "CHECKPOINT_BACKEND":
                         os.environ["CHECKPOINTER_BACKEND"] = str(value)
+
+                if (
+                    option.group in ("MCP", "MCP Servers")
+                    or option.db_key.startswith("MCP_")
+                    or option.key.startswith("mcp")
+                ):
+                    mcp_changed = True
             else:
                 # Arbitrary custom configuration variable
                 clean_key = str(key).strip().upper()
@@ -484,6 +515,8 @@ def create_settings_routes(config: Any = None) -> list[Route]:
                 )
                 os.environ[clean_key] = str(value)
                 env_updates[clean_key] = str(value)
+                if clean_key.startswith("MCP"):
+                    mcp_changed = True
                 logger.info(
                     "Custom config setting '%s' saved in ConfigStore and environment",
                     clean_key,
@@ -580,7 +613,14 @@ def create_settings_routes(config: Any = None) -> list[Route]:
             from k8s_autopilot.config.settings import reload_from_store
 
             await reload_from_store(store)
-            await _invalidate_mcp_and_agent_caches()
+            if mcp_changed:
+                logger.info("MCP server configuration modified; invalidating MCP sessions and agent graph")
+                await _invalidate_mcp_and_agent_caches()
+            elif storage_changed:
+                logger.info("Storage backend modified; invalidating agent graph (MCP sessions preserved)")
+                await _invalidate_agent_caches_only()
+            else:
+                logger.debug("Settings updated; dynamic configuration reloaded without graph invalidation")
 
         resp: dict[str, Any] = {"success": True, "updated": updated}
         if errors:
@@ -628,7 +668,22 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         from k8s_autopilot.config.settings import reload_from_store
 
         await reload_from_store(store)
-        await _invalidate_mcp_and_agent_caches()
+        is_mcp = (
+            option is not None
+            and (
+                option.group in ("MCP", "MCP Servers")
+                or option.db_key.startswith("MCP_")
+                or option.key.startswith("mcp")
+            )
+        ) or target_key.startswith("MCP") or target_key.startswith("mcp")
+        is_storage = target_key in ("CHECKPOINT_BACKEND", "CHECKPOINTER_BACKEND", "POSTGRES_URI")
+
+        if is_mcp:
+            logger.info("Deleted MCP setting %s; invalidating MCP and agent caches", target_key)
+            await _invalidate_mcp_and_agent_caches()
+        elif is_storage:
+            logger.info("Deleted storage setting %s; invalidating agent graph", target_key)
+            await _invalidate_agent_caches_only()
 
         return JSONResponse({"success": True, "deleted": target_key, "reset_to_default": default_val})
 
@@ -828,7 +883,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         github_repo = os.environ.get("TALKOPS_GITHUB_REPO", "https://github.com/talkops-ai/k8s-autopilot")
         issues_url = os.environ.get("TALKOPS_ISSUES_URL", f"{github_repo.rstrip('/')}/issues/new")
         docs_url = os.environ.get("TALKOPS_DOCS_URL", f"{github_repo.rstrip('/')}#readme")
-        slack_url = os.environ.get("TALKOPS_SLACK_URL", "https://talkops-ai.slack.com")
+        slack_url = os.environ.get("TALKOPS_SLACK_URL", "https://talkops.ai/slack")
 
         helpers: list[dict[str, Any]] = []
 
@@ -1155,12 +1210,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         store = await get_config_store()
         try:
             instance = await install_plugin_async(plugin_id, scope=scope, store=store)
-            try:
-                from k8s_autopilot.server.executor import A2AAutoPilotExecutor
-
-                A2AAutoPilotExecutor.invalidate_all_agents()
-            except Exception:
-                pass
+            await _invalidate_mcp_and_agent_caches()
             return JSONResponse(
                 {
                     "plugin_id": instance.plugin_id,
@@ -1184,12 +1234,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         success = await uninstall_plugin_async(plugin_id, store=store)
         if not success:
             return JSONResponse({"detail": "Plugin not found"}, status_code=404)
-        try:
-            from k8s_autopilot.server.executor import A2AAutoPilotExecutor
-
-            A2AAutoPilotExecutor.invalidate_all_agents()
-        except Exception:
-            pass
+        await _invalidate_mcp_and_agent_caches()
         return JSONResponse({"success": True})
 
     async def enable_plugin_route(request: Request) -> JSONResponse:
@@ -1199,12 +1244,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         plugin_id = request.path_params["plugin_id"]
         store = await get_config_store()
         await set_plugin_enabled_async(plugin_id, True, store=store)
-        try:
-            from k8s_autopilot.server.executor import A2AAutoPilotExecutor
-
-            A2AAutoPilotExecutor.invalidate_all_agents()
-        except Exception:
-            pass
+        await _invalidate_mcp_and_agent_caches()
         return JSONResponse({"success": True})
 
     async def disable_plugin_route(request: Request) -> JSONResponse:
@@ -1214,12 +1254,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         plugin_id = request.path_params["plugin_id"]
         store = await get_config_store()
         await set_plugin_enabled_async(plugin_id, False, store=store)
-        try:
-            from k8s_autopilot.server.executor import A2AAutoPilotExecutor
-
-            A2AAutoPilotExecutor.invalidate_all_agents()
-        except Exception:
-            pass
+        await _invalidate_mcp_and_agent_caches()
         return JSONResponse({"success": True})
 
     # ── Plugin Metadata CRUD ──────────────────────────────
@@ -1299,6 +1334,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         data = await request.json()
         store = await get_config_store()
         await store.upsert_skill(data)
+        await _invalidate_agent_caches_only()
         return JSONResponse({"success": True})
 
     async def delete_skill(request: Request) -> JSONResponse:
@@ -1308,6 +1344,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         deleted = await store.delete_skill(name)
         if not deleted:
             return JSONResponse({"detail": "Skill not found"}, status_code=404)
+        await _invalidate_agent_caches_only()
         return JSONResponse({"success": True})
 
     # ── Subagent Metadata CRUD ────────────────────────────
@@ -1323,6 +1360,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         data = await request.json()
         store = await get_config_store()
         await store.upsert_subagent(data)
+        await _invalidate_agent_caches_only()
         return JSONResponse({"success": True})
 
     async def delete_subagent(request: Request) -> JSONResponse:
@@ -1332,6 +1370,7 @@ def create_settings_routes(config: Any = None) -> list[Route]:
         deleted = await store.delete_subagent(name)
         if not deleted:
             return JSONResponse({"detail": "Subagent not found"}, status_code=404)
+        await _invalidate_agent_caches_only()
         return JSONResponse({"success": True})
 
     # ── Approval Mode CRUD ────────────────────────────────

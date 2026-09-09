@@ -58,16 +58,16 @@ class MemoryRegistry:
 
         # User scope
         if scope in ("user", "auto"):
-            paths.append(app_paths.user_agent_md())
+            primary_md = app_paths.ensure_user_agent_md()
+            paths.append(primary_md)
             paths.append(app_paths.DATA_DIR / "AGENTS.md")
+            paths.append(app_paths.user_agent_md())
             paths.append(Path.home() / ".k8s-autopilot" / "AGENTS.md")
-            paths.append(Path.home() / ".agents" / "AGENTS.md")
 
         # Project scope
         if scope in ("project", "auto"):
             paths.append(app_paths.project_k8s_autopilot_dir(root) / "AGENTS.md")
             paths.append(root / ".k8s-autopilot" / "AGENTS.md")
-            paths.append(root / ".agents" / "AGENTS.md")
             paths.append(root / "AGENTS.md")
 
         resolved_paths: list[Path] = []

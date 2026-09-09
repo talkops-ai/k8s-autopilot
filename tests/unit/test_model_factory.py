@@ -135,21 +135,21 @@ class TestModelResult:
 
 
 class TestReasoningEffort:
-    """Tests for reasoning effort mapping."""
+    """Tests for reasoning effort mapping across providers."""
 
-    def test_google_thinking_tokens(self) -> None:
+    def test_google_effort(self) -> None:
         from k8s_autopilot.model.reasoning import with_effort_model_params
 
         params = with_effort_model_params("google_genai:gemini-3.5-flash", {}, "high")
         assert params["reasoning_effort"] == "high"
-        assert params["thinking_budget"] == 8192
+        assert "thinking_budget" not in params
 
     def test_openai_effort(self) -> None:
         from k8s_autopilot.model.reasoning import with_effort_model_params
 
         params = with_effort_model_params("openai:o3-mini", {}, "low")
         assert params["reasoning_effort"] == "low"
-        assert params["reasoning"]["effort"] == "low"
+        assert "reasoning" not in params
 
     def test_unknown_provider_passthrough(self) -> None:
         from k8s_autopilot.model.reasoning import with_effort_model_params
@@ -157,6 +157,87 @@ class TestReasoningEffort:
         params = with_effort_model_params("unknown:model", {"key": "val"}, "high")
         assert params["key"] == "val"
         assert params["reasoning_effort"] == "high"
+
+    def test_compose_openai_reasoning_effort(self) -> None:
+        from k8s_autopilot.model.factory import _compose_openai_reasoning_effort
+
+        # 1. Non-OpenAI providers are untouched
+        anthropic_kwargs = {"reasoning_effort": "high", "reasoning": {"effort": "low"}}
+        assert _compose_openai_reasoning_effort("anthropic", anthropic_kwargs, "high") == anthropic_kwargs
+
+        # 2. OpenAI with no existing reasoning dict keeps flat reasoning_effort
+        flat_kwargs = {"reasoning_effort": "medium", "temperature": 0.0}
+        assert _compose_openai_reasoning_effort("openai", flat_kwargs, "medium") == flat_kwargs
+
+        # 3. OpenAI with existing reasoning dict composes effort and removes reasoning_effort
+        nested_kwargs = {
+            "reasoning_effort": "high",
+            "reasoning": {"type": "enabled", "effort": "low"},
+            "temperature": 0.0,
+        }
+        composed = _compose_openai_reasoning_effort("openai", nested_kwargs, "high")
+        assert "reasoning_effort" not in composed
+        assert composed["reasoning"] == {"type": "enabled", "effort": "high"}
+        assert composed["temperature"] == 0.0
+
+        # 4. Azure OpenAI is handled identically
+        composed_azure = _compose_openai_reasoning_effort("azure_openai", nested_kwargs, "medium")
+        assert "reasoning_effort" not in composed_azure
+        assert composed_azure["reasoning"]["effort"] == "medium"
+
+    def test_openai_responses_api_payload_no_reasoning_effort(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify ChatOpenAI with use_responses_api does NOT have reasoning_effort in API payload."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-mock-key")
+        from langchain_openai import ChatOpenAI
+
+        # Case 1: Model constructed with flat reasoning_effort
+        m1 = ChatOpenAI(model="gpt-4o", reasoning_effort="medium", use_responses_api=True)
+        payload1 = m1._get_request_payload([{"role": "user", "content": "hello"}])
+        assert "reasoning_effort" not in payload1
+        assert payload1.get("reasoning") == {"effort": "medium"}
+
+        # Case 2: Model constructed with composed reasoning dict
+        m2 = ChatOpenAI(model="gpt-4o", reasoning={"effort": "high"}, use_responses_api=True)
+        payload2 = m2._get_request_payload([{"role": "user", "content": "hello"}])
+        assert "reasoning_effort" not in payload2
+        assert payload2.get("reasoning") == {"effort": "high"}
+
+    def test_anthropic_payload_output_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify ChatAnthropic maps reasoning_effort to output_config without reasoning_effort in payload."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        from langchain_anthropic import ChatAnthropic
+
+        m = ChatAnthropic(model="claude-3-7-sonnet-20250219", reasoning_effort="high")
+        payload = m._get_request_payload([{"role": "user", "content": "hello"}])
+        assert "reasoning_effort" not in payload
+        assert "output_config" in payload
+        assert payload["output_config"] == {"effort": "high"}
+
+    def test_multi_provider_create_model_clean(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify create_model applies profile and reasoning kwargs cleanly across providers."""
+        from k8s_autopilot.model.factory import create_model
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+        monkeypatch.setenv("GOOGLE_API_KEY", "AIzaSyTest")
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_test")
+
+        # OpenAI
+        res_o = create_model("openai:gpt-5.5-pro", extra_kwargs={"reasoning_effort": "high"})
+        assert getattr(res_o.model, "use_responses_api", False) is True
+        assert getattr(res_o.model, "reasoning_effort", None) == "high"
+
+        # Anthropic
+        res_a = create_model("anthropic:claude-3-7-sonnet", extra_kwargs={"reasoning_effort": "medium"})
+        assert getattr(res_a.model, "reasoning_effort", None) == "medium"
+
+        # Google GenAI
+        res_g = create_model("google_genai:gemini-2.5-flash", extra_kwargs={"reasoning_effort": "low"})
+        assert getattr(res_g.model, "reasoning_effort", None) == "low"
+
+        # Groq (non-reasoning model: extra reasoning_effort ignored/not crashing)
+        res_groq = create_model("groq:llama-3.3-70b-versatile")
+        assert res_groq.provider == "groq"
 
 
 class TestStrictModelSelection:

@@ -651,7 +651,10 @@ def create_k8s_autopilot_agent(
             except Exception as e:
                 logger.warning("Failed to initialize MCP tools in agent factory: %s", e)
 
-    # 6. Discover memory sources
+    # 6. Discover memory sources (ensuring ~/.k8s_autopilot/AGENTS.md exists)
+    from k8s_autopilot.config.paths import ensure_user_agent_md
+
+    ensure_user_agent_md(assistant_id)
     memory_registry = MemoryRegistry.get_instance(store=config_store)
     memory_sources_str = memory_registry.get_all_memory_sources(project_root=effective_cwd)
 

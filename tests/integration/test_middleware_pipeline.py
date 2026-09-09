@@ -175,7 +175,7 @@ class TestReasoningModelConfigIntegration:
             f"{spec.provider}:{spec.model}", None, "high"
         )
         assert result["reasoning_effort"] == "high"
-        assert result["thinking_level"] == "high"
+        assert "thinking_level" not in result
 
     def test_effort_round_trip_all_providers(self):
         """Verify set → read → remove for all supported providers."""

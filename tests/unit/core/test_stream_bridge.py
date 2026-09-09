@@ -104,6 +104,21 @@ def test_extract_text_and_thinking_deepseek_anthropic() -> None:
     assert text == "Anthropic Answer"
     assert thinking == "Anthropic reasoning trace"
 
+    # Gemini thought chunk in content blocks
+    text, thinking = _extract_text_and_thinking(
+        [{"type": "thinking", "thinking": "Gemini thinking block"}],
+    )
+    assert text == ""
+    assert thinking == "Gemini thinking block"
+
+    # OpenAI reasoning structure in additional_kwargs
+    text, thinking = _extract_text_and_thinking(
+        "OpenAI Answer",
+        additional_kwargs={"reasoning": {"summary": [{"text": "OpenAI reasoning trace"}]}},
+    )
+    assert text == "OpenAI Answer"
+    assert thinking == "OpenAI reasoning trace"
+
     # Inline XML thinking
     text, thinking = _extract_text_and_thinking(
         "<thinking>Planning steps</thinking>Here is the plan."

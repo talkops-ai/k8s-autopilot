@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
+import json
 import os
+import threading
 from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
@@ -172,14 +174,50 @@ def _get_provider_kwargs(provider: str, *, model_name: str | None = None) -> dic
             os.environ["GOOGLE_CLOUD_LOCATION"] = str(location_env)
 
     # Reasoning effort injection
-    from k8s_autopilot.model.reasoning import with_effort_model_params
+    from k8s_autopilot.model.reasoning import is_effort_supported_for_model, with_effort_model_params
 
     effort = getattr(settings, "reasoning_effort", None)
     if effort:
         spec = f"{provider}:{model_name}" if model_name else provider
-        result = with_effort_model_params(spec, result, effort)
+        if is_effort_supported_for_model(spec, str(effort)):
+            result = with_effort_model_params(spec, result, str(effort))
 
     return result
+
+
+def _compose_openai_reasoning_effort(
+    provider: str,
+    kwargs: dict[str, Any],
+    effort_override: object = None,
+    reasoning_override: object = None,
+) -> dict[str, Any]:
+    """Compose a session effort override with an OpenAI reasoning mapping.
+
+    Args:
+        provider: Resolved model provider.
+        kwargs: Layered model constructor parameters.
+        effort_override: High-priority `reasoning_effort` from session params.
+        reasoning_override: High-priority native `reasoning` from session params.
+
+    Returns:
+        Constructor parameters with one native `reasoning` mapping when
+        composition is needed.
+    """
+    if provider not in {"openai", "openai_codex", "azure_openai"}:
+        return kwargs
+    effort = effort_override if isinstance(effort_override, str) else kwargs.get("reasoning_effort")
+    if not isinstance(effort, str):
+        return kwargs
+    reasoning = kwargs.get("reasoning")
+    if not isinstance(reasoning, dict):
+        return kwargs
+    composed = dict(kwargs)
+    if isinstance(reasoning_override, dict) and "effort" in reasoning_override:
+        composed.pop("reasoning_effort", None)
+        return composed
+    composed["reasoning"] = {**reasoning, "effort": effort}
+    composed.pop("reasoning_effort", None)
+    return composed
 
 
 def _create_model_from_class(
@@ -206,8 +244,6 @@ def _create_model_from_class(
         raise ModelConfigError(f"'{class_path}' is not a BaseChatModel subclass")
 
     cls_kwargs = dict(kwargs)
-    if provider in ("google_genai", "google", "anthropic"):
-        cls_kwargs.pop("reasoning_effort", None)
 
     cls_any = cast(Any, cls)
     try:
@@ -225,8 +261,6 @@ def _create_model_via_init(
     from langchain.chat_models import init_chat_model
 
     init_kwargs = dict(kwargs)
-    if provider in ("google_genai", "google", "anthropic"):
-        init_kwargs.pop("reasoning_effort", None)
 
     try:
         if provider:
@@ -250,6 +284,16 @@ def _create_model_via_init(
         raise ModelConfigError(f"Invalid configuration for '{provider}:{model_name}': {e}") from e
 
 
+_MODEL_CACHE: dict[str, ModelResult] = {}
+_MODEL_CACHE_LOCK = threading.Lock()
+
+
+def clear_model_cache() -> None:
+    """Clear cached chat model instances."""
+    with _MODEL_CACHE_LOCK:
+        _MODEL_CACHE.clear()
+
+
 def create_model(
     model_spec: str | None = None,
     *,
@@ -259,6 +303,20 @@ def create_model(
     """Factory function to build a BaseChatModel and return ModelResult."""
     if not model_spec:
         model_spec = _get_default_model_spec()
+
+    cache_key = json.dumps(
+        {
+            "spec": model_spec,
+            "extra": extra_kwargs or {},
+            "profile": profile_overrides or {},
+        },
+        sort_keys=True,
+        default=str,
+    )
+    with _MODEL_CACHE_LOCK:
+        cached = _MODEL_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
 
     parsed = ModelSpec.try_parse(model_spec)
     if parsed:
@@ -282,14 +340,36 @@ def create_model(
             )
 
     kwargs = _get_provider_kwargs(provider, model_name=model_name)
+    if provider:
+        from deepagents.profiles.provider import apply_provider_profile
+
+        spec = f"{provider}:{model_name}" if model_name else provider
+        try:
+            kwargs = apply_provider_profile(spec, kwargs)
+        except Exception as exc:
+            logger.debug("ProviderProfile resolution for %r failed: %s", spec, exc)
+
+    reasoning_effort_override: object = None
+    reasoning_override: object = None
     if extra_kwargs:
-        kwargs.update(extra_kwargs)
+        extra_kwargs = dict(extra_kwargs)
+        reasoning_effort_override = extra_kwargs.get("reasoning_effort")
+        reasoning_override = extra_kwargs.get("reasoning")
         eff = extra_kwargs.get("reasoning_effort")
         if eff:
-            from k8s_autopilot.model.reasoning import with_effort_model_params
+            from k8s_autopilot.model.reasoning import is_effort_supported_for_model, with_effort_model_params
 
             spec = f"{provider}:{model_name}" if model_name else (model_name or "")
-            kwargs = with_effort_model_params(spec, kwargs, eff)
+            if is_effort_supported_for_model(spec, str(eff)):
+                kwargs = with_effort_model_params(spec, kwargs, str(eff))
+        kwargs.update(extra_kwargs)
+
+    kwargs = _compose_openai_reasoning_effort(
+        provider,
+        kwargs,
+        reasoning_effort_override,
+        reasoning_override,
+    )
 
     config = ModelConfig.load()
     class_path = config.get_class_path(provider) if provider else None
@@ -321,10 +401,13 @@ def create_model(
     context_limit = profile.get("max_input_tokens")
     unsupported_modalities = frozenset(profile.get("unsupported_modalities", []))
 
-    return ModelResult(
+    result = ModelResult(
         model=model,
         model_name=model_name,
         provider=provider or getattr(model, "_model_provider", ""),
         context_limit=context_limit,
         unsupported_modalities=unsupported_modalities,
     )
+    with _MODEL_CACHE_LOCK:
+        _MODEL_CACHE[cache_key] = result
+    return result

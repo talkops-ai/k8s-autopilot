@@ -290,27 +290,26 @@ class TestReasoningEffortEvals:
         levels = supported_efforts_for_model("google_genai:gemini-3.7-flash")
         assert levels == ("low", "medium", "high")
 
-        # Unknown models get default 3-level support
+        # Unknown models return empty tuple (no profile)
         levels = supported_efforts_for_model("unknown:model-x")
-        assert levels == ("low", "medium", "high")
+        assert levels == ()
 
     def test_provider_native_params_correct(self):
-        """Verify each provider gets the correct native parameter format."""
+        """Verify each provider gets canonical reasoning_effort without colliding keys."""
         from k8s_autopilot.model.reasoning import with_effort_model_params
 
-        # Google: thinking_level + thinking_budget
+        # Google: canonical flat reasoning_effort without legacy keys
         gemini = with_effort_model_params("google_genai:gemini-2.5-pro", None, "high")
-        assert "thinking_level" in gemini
-        assert "thinking_budget" in gemini
-        assert gemini["include_thoughts"] is True
+        assert gemini["reasoning_effort"] == "high"
+        assert "thinking_level" not in gemini
+        assert "thinking_budget" not in gemini
 
-        # OpenAI: reasoning.effort
+        # OpenAI: canonical flat reasoning_effort without nested 'reasoning' dict
         openai = with_effort_model_params("openai:o3", None, "medium")
-        assert "reasoning" in openai
-        assert openai["reasoning"]["effort"] == "medium"
+        assert openai["reasoning_effort"] == "medium"
+        assert "reasoning" not in openai
 
-        # Anthropic: thinking.type + budget_tokens
+        # Anthropic: canonical flat reasoning_effort without nested 'thinking' dict
         anthropic = with_effort_model_params("anthropic:claude-sonnet-4", None, "low")
-        assert "thinking" in anthropic
-        assert anthropic["thinking"]["type"] == "enabled"
-        assert anthropic["thinking"]["budget_tokens"] == 1024
+        assert anthropic["reasoning_effort"] == "low"
+        assert "thinking" not in anthropic

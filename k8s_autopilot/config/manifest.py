@@ -199,6 +199,11 @@ _CREDENTIAL_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     ("credentials.bedrock_secret", "AWS_SECRET_ACCESS_KEY", "AWS Secret Access Key", "aws_secret_access_key"),
     ("credentials.bedrock_region", "AWS_REGION", "AWS Region", "aws_region"),
     ("credentials.tavily", "TAVILY_API_KEY", "Tavily Search API Key", "tavily_api_key"),
+    ("credentials.baseten", "BASETEN_API_KEY", "Baseten API Key", "baseten_api_key"),
+    ("credentials.vertex", "GOOGLE_CLOUD_PROJECT", "Google Cloud Project (Vertex AI)", "google_cloud_project"),
+    ("credentials.ibm", "WATSONX_APIKEY", "IBM watsonx API Key", "watsonx_apikey"),
+    ("credentials.litellm", "LITELLM_API_KEY", "LiteLLM API Key", "litellm_api_key"),
+    ("credentials.meta", "MODEL_API_KEY", "Meta Model API Key", "model_api_key"),
     ("credentials.azure_openai", "AZURE_OPENAI_API_KEY", "Azure OpenAI Key", "azure_openai_api_key"),
     ("credentials.langchain", "LANGCHAIN_API_KEY", "LangSmith Tracing Key", "langchain_api_key"),
     ("credentials.loki", "LOKI_AUTH_TOKEN", "Loki Auth Token", "loki_auth_token"),
@@ -206,6 +211,7 @@ _CREDENTIAL_REGISTRY: tuple[tuple[str, str, str, str], ...] = (
     ("credentials.slack_bot", "SLACK_BOT_TOKEN", "Slack Bot Token", "slack_bot_token"),
     ("credentials.slack_secret", "SLACK_SIGNING_SECRET", "Slack Signing Secret", "slack_signing_secret"),
     ("credentials.argocd", "ARGOCD_AUTH_TOKEN", "ArgoCD Auth Token", "argocd_auth_token"),
+    ("credentials.github", "GITHUB_PERSONAL_ACCESS_TOKEN", "GitHub Personal Access Token", "github_personal_access_token"),
 )
 
 
@@ -640,7 +646,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="A2A",
         summary="A2A server listen port",
         kind=OptionKind.INT,
-        default=8000,
+        default=10102,
         settings_field="a2a_server_port",
     ),
     ConfigOption(

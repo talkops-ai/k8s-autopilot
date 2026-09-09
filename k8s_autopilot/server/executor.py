@@ -352,6 +352,12 @@ class A2AAutoPilotExecutor(AgentExecutor):
             inst._active_checkpointer = None
             inst._active_mcp_fingerprint = None
 
+    @classmethod
+    def invalidate_agent_graphs_only(cls) -> None:
+        """Clear cached agent graphs on all executor instances without resetting MCP fingerprints."""
+        for inst in cls._instances:
+            inst.agent = None
+
     def _extract_model_and_effort(self, context: RequestContext) -> tuple[str | None, str | None]:
         """Extract user-selected model spec and reasoning effort from RequestContext if present."""
         req_model: str | None = None
@@ -526,8 +532,6 @@ class A2AAutoPilotExecutor(AgentExecutor):
 
         if (
             self.agent is None
-            or (active_model and active_model != current_model)
-            or (effort and effort != current_effort)
             or (current_checkpointer is not None and current_checkpointer != active_checkpointer)
             or (active_mcp_fingerprint != current_mcp_fingerprint)
         ):
@@ -556,6 +560,10 @@ class A2AAutoPilotExecutor(AgentExecutor):
             if not hasattr(self.agent, "name"):
                 with contextlib.suppress(AttributeError, TypeError):
                     self.agent.name = "k8s-autopilot"
+        else:
+            # Graph is already compiled; dynamic runtime context via ConfigurableModelMiddleware handles model/effort
+            self._active_model = active_model
+            self._active_effort = effort
         return self.agent
 
     _get_or_create_agent = _ensure_agent
@@ -2041,16 +2049,21 @@ class A2AAutoPilotExecutor(AgentExecutor):
             agent_graph, context_id, active_model, active_effort, requested_mode=requested_mode
         )
         # Populate unified runtime config and context from single source of truth
-        from k8s_autopilot.model.reasoning import with_effort_model_params
+        from k8s_autopilot.model.reasoning import is_effort_supported_for_model, with_effort_model_params
 
         appr_mode = telemetry.current_approval_mode
         live_key = telemetry.approval_mode_key
-        model_params = with_effort_model_params(active_model, {}, active_effort)
+        if active_effort and is_effort_supported_for_model(active_model, active_effort):
+            model_params = with_effort_model_params(active_model, {}, active_effort)
+            effective_effort: str | None = active_effort
+        else:
+            model_params = {}
+            effective_effort = None
 
         config["configurable"].update(
             {
                 "model": active_model,
-                "reasoning_effort": active_effort,
+                "reasoning_effort": effective_effort,
                 "approval_mode": appr_mode,
             }
         )
@@ -2062,7 +2075,7 @@ class A2AAutoPilotExecutor(AgentExecutor):
         raw_context: dict[str, Any] = {
             "model": active_model,
             "model_params": model_params,
-            "reasoning_effort": active_effort,
+            "reasoning_effort": effective_effort,
             "thread_id": context_id,
             "turn_id": str(uuid.uuid4()),
             "approval_mode": appr_mode,

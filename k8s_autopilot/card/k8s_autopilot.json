@@ -43,8 +43,8 @@
                         "githubRepo": "https://github.com/talkops-ai/k8s-autopilot",
                         "issuesUrl": "https://github.com/talkops-ai/k8s-autopilot/issues/new",
                         "docsUrl": "https://github.com/talkops-ai/k8s-autopilot#readme",
-                        "slackUrl": "https://talkops-ai.slack.com",
-                        "placeholder": "Ask anything, troubleshoot, automate clusters, or spawn subagents...",
+                        "slackUrl": "https://talkops.ai/slack",
+                        "placeholder": "Manage cluster workloads, Helm releases, GitOps deployments, or run installed skills...",
                         "helpers": [
                             {
                                 "id": "docs",
@@ -68,7 +68,7 @@
                                 "id": "slack",
                                 "label": "Join Slack Community",
                                 "icon": "slack",
-                                "url": "https://talkops-ai.slack.com"
+                                "url": "https://talkops.ai/slack"
                             }
                         ]
                     },

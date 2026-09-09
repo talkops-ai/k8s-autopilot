@@ -16,7 +16,7 @@ from k8s_autopilot.utils.logger import get_logger
 logger = get_logger(__name__)
 
 _DEFAULT_HOST = "0.0.0.0"
-_DEFAULT_PORT = 8000
+_DEFAULT_PORT = 10102
 _HEALTH_POLL_INTERVAL = 0.2
 _HEALTH_TIMEOUT = 30
 

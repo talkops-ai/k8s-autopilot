@@ -121,3 +121,62 @@ def test_memory_guard_middleware(tmp_path: Path) -> None:
     assert isinstance(result, ToolMessage)
     assert result.content == "Wrote 20 bytes"
     normal_handler.assert_called_once_with(req_allowed)
+
+
+def test_ensure_user_agent_md_and_discovery(tmp_path: Path, monkeypatch) -> None:
+    """Verify that ~/.k8s_autopilot/AGENTS.md is automatically created and discovered."""
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    from k8s_autopilot.config import paths as app_paths
+
+    # Re-evaluate DATA_DIR with fake_home
+    monkeypatch.setattr(app_paths, "DATA_DIR", fake_home / ".k8s_autopilot")
+
+    # Initial state: fake_home does not exist
+    primary_file = app_paths.ensure_user_agent_md()
+    assert primary_file.exists()
+    assert primary_file == fake_home / ".k8s_autopilot" / "AGENTS.md"
+
+    # Verify discovery in MemoryRegistry
+    registry = MemoryRegistry.get_instance()
+    sources = registry.get_all_memory_sources(project_root=tmp_path / "proj")
+    assert str(primary_file.resolve()) in sources
+    # Verify .agents is not in user memory sources
+    assert not any(".agents" in s for s in sources if str(fake_home) in s)
+
+
+def test_memory_guard_extended_tools_and_target_file(tmp_path: Path) -> None:
+    """Verify memory guard works with TargetFile arg and write_to_file / delete aliases."""
+    guarded_file = tmp_path / "AGENTS.md"
+    guarded_file.write_text("## Initial Memory\n", encoding="utf-8")
+
+    guard = ManagedMemoryGuardMiddleware(guarded_paths=[guarded_file])
+
+    # delete using rm alias and target arg
+    req_rm = MagicMock()
+    req_rm.tool_call = {
+        "id": "tc-rm",
+        "name": "rm",
+        "args": {"target": str(guarded_file)},
+    }
+    rm_handler = MagicMock()
+    res_rm = guard.wrap_tool_call(req_rm, rm_handler)
+    assert isinstance(res_rm, ToolMessage)
+    assert res_rm.status == "error"
+    assert "must not be deleted" in res_rm.content
+    rm_handler.assert_not_called()
+
+    # write using write_to_file and TargetFile arg
+    req_write = MagicMock()
+    req_write.tool_call = {
+        "id": "tc-write",
+        "name": "write_to_file",
+        "args": {"TargetFile": str(guarded_file), "CodeContent": "new content"},
+    }
+    write_handler = MagicMock()
+    write_handler.return_value = ToolMessage(content="Written", tool_call_id="tc-write")
+    res_write = guard.wrap_tool_call(req_write, write_handler)
+    assert isinstance(res_write, ToolMessage)
+    write_handler.assert_called_once()
+

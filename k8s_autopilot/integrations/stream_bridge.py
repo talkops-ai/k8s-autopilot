@@ -45,6 +45,26 @@ def _humanize_tool_name(raw_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _extract_thinking_value(val: Any) -> list[str]:
+    """Recursively extract thinking text snippets from strings, lists, or dicts."""
+    parts: list[str] = []
+    if not val:
+        return parts
+    if isinstance(val, str):
+        parts.append(val)
+    elif isinstance(val, dict):
+        for k in ("thinking", "thought", "thoughts", "reasoning", "reasoning_content", "text", "summary", "content"):
+            sub = val.get(k)
+            if isinstance(sub, str) and sub:
+                parts.append(sub)
+            elif isinstance(sub, (list, dict)):
+                parts.extend(_extract_thinking_value(sub))
+    elif isinstance(val, list):
+        for item in val:
+            parts.extend(_extract_thinking_value(item))
+    return parts
+
+
 def _extract_text_and_thinking(
     content: Any,
     additional_kwargs: dict[str, Any] | None = None,
@@ -57,7 +77,7 @@ def _extract_text_and_thinking(
     - DeepSeek: ``reasoning_content`` attribute
     - Anthropic: ``thinking`` attribute or content blocks
     - Gemini: ``thoughts`` / ``thinking`` in metadata or parts
-    - OpenAI: ``additional_kwargs["thinking"]``
+    - OpenAI: ``additional_kwargs["reasoning"]`` or ``additional_kwargs["thinking"]``
     - Inline XML: ``<thinking>...</thinking>`` or ``<thought>...</thought>``
 
     Returns:
@@ -72,9 +92,10 @@ def _extract_text_and_thinking(
             getattr(msg_obj, "reasoning_content", None)
             or getattr(msg_obj, "thinking", None)
             or getattr(msg_obj, "thoughts", None)
+            or getattr(msg_obj, "reasoning", None)
         )
-        if direct_thinking and isinstance(direct_thinking, str):
-            thinking_parts.append(direct_thinking)
+        if direct_thinking:
+            thinking_parts.extend(_extract_thinking_value(direct_thinking))
 
     # 2. Additional kwargs and response metadata
     combined: dict[str, Any] = {}
@@ -88,18 +109,10 @@ def _extract_text_and_thinking(
         or combined.get("thoughts")
         or combined.get("reasoning_content")
         or combined.get("thought")
+        or combined.get("reasoning")
     )
     if thinking:
-        if isinstance(thinking, str):
-            thinking_parts.append(thinking)
-        elif isinstance(thinking, dict) and isinstance(thinking.get("text"), str):
-            thinking_parts.append(thinking["text"])
-        elif isinstance(thinking, list):
-            for t_item in thinking:
-                if isinstance(t_item, str):
-                    thinking_parts.append(t_item)
-                elif isinstance(t_item, dict) and isinstance(t_item.get("text"), str):
-                    thinking_parts.append(t_item["text"])
+        thinking_parts.extend(_extract_thinking_value(thinking))
 
     # 3. Content blocks & string parsing
     if isinstance(content, str):
@@ -137,14 +150,11 @@ def _extract_text_and_thinking(
                     or block.get("reasoning_content")
                 )
                 if think_val:
-                    if isinstance(think_val, str):
-                        thinking_parts.append(think_val)
-                    elif isinstance(think_val, dict) and isinstance(think_val.get("text"), str):
-                        thinking_parts.append(think_val["text"])
+                    thinking_parts.extend(_extract_thinking_value(think_val))
                 elif block_type in ("thinking", "thought", "reasoning"):
-                    text_val = block.get("text") or block.get("thinking") or block.get("thought")
-                    if text_val and isinstance(text_val, str):
-                        thinking_parts.append(text_val)
+                    text_val = block.get("text") or block.get("thinking") or block.get("thought") or block.get("summary")
+                    if text_val:
+                        thinking_parts.extend(_extract_thinking_value(text_val))
                 elif isinstance(block.get("text"), str):
                     text_parts.append(block["text"])
             elif hasattr(block, "text") and isinstance(block.text, str):

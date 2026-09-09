@@ -38,7 +38,18 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-_GUARDED_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "delete", "delete_file"})
+_GUARDED_TOOLS: frozenset[str] = frozenset(
+    {
+        "write_file",
+        "edit_file",
+        "delete",
+        "delete_file",
+        "write_to_file",
+        "replace_file_content",
+        "multi_replace_file_content",
+        "rm",
+    }
+)
 """Tool names whose calls can mutate a guarded file and must be inspected."""
 
 ONBOARDING_NAME_MEMORY_START = "<!-- k8s_autopilot:onboarding-name:start -->"
@@ -170,7 +181,15 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
         if tool_name not in _GUARDED_TOOLS:
             return None
         args = tool_call.get("args") or {}
-        file_path = args.get("file_path") or args.get("path") or args.get("target") or ""
+        file_path = (
+            args.get("file_path")
+            or args.get("path")
+            or args.get("target")
+            or args.get("TargetFile")
+            or args.get("target_file")
+            or args.get("file")
+            or ""
+        )
         if not isinstance(file_path, str) or not file_path:
             return None
         try:
@@ -183,7 +202,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
                 exc_info=True,
             )
             return None
-        if tool_name in ("delete", "delete_file"):
+        if tool_name in ("delete", "delete_file", "rm"):
             for guarded in self._guarded:
                 try:
                     if guarded.is_relative_to(resolved) or resolved == guarded:
@@ -383,7 +402,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
             return handler(request)
         before = self._read(path)
         tool_name = request.tool_call.get("name", "")
-        if tool_name in ("delete", "delete_file"):
+        if tool_name in ("delete", "delete_file", "rm"):
             if self._reject_delete(path, before):
                 return self._delete_error(request, path)
             return handler(request)
@@ -405,7 +424,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware[Any, Any]):
             return await handler(request)
         before = await asyncio.to_thread(self._read, path)
         tool_name = request.tool_call.get("name", "")
-        if tool_name in ("delete", "delete_file"):
+        if tool_name in ("delete", "delete_file", "rm"):
             if await asyncio.to_thread(self._reject_delete, path, before):
                 return self._delete_error(request, path)
             return await handler(request)
