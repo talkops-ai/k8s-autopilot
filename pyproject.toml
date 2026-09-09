@@ -1,6 +1,6 @@
 [project]
 name = "k8s-autopilot"
-version = "0.6.0"
+version = "0.7.0"
 description = "Multi Agents responsible for complete Kubernetes deployment automation (generation → deployment → monitoring)"
 readme = "README.md"
 requires-python = ">=3.12"

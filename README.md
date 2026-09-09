@@ -200,12 +200,6 @@ k8s-autopilot ships with 4 domain-specific sub-agents out of the box. Each one i
 | **☸️ K8s Operator** | Core cluster operations — listing resources, debugging crashing pods, scaling workloads, reading logs, inspecting RBAC, managing namespaces and contexts. | Kubernetes MCP Server | kubernetes-cluster-ops |
 | **📊 Observability Operator** | Full-stack monitoring — PromQL queries, alert triage and silencing, log exploration with LogQL, distributed trace search with TraceQL, and OpenTelemetry instrumentation. | Prometheus, Alertmanager, Loki, Tempo, OpenTelemetry MCP Servers | prometheus, alertmanager, loki, tempo, opentelemetry |
 
-Each sub-agent has its own documentation:
-
-- [Helm Operator](docs/k8s-autopilot-docs/helm-operator.md)
-- [App Operator](docs/k8s-autopilot-docs/app-operator.md)
-- [K8s Operator](docs/k8s-autopilot-docs/k8s-operator.md)
-- [Observability Operator](docs/k8s-autopilot-docs/observability-operator.md)
 
 ---
 
