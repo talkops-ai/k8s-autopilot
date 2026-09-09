@@ -1,6 +1,6 @@
 {
-    "name": "k8s_autopilot",
-    "description": "Production-grade multi-agent system for Kubernetes automation. Orchestrates four specialized deep-agent coordinators — Helm Operator (chart generation, install/upgrade/rollback), K8s Operator (cluster ops, pod debugging, scaling), App Operator (ArgoCD GitOps, Argo Rollouts progressive delivery, Traefik edge routing), and Observability (Prometheus monitoring, AlertManager alerting) — with strict Human-in-the-Loop safety gates for all state-modifying operations.",
+    "name": "k8s-autopilot",
+    "description": "Production-grade autonomous multi-agent platform for Kubernetes and cloud infrastructure automation. Features dynamic subagent spawning with tailored skill sets, marketplace skill and plugin installation, pluggable Model Context Protocol (MCP) integrations, and four specialized built-in coordinator operators — Helm Operator (chart generation, validation, releases), K8s Operator (cluster ops, pod debugging, scaling), App Operator (ArgoCD GitOps, Argo Rollouts progressive delivery, Traefik edge routing), and Observability Operator (Prometheus metrics, AlertManager alerting) — with strict Human-in-the-Loop safety gates for all state-modifying actions.",
     "supported_interfaces": [
         {
             "url": "http://localhost:10102",
@@ -17,7 +17,7 @@
         "organization": "TalkOps AI",
         "url": "https://github.com/talkops-ai"
     },
-    "version": "0.5.0",
+    "version": "0.6.0",
     "documentation_url": "https://github.com/talkops-ai/k8s-autopilot",
     "capabilities": {
         "streaming": true,
@@ -35,27 +35,93 @@
             },
             {
                 "uri": "https://talkops.ai/a2a-extension/talkops-ui/v1",
-                "description": "TalkOps UI extension providing rich metadata for agent discovery, capabilities display, and MCP server information.",
+                "description": "TalkOps UI extension providing rich metadata for agent discovery, capabilities display, dynamic subagents, and MCP server information.",
                 "params": {
                     "metadata": {
+                        "id": "k8s-autopilot",
+                        "displayName": "k8s-autopilot",
                         "githubRepo": "https://github.com/talkops-ai/k8s-autopilot",
-                        "discordUrl": "https://discord.gg/RzqRy6uKAm",
-                        "placeholder": "Manage Kubernetes clusters, deploy Helm charts, monitor with Prometheus, and configure ArgoCD..."
-                    },
-                    "capabilityDescription": {
-                        "title": "What K8s Autopilot Does",
-                        "description": "The K8s Autopilot intelligently manages your Kubernetes clusters through four specialized deep-agent coordinators. It generates Helm charts, manages cluster operations, orchestrates GitOps workflows with ArgoCD/Argo Rollouts/Traefik, and provides full observability through Prometheus and AlertManager.",
-                        "features": [
-                            "🎯 Generates production-ready Helm charts from natural language requirements",
-                            "⚙️ Intelligent cluster management — pod debugging, scaling, events, and health checks",
-                            "🔄 GitOps automation with ArgoCD — app lifecycle, sync, and rollback",
-                            "🚀 Progressive delivery with Argo Rollouts — canary and blue/green deployments",
-                            "🌐 Edge routing with Traefik — weighted routing, traffic mirroring, and middleware",
-                            "📊 Prometheus monitoring — PromQL queries, exporter lifecycle, TSDB cardinality, and rule authoring",
-                            "🔔 AlertManager alerting — on-call triage, silence management, routing audit, and integration testing",
-                            "🔒 Human-in-the-Loop safety gates for all state-modifying operations"
+                        "issuesUrl": "https://github.com/talkops-ai/k8s-autopilot/issues/new",
+                        "docsUrl": "https://github.com/talkops-ai/k8s-autopilot#readme",
+                        "slackUrl": "https://talkops.ai/slack",
+                        "placeholder": "Manage cluster workloads, Helm releases, GitOps deployments, or run installed skills...",
+                        "helpers": [
+                            {
+                                "id": "docs",
+                                "label": "Agent Documentation",
+                                "icon": "book",
+                                "url": "https://github.com/talkops-ai/k8s-autopilot#readme"
+                            },
+                            {
+                                "id": "bug",
+                                "label": "Report Issue / Feature Request",
+                                "icon": "bug",
+                                "url": "https://github.com/talkops-ai/k8s-autopilot/issues/new"
+                            },
+                            {
+                                "id": "github",
+                                "label": "GitHub Repository",
+                                "icon": "github",
+                                "url": "https://github.com/talkops-ai/k8s-autopilot"
+                            },
+                            {
+                                "id": "slack",
+                                "label": "Join Slack Community",
+                                "icon": "slack",
+                                "url": "https://talkops.ai/slack"
+                            }
                         ]
                     },
+                    "capabilityDescription": {
+                        "title": "Autonomous Kubernetes & Cloud DevOps Platform",
+                        "description": "K8s Autopilot is an extensible multi-agent orchestration platform for Kubernetes and cloud operations. It programmatically coordinates four specialized built-in operators, dynamically spawns context-isolated subagents with tailored skill sets for parallel or multi-phase tasks, and supports runtime discovery and installation of community skills and plugins from marketplaces.",
+                        "features": [
+                            "🤖 Dynamic Subagent Spawning — spawn context-isolated subagents with tailored skill sets for parallel execution and deep recursive tasks",
+                            "🧩 Extensible Skills & Plugins — discover, install, and run domain-specific skills and plugins dynamically from marketplaces",
+                            "🎯 Autonomous Helm Lifecycle — generate production-ready charts from natural language with linting, template validation, and Git commits",
+                            "⚙️ Intelligent Cluster Operations — pod debugging, crashloop triage, live container exec and logs, event analysis, and health checks",
+                            "🔄 GitOps Automation with ArgoCD — application lifecycle, project management, repository onboarding, sync, and rollback",
+                            "🚀 Progressive Delivery with Argo Rollouts — canary analysis, blue/green strategies, promotion, and abort workflows",
+                            "🌐 Edge Routing with Traefik — weighted traffic splitting, canary routing, middleware chains, and IngressRoute management",
+                            "📊 Deep Observability with Prometheus — instant and range PromQL queries, metric exploration, exporter lifecycle, and alert authoring",
+                            "🔔 AlertManager Incident Management — on-call alert triage, silence management, routing introspection, and integration testing",
+                            "🔌 Pluggable MCP Server Mesh — direct tool discovery and execution across Kubernetes, Helm, ArgoCD, Prometheus, and GitHub",
+                            "🔒 Human-in-the-Loop Safety Gates — granular auto/manual approval modes with interactive breakpoint gating for all state modifications",
+                            "🖥️ Interactive A2UI Component Streaming — real-time interactive UI surfaces for deployment review, approvals, and status cards"
+                        ]
+                    },
+                    "subagents": [
+                        {
+                            "name": "helm-operator",
+                            "displayName": "Helm Operator",
+                            "description": "Autonomous Helm chart lifecycle: natural language generation, template linting, release installs, upgrades, rollbacks, and Git commits.",
+                            "type": "built-in"
+                        },
+                        {
+                            "name": "k8s-operator",
+                            "displayName": "Kubernetes Operator",
+                            "description": "Cluster troubleshooting, pod debugging, live container exec, event triage, node diagnostics, and resource scaling.",
+                            "type": "built-in"
+                        },
+                        {
+                            "name": "app-operator",
+                            "displayName": "App / GitOps Operator",
+                            "description": "ArgoCD GitOps application and project management, Argo Rollouts progressive delivery (canary/blue-green), and Traefik edge routing.",
+                            "type": "built-in"
+                        },
+                        {
+                            "name": "observability-operator",
+                            "displayName": "Observability Operator",
+                            "description": "Prometheus metric queries (PromQL), TSDB cardinality analysis, alerting rule authoring, and AlertManager on-call alert triage and silence lifecycle.",
+                            "type": "built-in"
+                        },
+                        {
+                            "name": "dynamic-subagent",
+                            "displayName": "Dynamic Subagent Spawner",
+                            "description": "Spawns context-isolated subagents on demand with custom skill sets, isolated tool scopes, and model overrides for parallel fan-out or multi-phase workflows.",
+                            "type": "dynamic"
+                        }
+                    ],
                     "mcpServers": [
                         {
                             "name": "Kubernetes MCP Server",
@@ -218,6 +284,42 @@
                 "What alerts are currently firing in the cluster?",
                 "Deploy a PostgreSQL exporter and create a ServiceMonitor",
                 "Show on-call alert summary and manage silences"
+            ]
+        },
+        {
+            "id": "dynamic_subagents",
+            "name": "Dynamic Subagent Orchestration & Delegation",
+            "description": "Programmatically spawns and coordinates context-isolated subagents with custom skill sets to execute complex multi-phase tasks, parallel fan-out investigations, and specialized operations.",
+            "tags": [
+                "subagents",
+                "orchestration",
+                "parallel",
+                "delegation",
+                "multi-agent"
+            ],
+            "examples": [
+                "Spawn a dedicated subagent to investigate crashlooping pods across all namespaces in parallel",
+                "Create a subagent with custom Helm skills to validate charts against security benchmarks",
+                "Delegate ArgoCD application sync monitoring to a background subagent",
+                "Spawn a subagent to evaluate cluster resource limits and propose right-sizing recommendations"
+            ]
+        },
+        {
+            "id": "skills_and_plugins",
+            "name": "Skill & Plugin Marketplace Management",
+            "description": "Discovers, installs, enables, and manages domain-specific skills and plugins from marketplaces to dynamically extend the agent's capabilities on the fly.",
+            "tags": [
+                "skills",
+                "plugins",
+                "marketplace",
+                "extensibility",
+                "tools"
+            ],
+            "examples": [
+                "Discover and install new Kubernetes optimization skills from the marketplace",
+                "Enable the security-audit plugin to scan our cluster configurations",
+                "List all installed skills and active plugins",
+                "Install a custom SRE runbook skill into the agent"
             ]
         }
     ]

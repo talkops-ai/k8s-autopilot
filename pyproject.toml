@@ -1,6 +1,6 @@
 [project]
 name = "k8s-autopilot"
-version = "0.1.0"
+version = "0.7.0"
 description = "Multi Agents responsible for complete Kubernetes deployment automation (generation → deployment → monitoring)"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -9,19 +9,41 @@ dependencies = [
     "a2ui-agent",
     "colorama>=0.4.6",
     "copilotkit>=0.1.0",
-    "deepagents>=0.6.7",
+    "deepagents[quickjs]>=0.7.2",
     "langchain>=1.3.2",
     "langchain-anthropic>=1.4.4",
     "langchain-aws>=1.5.0",
+    "langchain-baseten>=0.2.4",
+    "langchain-cohere>=0.6.0",
     "langchain-core>=1.4.0",
+    "langchain-deepseek>=1.1.0",
+    "langchain-fireworks>=1.6.1",
     "langchain-google-genai>=4.2.4",
-    "langchain-mcp-adapters>=0.2.2",
+    "langchain-google-vertexai>=3.2.4",
+    "langchain-groq>=1.1.3",
+    "langchain-huggingface>=1.2.2",
+    "langchain-mcp-adapters>=0.3.0",
+    "langchain-mistralai>=1.1.6",
+    "langchain-nvidia-ai-endpoints>=1.4.3",
+    "langchain-ollama>=1.1.0",
     "langchain-openai>=1.2.2",
+    "langchain-perplexity>=1.4.1",
+    "langchain-together>=0.4.0",
+    "langchain-xai>=1.3.0",
     "langgraph>=1.2.2",
     "langgraph-checkpoint-postgres>=3.1.0",
+    "langgraph-checkpoint-sqlite>=3.1.0",
+    "aiosqlite>=0.22.1",
+    "psycopg[binary,pool]>=3.1.0",
     "loguru>=0.7.3",
     "pydantic>=2.12.5",
     "uvicorn>=0.42.0",
+    "tavily-python>=0.7.26",
+    "markdownify>=1.2.3",
+    "filelock>=3.32.3",
+    "genai-prices>=0.1.0",
+    "langchain-quickjs>=0.3.3",
+    "bashlex>=0.18",
 ]
 
 license = {text = "Apache-2.0"}
@@ -53,6 +75,17 @@ mcp-servers = [
 interpreter = [
     "langchain-quickjs>=0.1.0",
 ]
+slack = [
+    "slack-bolt>=1.22.0",
+    "slack-sdk>=3.35.0",
+]
+sandboxes = [
+    "langchain-daytona",
+    "langchain-modal",
+    "langchain-runloop",
+    "langchain-vercel-sandbox",
+    "langchain-agentcore-codeinterpreter",
+]
 
 [project.urls]
 homepage = "https://github.com/talkops-ai/k8s-autopilot"
@@ -60,7 +93,7 @@ repository = "https://github.com/talkops-ai/k8s-autopilot.git"
 documentation = "https://github.com/talkops-ai/k-autopilot/blob/main/README.md"
 
 [project.scripts]
-k8s-autopilot = "k8s_autopilot.server:main"
+k8s-autopilot = "k8s_autopilot.server.app:main"
 
 [dependency-groups]
 dev = [
@@ -73,6 +106,8 @@ dev = [
     "rich>=14.2.0",
     "asyncclick>=8.3.0.7",
     "agentevals>=0.0.9",
+    "types-protobuf>=7.35.1.20260827",
+    "isort>=9.0.1",
 ]
 
 [build-system]
@@ -83,15 +118,51 @@ build-backend = "hatchling.build"
 packages = ["k8s_autopilot"]
 
 [tool.ruff]
-line-length = 88
 target-version = "py312"
+line-length = 120
+src = ["k8s_autopilot"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "C90", "I", "N", "UP", "YTT", "S", "BLE", "FBT", "B", "A", "COM", "C4", "DTZ", "T10", "EM", "EXE", "FA", "ISC", "ICN", "G", "INP", "PIE", "T20", "PYI", "PT", "Q", "RSE", "RET", "SLF", "SIM", "TID", "TCH", "ARG", "PTH", "ERA", "PD", "PGH", "PL", "TRY", "FLY", "NPY", "AIR", "PERF", "FURB", "LOG", "RUF"]
-ignore = ["S101", "PLR0913", "PLR2004", "C901", "W191"]
+select = [
+    "F",       # Pyflakes — unused imports, undefined names
+    "E",       # pycodestyle errors
+    "W",       # pycodestyle warnings
+    "I",       # isort — import ordering
+    "D",       # pydocstyle — docstring presence and format
+    "UP",      # pyupgrade — modern Python idioms
+    "B",       # flake8-bugbear — common bugs
+    "SIM",     # flake8-simplify — simplifiable code
+    "RUF",     # Ruff-specific rules
+]
+ignore = [
+    "D100",    # Missing module docstring (enable after Phase 3 complete)
+    "D104",    # Missing public package docstring
+    "D105",    # Missing magic method docstring
+    "D107",    # Missing __init__ docstring (enable after Phase 3 complete)
+    "D203",    # Conflicts with D211 (no-blank-line-before-class)
+    "D213",    # Conflicts with D212 (multi-line-summary-second-line)
+    "E501",    # Line too long — handled by formatter
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["k8s_autopilot"]
+force-sort-within-sections = true
+combine-as-imports = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["D"]  # Don't require docstrings in tests
+"k8s_autopilot/**/__init__.py" = ["D104"]  # Package init files
+
+[tool.isort]
+profile = "black"
+line_length = 120
+known_first_party = ["k8s_autopilot"]
+src_paths = ["k8s_autopilot"]
+force_sort_within_sections = true
+combine_as_imports = true
 
 [tool.mypy]
 python_version = "3.12"
@@ -115,6 +186,11 @@ addopts = "-v --tb=short"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
+    "unit: deterministic tests for pure functions, schemas, and node logic",
+    "eval: trajectory and semantic evaluation tests",
+    "sandbox: ephemeral Kubernetes sandbox tests",
+    "hitl: human-in-the-loop interaction tests",
+    "timeout: test timeout in seconds",
 ]
 
 [tool.uv.sources]
@@ -131,3 +207,10 @@ a2ui-agent = { path = "a2ui_extenstion", editable = true }
 
 [tool.pyrefly]
 python_interpreter = ".venv/bin/python"
+replace-untyped-imports-with-any = true
+
+[tool.pyrefly.errors]
+missing-import = "ignore"
+
+[tool.pyright]
+reportMissingImports = false

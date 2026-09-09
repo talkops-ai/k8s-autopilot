@@ -1,0 +1,52 @@
+{
+  "mcpServers": {
+    "talkops-prometheus-mcp-server": {
+      "type": "stdio",
+      "command": "prometheus-mcp-server",
+      "args": [],
+      "env": {
+        "PROMETHEUS_BASE_URL": "${PROMETHEUS_BASE_URL:-http://prometheus-operated.monitoring.svc:9090}",
+        "PROMETHEUS_VERIFY_SSL": "${PROMETHEUS_VERIFY_SSL:-false}"
+      }
+    },
+    "talkops-alertmanager-mcp-server": {
+      "type": "stdio",
+      "command": "alertmanager-mcp-server",
+      "args": [],
+      "env": {
+        "ALERTMANAGER_BASE_URL": "${ALERTMANAGER_BASE_URL:-http://alertmanager-operated.monitoring.svc:9093}",
+        "ALERTMANAGER_VERIFY_SSL": "${ALERTMANAGER_VERIFY_SSL:-false}"
+      }
+    },
+    "talkops-opentelemetry-mcp-server": {
+      "type": "stdio",
+      "command": "opentelemetry-mcp-server",
+      "args": [],
+      "env": {
+        "PROMETHEUS_BASE_URL": "${PROMETHEUS_BASE_URL:-http://prometheus-operated.monitoring.svc:9090}",
+        "PROMETHEUS_VERIFY_SSL": "${PROMETHEUS_VERIFY_SSL:-false}"
+      }
+    },
+    "talkops-loki-mcp-server": {
+      "type": "stdio",
+      "command": "loki-mcp-server",
+      "args": [],
+      "env": {
+        "LOKI_URL": "${LOKI_URL:-http://host.docker.internal:3100}",
+        "LOKI_AUTH_TOKEN": "${LOKI_AUTH_TOKEN:-}",
+        "LOKI_ORG_ID": "${LOKI_ORG_ID:-talkops}",
+        "LOKI_VERIFY_SSL": "${LOKI_VERIFY_SSL:-true}"
+      }
+    },
+    "talkops-tempo-mcp-server": {
+      "type": "stdio",
+      "command": "tempo-mcp-server",
+      "args": [],
+      "env": {
+        "TEMPO_BASE_URL": "${TEMPO_BASE_URL:-http://localhost:3200}",
+        "TEMPO_AUTH_HEADER": "${TEMPO_AUTH_HEADER:-}",
+        "TEMPO_VERIFY_SSL": "${TEMPO_VERIFY_SSL:-true}"
+      }
+    }
+  }
+}

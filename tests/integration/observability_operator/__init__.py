@@ -1,1 +1,0 @@
-# Observability Operator Integration Tests

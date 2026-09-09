@@ -1,7 +1,7 @@
 import pytest
 import os
-from k8s_autopilot.config.config import Config
-from k8s_autopilot.utils.mcp_client import create_mcp_client
+from k8s_autopilot.config.settings import Settings as Config
+from k8s_autopilot.mcp.session_manager import MCPSessionManager
 
 @pytest.mark.sandbox
 @pytest.mark.asyncio
